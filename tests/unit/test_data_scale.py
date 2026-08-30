@@ -187,6 +187,21 @@ def test_loader_rejects_manifest_count_or_schema_tampering(tmp_path: Path) -> No
         load_demo_dataset(data_dir=tmp_path / "schema-drift")
 
 
+def test_loader_rejects_self_consistent_background_data_and_hash_tampering(
+    tmp_path: Path,
+) -> None:
+    """Catches treating attacker-controlled manifest hashes as a trust anchor."""
+    generated = generate_demo_dataset(output_dir=tmp_path / "generated")
+    dataset = {key: value for key, value in generated.items() if key != "manifest"}
+    manifest = deepcopy(generated["manifest"])
+    product = next(row for row in dataset["products"] if row["product_id"] == "P-BG-042")
+    product["name"] = "Tampered but schema-valid product"
+    _write_dataset(tmp_path / "tampered", dataset, manifest)
+
+    with pytest.raises(ValueError, match="trusted dataset checksum"):
+        load_demo_dataset(data_dir=tmp_path / "tampered")
+
+
 def test_validation_checks_aggregate_inventory_event_and_shipment_quantities() -> None:
     for collection, field in (
         ("inventory_positions", "on_hand"),
@@ -212,6 +227,20 @@ def test_validation_rejects_shipment_destination_outside_its_receiving_lineage()
     assert any("shipment" in error and "lineage" in error for error in validate_manifest(dataset))
 
 
+def test_validation_rejects_shipment_after_its_matching_receipt() -> None:
+    """Catches a supplier shipment that postdates the receiving event it supposedly caused."""
+    dataset = deepcopy(load_demo_dataset())
+    dataset.pop("manifest")
+    shipment = next(
+        row for row in dataset["supplier_shipments"] if row["lot_id"] == "LOT-BG-042-03"
+    )
+    shipment["shipped_at"] = "2027-01-01T00:00:00Z"
+
+    assert any(
+        "shipment" in error and "chronology" in error for error in validate_manifest(dataset)
+    )
+
+
 def test_validation_rejects_child_event_before_its_parent() -> None:
     dataset = deepcopy(load_demo_dataset())
     dataset.pop("manifest")
@@ -219,6 +248,23 @@ def test_validation_rejects_child_event_before_its_parent() -> None:
     event["occurred_at"] = "2026-07-31T12:00:00Z"
 
     assert any("chronology" in error for error in validate_manifest(dataset))
+
+
+@pytest.mark.parametrize(
+    ("movement_quantity", "expected_message"),
+    [(0, "positive movement quantity"), (398, "lineage quantity")],
+)
+def test_validation_rejects_nonpositive_or_undersized_movements(
+    movement_quantity: int,
+    expected_message: str,
+) -> None:
+    """Catches movement evidence that cannot carry its child business event."""
+    dataset = deepcopy(load_demo_dataset())
+    dataset.pop("manifest")
+    movement = next(row for row in dataset["events"] if row["event_id"] == "EV-LOT-BG-042-03-MOVE")
+    movement["quantity"] = movement_quantity
+
+    assert any(expected_message in error for error in validate_manifest(dataset))
 
 
 def test_every_synthetic_timestamp_is_timezone_aware_and_every_facility_is_covered() -> None:

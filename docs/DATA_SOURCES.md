@@ -42,7 +42,9 @@ Six anchor lots remain hand-auditable for the flagship demo. In particular, `LOT
 
 The public snapshot remains byte-for-byte frozen with SHA-256 `086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9`. Synthetic schema `recallops.synthetic-retailer-digital-twin` version `1.1.0` is regenerated from pinned seed `20260830`; its current `dataset.json` SHA-256 is `6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9`.
 
-The manifest declares the schema, version, seed, source label, exact collection counts, file list, and raw-byte SHA-256. Loading fails closed on checksum or count drift, anchor mutation, unlabelled origin, malformed timezone, duplicate identifiers, missing foreign keys, lineage cycles, facility-continuity breaks, quantity-aggregate mismatches, or incomplete facility acknowledgements. Generating twice produces byte-identical dataset and manifest files.
+The manifest declares the schema, version, seed, source label, exact collection counts, file list, and raw-byte SHA-256. The loader also compares both manifest hash fields and the raw dataset bytes with an independently reviewed pinned digest, so changing the data and recomputing the adjacent manifest cannot establish a new trust anchor. Loading fails closed on checksum or count drift, anchor mutation, unlabelled origin, malformed timezone, shipment-after-receipt chronology, duplicate identifiers, missing foreign keys, lineage cycles, facility-continuity breaks, quantity-aggregate mismatches, or incomplete facility acknowledgements. Generating twice produces byte-identical dataset and manifest files.
+
+For parent-linked event quantities, every shipment or transfer must be positive and no child event may claim more units than its direct parent. Sibling quantities are intentionally not summed against the parent because returns, quarantines, and disposals may describe business states that overlap an earlier sale or movement; lot-level reconciliation remains the authoritative aggregate equation.
 
 ## Data minimization
 

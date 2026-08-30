@@ -75,6 +75,7 @@ LOT_IDENTITY_FIELDS = (
     "disposed",
     "unaccounted",
 )
+PINNED_DATASET_SHA256 = "6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9"
 
 
 def _read_json(path: Path) -> Any:
@@ -222,6 +223,10 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
                 errors.append(f"unknown facility for {event_id}")
         if not _is_nonnegative_integer(event.get("quantity")):
             errors.append(f"negative or invalid event quantity for {event_id}")
+        if event.get("event_type") in {"shipping", "transfer"} and (
+            not _is_nonnegative_integer(event.get("quantity")) or event["quantity"] == 0
+        ):
+            errors.append(f"positive movement quantity required for {event_id}")
         if not _has_timezone(event.get("occurred_at")):
             errors.append(f"invalid ISO timestamp for {event_id}")
         parent_id = event.get("parent_event_id")
@@ -235,6 +240,11 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
             continue
         if parent.get("lot_id") != event.get("lot_id"):
             errors.append(f"parent lot mismatch for {event_id}")
+        if _is_nonnegative_integer(parent.get("quantity")) and _is_nonnegative_integer(
+            event.get("quantity")
+        ):
+            if event["quantity"] > parent["quantity"]:
+                errors.append(f"lineage quantity mismatch for {event_id}")
         parent_facility = parent.get("to_facility") or parent.get("from_facility")
         child_facility = event.get("from_facility") or event.get("to_facility")
         if parent_facility != child_facility:
@@ -268,9 +278,14 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
     event_quantities: dict[str, Counter[str]] = defaultdict(Counter)
     shipment_by_lot: Counter[str] = Counter()
     receiving_facilities: dict[str, set[str]] = defaultdict(set)
+    receiving_times: dict[tuple[str, str], list[datetime]] = defaultdict(list)
     for event in collection_rows["events"]:
         if event.get("event_type") == "receiving" and event.get("to_facility"):
             receiving_facilities[event.get("lot_id", "")].add(event["to_facility"])
+            if _has_timezone(event.get("occurred_at")):
+                receiving_times[(event.get("lot_id", ""), event["to_facility"])].append(
+                    datetime.fromisoformat(event["occurred_at"])
+                )
     for row in collection_rows["inventory_positions"]:
         lot_id = row.get("lot_id")
         facility_id = row.get("facility_id")
@@ -312,6 +327,14 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
             errors.append(
                 f"supplier shipment lineage mismatch for {row.get('shipment_id', 'unknown')}"
             )
+        else:
+            matching_receipts = receiving_times.get((lot_id, row["to_facility"]), [])
+            if matching_receipts and datetime.fromisoformat(row["shipped_at"]) > min(
+                matching_receipts
+            ):
+                errors.append(
+                    f"supplier shipment chronology mismatch for {row.get('shipment_id', 'unknown')}"
+                )
         shipment_by_lot[lot_id] += row["quantity"]
 
     for lot_id, lot in lots_by_id.items():
@@ -373,8 +396,12 @@ def load_demo_dataset(data_dir: Path | None = None) -> dict[str, Any]:
         "dataset.json"
     }:
         raise ValueError("synthetic dataset manifest files/checksums mismatch")
-    if checksum != manifest["checksums"]["dataset.json"] or checksum != manifest["sha256"]:
-        raise ValueError("synthetic dataset checksum mismatch")
+    if (
+        checksum != PINNED_DATASET_SHA256
+        or manifest["checksums"]["dataset.json"] != PINNED_DATASET_SHA256
+        or manifest["sha256"] != PINNED_DATASET_SHA256
+    ):
+        raise ValueError("trusted dataset checksum mismatch")
     expected_metadata = {
         "schema_name": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
