@@ -276,6 +276,50 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertLessEqual(width, 850, "lifecycle SVG is too wide for a 700px Markdown column")
         self.assertLessEqual(height / width, 4, "lifecycle SVG is too tall to scan as one lifecycle")
 
+    def test_business_lifecycle_cluster_titles_clear_their_first_nodes(self) -> None:
+        root = ElementTree.parse(IMAGES / "08_business_recall_lifecycle.svg").getroot()
+
+        def translated_y(element: ElementTree.Element) -> float:
+            match = re.fullmatch(
+                r"translate\([^,]+,\s*([^)]+)\)",
+                element.attrib["transform"],
+            )
+            self.assertIsNotNone(match, f"unexpected transform: {element.attrib['transform']}")
+            return float(match.group(1))
+
+        for cluster_id, first_node_name in (
+            ("my-svg-STAGE1", "TRACE"),
+            ("my-svg-STAGE2", "CLOSURE_REQUEST"),
+        ):
+            cluster = next(element for element in root.iter() if element.get("id") == cluster_id)
+            label = next(
+                element for element in cluster if element.get("class") == "cluster-label"
+            )
+            label_box = next(
+                element for element in label if element.tag.endswith("foreignObject")
+            )
+            label_bottom = translated_y(label) + float(label_box.attrib["height"])
+
+            first_node = next(
+                element
+                for element in root.iter()
+                if element.get("id", "").startswith(
+                    f"my-svg-flowchart-{first_node_name}-"
+                )
+            )
+            node_box = next(
+                element
+                for element in first_node.iter()
+                if "label-container" in element.get("class", "").split()
+            )
+            node_top = translated_y(first_node) + float(node_box.attrib["y"])
+
+            self.assertGreaterEqual(
+                node_top - label_bottom,
+                8,
+                f"{cluster_id} title needs visible clearance above {first_node_name}",
+            )
+
     def test_docs_do_not_contain_placeholder_language(self) -> None:
         files = [ROOT / name for name in REQUIRED_DOCUMENTS if name.endswith(".md")]
         offenders = []
