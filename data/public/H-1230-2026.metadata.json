@@ -1,0 +1,8 @@
+{
+  "recall_number": "H-1230-2026",
+  "source_url": "https://api.fda.gov/food/enforcement.json?search=recall_number.exact:%5C%22H-1230-2026%5C%22",
+  "retrieved_at": "2026-08-30T00:00:00+00:00",
+  "source_label": "OFFICIAL OPENFDA SNAPSHOT — FROZEN FOR REPRODUCIBILITY",
+  "sha256": "086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9",
+  "retrieval_method": "Provided official openFDA response record, copied byte-for-byte into the snapshot."
+}
