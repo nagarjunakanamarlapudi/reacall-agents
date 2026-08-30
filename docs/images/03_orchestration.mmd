@@ -1,0 +1,20 @@
+flowchart TB
+  classDef statefill fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef agent fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
+  I["Intake"]:::statefill --> P["Plan"]:::statefill --> SG["StateGraph<br/>fan-out and typed updates"]:::statefill
+  SG --> DA["Optional Deep Agent supervisor<br/>bounded task planning and delegation"]:::agent
+  DA --> RI["Regulatory Intake"]:::agent
+  DA --> PM["Product & Lot Matching"]:::agent
+  DA --> TR["Traceability"]:::agent
+  DA --> CO["Containment draft"]:::agent
+  RI --> REC["Reconcile"]:::statefill
+  PM --> REC
+  TR --> REC
+  CO --> REC
+  REC --> VC["Verification / Critic<br/>outside supervisor context"]:::verify
+  VC --> HR["Human review"]:::human
+  HR -->|approved resume| EX["Approved graph node executes simulated write"]:::statefill
+  HR -->|edit, reject, or escalate| SG
+  EX --> MON["Monitor"]:::statefill --> CLOSE["Close or escalate"]:::statefill

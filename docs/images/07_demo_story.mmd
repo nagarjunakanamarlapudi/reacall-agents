@@ -1,0 +1,12 @@
+flowchart TB
+  classDef step fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
+  classDef safe fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
+  A["00:00 Open case<br/>H-1230-2026"]:::step --> B["00:35 Show official and<br/>SYNTHETIC — ACADEMIC DEMO boundary"]:::step
+  B --> C["01:00 Investigation<br/>plan, specialists, evidence"]:::step
+  C --> D["01:50 Reconciliation<br/>show gaps explicitly"]:::step
+  D --> E["02:35 Human review<br/>Food-safety manager"]:::human
+  E --> F["03:50 Approved simulated action<br/>receipt and idempotency"]:::safe
+  F --> G["04:20 Monitor and closure gate"]:::step
+  G --> H["04:30 Open case if any gap remains"]:::block

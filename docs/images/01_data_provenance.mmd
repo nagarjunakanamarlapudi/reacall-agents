@@ -1,0 +1,19 @@
+flowchart LR
+  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
+  classDef reference fill:#f3f4f6,stroke:#6b7280,color:#111827
+  classDef boundary fill:#fef3c7,stroke:#ca8a04,color:#111827
+
+  FDA["official openFDA H-1230-2026<br/>Authoritative recall predicate"]:::official
+  SNAP["Frozen official snapshot<br/>Checksummed offline fallback"]:::official
+  FDA --> SNAP
+  FDA --> PRED["Product • UPC • plant • Julian date<br/>geography • hazard"]:::official
+  NORTH["Northstar Grocers<br/>SYNTHETIC — ACADEMIC DEMO"]:::synthetic
+  TWIN["Synthetic products, lots, EPCIS-style events,<br/>inventory, acknowledgements, receipts"]:::synthetic
+  NORTH --> TWIN
+  REF["FDA traceability guidance<br/>GS1 EPCIS 2.0<br/>Optional USDA metadata"]:::reference
+  PRED --> MATCH["Evidence-led matching and tracing"]:::boundary
+  TWIN --> MATCH
+  REF --> MATCH
+  NOTE["Boundary: the synthetic twin does not establish<br/>Northstar involvement in the public recall"]:::boundary
+  MATCH --> NOTE

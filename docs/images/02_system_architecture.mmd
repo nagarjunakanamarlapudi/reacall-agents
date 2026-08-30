@@ -1,0 +1,28 @@
+flowchart TB
+  classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef action fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef safety fill:#fee2e2,stroke:#dc2626,color:#111827
+  subgraph DATA["Provenance-aware data"]
+    O["official openFDA H-1230-2026<br/>or frozen snapshot"]
+    S["Northstar Grocers<br/>SYNTHETIC — ACADEMIC DEMO"]
+  end
+  subgraph CONTROL["Control plane"]
+    G["LangGraph StateGraph<br/>state • routes • checkpoint • interrupt/resume"]:::control
+  end
+  subgraph REASON["Reasoning plane"]
+    D["Deterministic planner<br/>or optional Deep Agent supervisor"]:::reason
+    X["Specialists + independent critic"]:::reason
+  end
+  subgraph ACTION["Action plane"]
+    R["Read-only Recall Registry MCP"]:::action
+    T["Read-only Traceability MCP"]:::action
+    W["Approval-gated simulated Operations MCP"]:::action
+  end
+  O --> R --> G
+  S --> T --> G
+  G <--> D <--> X
+  G --> W
+  SAFE["No A2A<br/>No direct agent writes<br/>Agents have no raw database access"]:::safety
+  SAFE --- G
+  SAFE --- W

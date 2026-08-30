@@ -1,0 +1,16 @@
+flowchart TB
+  classDef read fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef write fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef gate fill:#fef3c7,stroke:#ca8a04,color:#111827
+  AG["Agents draft observations and proposals"] --> SEL["Permission policy<br/>role-specific tool visibility"]:::gate
+  SEL --> RR["Recall Registry MCP<br/>search_recalls • get_recall"]:::read
+  SEL --> TM["Traceability MCP<br/>match_lots • trace_forward • reconcile_units"]:::read
+  RR --> OBS["Structured observation<br/>provenance • citations • errors"]
+  TM --> OBS
+  AG -. "cannot invoke directly" .-> OM["Recall Operations MCP"]:::write
+  GR["Approved graph node after resume"] --> AP["Approval required<br/>actor • justification • expected version • idempotency key"]:::gate
+  AP --> OM["Recall Operations MCP<br/>simulated writes only"]:::write
+  OM --> RC["Durable audit receipt"]
+  BAD["Unapproved, stale, duplicate, or unlabelled request"]:::block --> DENY["Fail closed"]:::block
+  AP --> BAD

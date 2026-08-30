@@ -1,0 +1,19 @@
+flowchart TB
+  classDef statefill fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
+  classDef write fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
+  START["Evidence, reconciliation, proposed actions"]:::statefill --> INT["interrupt()<br/>ambiguous lot or pre-action review"]:::human
+  INT --> PACKET["Review packet<br/>scope • rationale • equation • gaps • citations"]:::human
+  PACKET --> DEC{"Reviewer decision"}:::human
+  DEC -->|approve| RES["Command(resume=...)<br/>same thread_id"]:::statefill
+  DEC -->|edit| RECHECK["Re-verify edited proposal"]:::statefill
+  DEC -->|reject / escalate| OPEN["Keep case open"]:::block
+  RECHECK --> INT
+  RES --> WRITE["Approved simulated write<br/>idempotency key + receipt"]:::write
+  WRITE --> MON["Monitor acknowledgements and quantities"]:::statefill
+  MON --> GATE{"All closure gates pass?"}:::statefill
+  GATE -->|yes| CINT["interrupt()<br/>final closure review"]:::human
+  CINT --> CLOSED["Close case after approval"]:::write
+  GATE -->|no: unaccounted, ambiguity,<br/>or missing acknowledgement| BLOCK["Closure blocked"]:::block
+  BLOCK --> OPEN

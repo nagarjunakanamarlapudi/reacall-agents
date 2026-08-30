@@ -1,0 +1,15 @@
+flowchart TB
+  classDef hook fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef safety fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef trace fill:#dbeafe,stroke:#2563eb,color:#111827
+  START["Case starts"] --> CTX["Case context<br/>case ID • role • source labels"]:::hook
+  CTX --> PLAN["Task-plan policy<br/>bounded plan + completion criteria"]:::hook
+  PLAN --> MODEL["Model router + retry/fallback<br/>call budget + structured output"]:::hook
+  MODEL --> TOOLS["Permission + schema/provenance<br/>retry/circuit breaker + tool budget"]:::hook
+  TOOLS --> MASK["PII masking + citation-preserving summarization"]:::hook
+  MASK --> STATE["Typed state update"]:::hook
+  STATE --> WD["Progress watchdog"]:::safety
+  WD --> VERIFY["Reconciliation / contradiction guard"]:::safety
+  VERIFY --> TRACE["Trace recorder<br/>route • node • tool • duration • status • receipt"]:::trace
+  TRACE --> NEXT["Next route, review, or safe stop"]
+  TOOLS --> APPROVAL["Approval guard on every side effect"]:::safety
