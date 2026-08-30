@@ -81,17 +81,30 @@ DIAGRAM_LABELS = {
         "Open — closure blocked",
     ),
     "08_business_recall_lifecycle": (
+        "SYNTHETIC — ACADEMIC DEMO",
         "FDA / regulator",
         "Recall coordinator",
         "Supplier",
         "DC / store",
         "Food-safety manager",
         "Consumers",
+        "First human action review",
+        "Exact proposed action + case version",
+        "Operation receipt",
+        "disposition evidence",
+        "Unit reconciliation",
+        "Every facility acknowledgement",
+        "Explicit closure request",
+        "Deterministic closure gate evaluation",
+        "Second human closure review",
+        "Keep open / escalate",
         "Internal closure blocked",
         "FDA termination is separate",
     ),
     "09_domain_evidence_model": (
-        "Recall predicate",
+        "SYNTHETIC — ACADEMIC DEMO",
+        "Official public recall record",
+        "RecallOps proposed predicate — human verified",
         "Product match",
         "Lot match",
         "Lineage event",
@@ -202,6 +215,66 @@ class DocumentationContractTests(unittest.TestCase):
         for name in ("08_business_recall_lifecycle", "09_domain_evidence_model"):
             diagram = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
             self.assertNotRegex(diagram, r"(?i)langgraph|deep agent|\bmcp\b")
+
+    def test_business_lifecycle_has_distinct_action_and_closure_authorizations(self) -> None:
+        diagram = (IMAGES / "08_business_recall_lifecycle.mmd").read_text(encoding="utf-8")
+        ordered_nodes = (
+            'ACTION_REVIEW["Food-safety manager<br/>First human action review',
+            'ACTION_GATE{"Authorize the exact simulated action<br/>at this case version?"}',
+            'RECORD["DC / store<br/>Record authorized simulated action"]',
+            'EVIDENCE["Operation receipt • disposition evidence',
+            'CLOSURE_REQUEST["Recall coordinator<br/>Explicit closure request',
+            'GATE_EVAL{"Deterministic closure gate evaluation',
+            'CLOSURE_REVIEW["Food-safety manager<br/>Second human closure review"]',
+            'CLOSURE_GATE{"Authorize internal retailer closure?"}',
+        )
+        positions = [diagram.index(node) for node in ordered_nodes]
+        self.assertEqual(positions, sorted(positions))
+        for edge in (
+            "ACTION_REVIEW --> ACTION_GATE",
+            'ACTION_GATE -->|authorize exact action| RECORD',
+            "RECORD --> EVIDENCE",
+            "EVIDENCE --> CLOSURE_REQUEST",
+            "CLOSURE_REQUEST --> GATE_EVAL",
+            'GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW',
+            "CLOSURE_REVIEW --> CLOSURE_GATE",
+            'CLOSURE_GATE -->|close| CLOSED',
+            'CLOSURE_GATE -->|keep open / escalate| OPEN',
+        ):
+            self.assertIn(edge, diagram)
+        self.assertNotRegex(diagram, r"(?:NOTICE|COORD|TRACE|ACTION_REVIEW)\s*-->\s*RECORD")
+
+    def test_business_diagrams_label_simulation_and_predicate_class_explicitly(self) -> None:
+        for name in ("08_business_recall_lifecycle", "09_domain_evidence_model"):
+            source = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
+            svg = (IMAGES / f"{name}.svg").read_text(encoding="utf-8")
+            self.assertIn("SYNTHETIC — ACADEMIC DEMO", source)
+            self.assertIn("SYNTHETIC — ACADEMIC DEMO", svg)
+            boundary_line = next(
+                line.strip()
+                for line in source.splitlines()
+                if line.strip().startswith("DEMO_NOTE[")
+            )
+            self.assertTrue(boundary_line.endswith(":::synthetic"))
+
+        evidence_model = (IMAGES / "09_domain_evidence_model.mmd").read_text(
+            encoding="utf-8"
+        )
+        predicate_line = next(
+            line.strip() for line in evidence_model.splitlines() if line.strip().startswith("PRED[")
+        )
+        self.assertIn("RecallOps proposed predicate — human verified", predicate_line)
+        self.assertTrue(predicate_line.endswith(":::review"))
+        self.assertNotIn(":::official", predicate_line)
+        self.assertIn("PUBLIC -->|scope evidence for derivation| DEMO_NOTE", evidence_model)
+        self.assertIn("DEMO_NOTE --> DRAFT", evidence_model)
+        self.assertIn("DRAFT -->|human review and verification| PRED", evidence_model)
+
+    def test_business_lifecycle_is_readable_in_a_markdown_column(self) -> None:
+        root = ElementTree.parse(IMAGES / "08_business_recall_lifecycle.svg").getroot()
+        _, _, width, height = (float(value) for value in root.attrib["viewBox"].split())
+        self.assertLessEqual(width, 850, "lifecycle SVG is too wide for a 700px Markdown column")
+        self.assertLessEqual(height / width, 4, "lifecycle SVG is too tall to scan as one lifecycle")
 
     def test_docs_do_not_contain_placeholder_language(self) -> None:
         files = [ROOT / name for name in REQUIRED_DOCUMENTS if name.endswith(".md")]

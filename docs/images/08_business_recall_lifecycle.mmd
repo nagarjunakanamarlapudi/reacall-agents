@@ -1,33 +1,46 @@
-sequenceDiagram
-  autonumber
-  participant FDA as FDA / regulator
-  participant RC as Recall coordinator
-  participant SUP as Supplier
-  participant OPS as DC / store
-  participant FSM as Food-safety manager
-  participant CON as Consumers
+%%{init: {"flowchart": {"rankSpacing": 30, "nodeSpacing": 24}}}%%
+flowchart TB
+  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
+  classDef review fill:#fef3c7,stroke:#ca8a04,color:#111827
+  classDef approved fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef blocked fill:#fee2e2,stroke:#dc2626,color:#111827
 
-  FDA->>RC: Public notice / enforcement record
-  Note over FDA,RC: Official scope evidence — retailer response starts here
-  opt Public communication is applicable
-    FDA-->>CON: Official recall information
-    Note over FDA,CON: FDA or the recalling firm may issue a public warning under the real strategy
-  end
-  RC->>RC: Verify product, code, plant, date, geography, hazard
-  RC->>SUP: Request lot and shipment evidence
-  SUP-->>RC: Lot/source documents or an explicit evidence gap
-  RC->>OPS: Trace receipt, transfers, inventory, sales, returns
-  OPS-->>RC: Event IDs, quantities, facilities, acknowledgements
-  RC->>FSM: Review predicate, matches, equation, gaps, proposed containment
+  NOTICE["FDA / regulator<br/>Official public notice / enforcement record<br/><br/>Consumers<br/>Official recall information may come from<br/>FDA or the recalling firm, when applicable"]:::official
+  DEMO_NOTE["SYNTHETIC — ACADEMIC DEMO<br/>Boundary: fictional retailer evidence and simulated operations below<br/>RecallOps contacts neither regulators nor consumers"]:::synthetic
 
-  alt Ambiguity, unaccounted units, or missing acknowledgement
-    FSM-->>RC: Edit, reject, or escalate
-    Note over RC,FSM: Internal closure blocked
-  else Evidence gates pass
-    FSM-->>RC: Authorize exact simulated action and separate closure review
-    RC->>OPS: Record simulated action and monitor facility response
-    OPS-->>RC: Receipt, disposition evidence, acknowledgement
+  subgraph STAGE1["STAGE 1 — CONTAINMENT ACTION"]
+    direction TB
+    TRACE["Recall coordinator<br/>Verify official scope; request evidence from<br/>Supplier + DC / store"]:::synthetic
+    ACTION_REVIEW["Food-safety manager<br/>First human action review<br/>Exact proposed action + case version<br/>predicate • targets • evidence • one version truth"]:::review
+    ACTION_GATE{"Authorize the exact simulated action<br/>at this case version?"}:::review
+    RECORD["DC / store<br/>Record authorized simulated action"]:::synthetic
+    EVIDENCE["Operation receipt • disposition evidence<br/>Unit reconciliation • Every facility acknowledgement"]:::synthetic
+    ACTION_HOLD["Keep open / edit / reject / escalate<br/>No simulated write"]:::blocked
+
+    TRACE --> ACTION_REVIEW --> ACTION_GATE
+    ACTION_GATE -->|authorize exact action| RECORD
+    ACTION_GATE -->|not authorized| ACTION_HOLD
+    RECORD --> EVIDENCE
   end
 
-  Note over FDA,CON: RecallOps contacts neither regulators nor consumers
-  Note over FDA,FSM: FDA termination is separate from retailer internal closure
+  subgraph STAGE2["STAGE 2 — INTERNAL CLOSURE"]
+    direction TB
+    CLOSURE_REQUEST["Recall coordinator<br/>Explicit closure request<br/>recorded action + authoritative case version"]:::review
+    GATE_EVAL{"Deterministic closure gate evaluation<br/>receipt present? • unaccounted = 0?<br/>every affected facility acknowledged?"}:::review
+    CLOSURE_REVIEW["Food-safety manager<br/>Second human closure review"]:::review
+    CLOSURE_GATE{"Authorize internal retailer closure?"}:::review
+    CLOSED["Close fictional retailer case<br/>auditable closure evidence retained<br/>FDA termination is separate from retailer internal closure"]:::approved
+    OPEN["Keep open / escalate<br/>Internal closure blocked<br/>resolve gap or revise request"]:::blocked
+
+    CLOSURE_REQUEST --> GATE_EVAL
+    GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW
+    CLOSURE_REVIEW --> CLOSURE_GATE
+    CLOSURE_GATE -->|close| CLOSED
+    CLOSURE_GATE -->|keep open / escalate| OPEN
+    GATE_EVAL -->|gap or missing acknowledgement| OPEN
+  end
+
+  NOTICE -->|official scope evidence enters here| DEMO_NOTE
+  DEMO_NOTE --> TRACE
+  EVIDENCE --> CLOSURE_REQUEST
