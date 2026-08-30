@@ -1,0 +1,27 @@
+[project]
+name = "recallops"
+version = "0.1.0"
+description = "Evidence-first, simulated food recall operations demo"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fastmcp>=2.14,<3",
+  "pydantic>=2.12,<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.4,<9", "pytest-asyncio>=1.2,<2", "ruff>=0.14,<1"]
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
