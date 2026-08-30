@@ -3,9 +3,9 @@ flowchart TB
   classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
   classDef safe fill:#dcfce7,stroke:#16a34a,color:#111827
   classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
-  A["00:00 Command Center<br/>Open case • H-1230-2026"]:::step --> B["00:35 Investigation<br/>Run investigation"]:::step
+  A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026"]:::step --> B["00:35 Investigation<br/>Run investigation"]:::step
   B --> C["01:20 Reconciliation<br/>show explicit gaps"]:::step
-  C --> D["02:00 Human Review<br/>Review required • Food-safety manager"]:::human
+  C --> D["02:00 Human Review<br/>Review required • Food-safety manager<br/>Decision • Actor • Justification<br/>Approve • Edit • Reject • Escalate"]:::human
   D --> E["03:10 Approve + Simulate approved actions<br/>Simulated action recorded"]:::safe
   E --> F["04:20 Audit & Evaluation<br/>Request closure"]:::step
   F --> G["Open — closure blocked<br/>separate closure gate"]:::block

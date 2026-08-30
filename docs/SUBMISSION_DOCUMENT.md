@@ -36,7 +36,7 @@ The following are verbatim project instructions, quoted from the approved design
 > - [ ] Write Mermaid sources, render SVG with pinned Mermaid CLI, and visually inspect every SVG.
 > - [ ] Write docs from implemented behavior, including honest limitations and evaluator Q&A; run tests and commit.
 
-**Tool/model and iteration attribution:** this documentation pass used Codex in the desktop task environment; Mermaid CLI `11.12.0` generated the SVGs. Claude Code and the Grok CLI were not invoked by this documentation agent. The initial source/label contract, direct render, visual-layout review, and double-render stability check are the recorded iterations; runtime integration remains an approved contract pending Task 11.
+**Tool/model and iteration attribution:** the coordinator is **Codex (GPT-5 family; exact host alias not surfaced to this task)**. Known delegated documentation/foundation workers used `gpt-5.6-terra`; the notebook worker used `gpt-5.6-luna`. This documentation pass used the Codex desktop task environment and Mermaid CLI `11.12.0`. Claude Code and the Grok CLI were not invoked by this documentation agent; no invocation evidence is recorded in the Task 10 report. The initial source/label contract, direct render, visual-layout review, and double-render stability check are the recorded iterations; runtime integration remains an approved contract pending Task 11.
 
 ## Iterations tried
 
@@ -55,6 +55,15 @@ The following are verbatim project instructions, quoted from the approved design
 - Closure is a better safety demonstration than a successful write: refusing to close with ambiguity, missing acknowledgement, or missing units explains the system’s operational discipline.
 
 ## Video walkthrough: 4 minutes 20 seconds
+
+Contracted commands and complete review vocabulary (also defined in [`demo_contract.json`](demo_contract.json)):
+
+```bash
+uv run recallops data-validate
+uv run recallops demo --recall-number H-1230-2026
+```
+
+For **Command Center**, **Investigation**, **Reconciliation**, **Human Review**, and **Audit & Evaluation**, the contracted controls are **Open case**, **Run investigation**, **Approve**, **Edit**, **Reject**, **Escalate**, **Simulate approved actions**, and **Request closure**. The review fields are **Recall number**, **Decision**, **Actor**, and **Justification**. Copy/paste `H-1230-2026`, actor `Food-safety manager`, `approve`/`edit`/`reject`/`escalate`, `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.`, and `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` exactly as specified by the contract.
 
 | Time | Presenter narration | Screen/action |
 |---|---|---|

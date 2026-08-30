@@ -22,12 +22,15 @@ The implementation and command names are being completed in parallel with this d
 
 ```bash
 uv sync --all-groups
+npm ci
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
 uv run recallops eval
 ```
 
 The default demonstration is designed to run offline from a frozen public snapshot and seeded synthetic data. `OPENAI_API_KEY` is only for the optional live-model / Deep Agent path.
+
+For locked diagram generation, use Node `24.15.0` and npm `11.12.1`, run `npm ci`, then run `./scripts/render_diagrams.sh --verify`.
 
 ## Read next
 

@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import unittest
+from typing import Optional
 from xml.etree import ElementTree
 
 
@@ -16,6 +17,9 @@ DOCS = ROOT / "docs"
 IMAGES = DOCS / "images"
 
 REQUIRED_DOCUMENTS = (
+    ".node-version",
+    "package.json",
+    "package-lock.json",
     "README.md",
     "PROPOSAL.md",
     "docs/ARCHITECTURE.md",
@@ -81,6 +85,18 @@ DIAGRAM_LABELS = {
 
 
 class DocumentationContractTests(unittest.TestCase):
+    def assert_demo_artifact_contract(self, path: Path, contract: dict, text: Optional[str] = None) -> None:
+        artifact = contract["artifact_contract"][path.name]
+        content = text if text is not None else path.read_text(encoding="utf-8")
+        last_position = -1
+        for stamp in contract["timeline"]:
+            self.assertEqual(content.count(stamp), 1, f"{path.name} must contain {stamp} exactly once")
+            position = content.index(stamp)
+            self.assertGreater(position, last_position, f"{path.name} must preserve timeline order")
+            last_position = position
+        for value in artifact["commands"] + artifact["required_terms"]:
+            self.assertIn(value, content, f"{path.name} is missing contract value {value!r}")
+
     def test_promised_artifacts_exist(self) -> None:
         missing = [path for path in REQUIRED_DOCUMENTS if not (ROOT / path).is_file()]
         missing += [
@@ -150,29 +166,25 @@ class DocumentationContractTests(unittest.TestCase):
             DOCS / "SUBMISSION_DOCUMENT.md",
             IMAGES / "07_demo_story.mmd",
         )
-        document_text = "\n".join(path.read_text(encoding="utf-8") for path in document_paths)
-        for value in (
-            contract["cli"]["demo_command"],
-            contract["inputs"]["recall_number"],
-            contract["inputs"]["actor"],
-            *contract["decisions"],
-            *contract["streamlit"]["views"],
-            *contract["streamlit"]["buttons"],
-            *contract["streamlit"]["field_labels"],
-            *contract["expected_statuses"],
-            *contract["inputs"].values(),
-        ):
-            self.assertIn(value, document_text, f"documented contract value missing: {value!r}")
+        for path in document_paths:
+            self.assert_demo_artifact_contract(path, contract)
 
-        allowed_times = set(contract["timeline"].keys())
-        for stamp in re.findall(r"\b\d{2}:\d{2}\b", document_text):
-            self.assertIn(stamp, allowed_times, f"undocumented demo timestamp: {stamp}")
+    def test_demo_artifact_contract_rejects_one_missing_timestamp(self) -> None:
+        contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
+        path = DOCS / "DEMO_WALKTHROUGH.md"
+        omitted_timestamp = "03:10"
+        fixture = path.read_text(encoding="utf-8").replace(omitted_timestamp, "", 1)
+        with self.assertRaises(AssertionError):
+            self.assert_demo_artifact_contract(path, contract, fixture)
 
     def test_renderer_is_pinned_and_double_render_is_stable(self) -> None:
         renderer = (ROOT / "scripts/render_diagrams.sh").read_text(encoding="utf-8")
-        self.assertIn('NODE_EXPECTED_MAJOR="24"', renderer)
+        self.assertIn('NODE_EXPECTED_VERSION="v24.15.0"', renderer)
+        self.assertIn('NPM_EXPECTED_VERSION="11.12.1"', renderer)
         self.assertIn('MERMAID_CLI_VERSION="11.12.0"', renderer)
         self.assertIn("mermaid-config.json", renderer)
+        self.assertIn("node_modules/.bin/mmdc", renderer)
+        self.assertNotIn("npx", renderer)
         result = subprocess.run(
             ["./scripts/render_diagrams.sh", "--verify"],
             cwd=ROOT,
@@ -183,6 +195,15 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Stable double-render verified", result.stdout)
         self.assertIn("Committed SVGs match fresh render", result.stdout)
+
+    def test_toolchain_files_are_exactly_locked(self) -> None:
+        self.assertEqual((ROOT / ".node-version").read_text(encoding="utf-8").strip(), "24.15.0")
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        lock = json.loads((ROOT / "package-lock.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["engines"]["node"], "24.15.0")
+        self.assertEqual(package["packageManager"], "npm@11.12.1")
+        self.assertEqual(package["devDependencies"]["@mermaid-js/mermaid-cli"], "11.12.0")
+        self.assertEqual(lock["packages"]["node_modules/@mermaid-js/mermaid-cli"]["version"], "11.12.0")
 
     def test_submission_handout_and_ai_log_are_honest_and_presenter_ready(self) -> None:
         handout = (DOCS / "SUBMISSION_DOCUMENT.md").read_text(encoding="utf-8")
@@ -202,6 +223,10 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("Claude Code", coding_log)
         self.assertIn("Grok", coding_log)
         self.assertIn("author-reported pending Task 11 verification", coding_log)
+        for text in (handout, coding_log):
+            self.assertIn("Codex (GPT-5 family; exact host alias not surfaced to this task)", text)
+            self.assertIn("gpt-5.6-terra", text)
+            self.assertIn("gpt-5.6-luna", text)
 
     def test_curriculum_coverage_maps_every_week_three_topic(self) -> None:
         coverage = (DOCS / "CURRICULUM_COVERAGE.md").read_text(encoding="utf-8")

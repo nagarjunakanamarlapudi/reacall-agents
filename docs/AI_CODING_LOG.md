@@ -8,11 +8,13 @@ This log records the AI-assisted workflow for the RecallOps documentation pass. 
 
 | Tool/workflow | Role in the coordinated plan | What this documentation pass records |
 |---|---|---|
-| Codex | Repository coordination, documentation authoring, test-first contract, Mermaid rendering/inspection, and commit preparation | Used in the Codex desktop task environment for this pass. |
+| Codex coordinator | Repository coordination, documentation authoring, test-first contract, Mermaid rendering/inspection, and commit preparation | **Codex (GPT-5 family; exact host alias not surfaced to this task)** is the accurate coordinator attribution. |
+| Codex documentation/foundation workers | Bounded documentation/foundation workstreams | Known delegated worker model identifier: `gpt-5.6-terra`. |
+| Codex notebook worker | Bounded notebook workstream | Known delegated worker model identifier: `gpt-5.6-luna`. |
 | Claude Code | Potential peer implementation/review workflow for other repository work | Not invoked by this documentation agent; no Claude Code CLI use is claimed here. |
 | Grok | Optional bounded clarity/diagram reviewer available at `/Users/nagarjuna/.grok/bin/grok` | Not invoked in this pass; no Grok CLI review result is claimed here. |
 
-The broader project may include contributions from other coordinated workstreams. This document makes no attribution beyond the activity directly visible to this documentation agent.
+The broader project may include contributions from other coordinated workstreams. These model attributions are the exact known delegated identifiers supplied to this task; this document makes no stronger model or tool-use attribution.
 
 ## Human-authored constraints retained
 

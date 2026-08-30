@@ -18,6 +18,20 @@
   },
   "decisions": ["approve", "edit", "reject", "escalate"],
   "expected_statuses": ["Review required", "Simulated action recorded", "Open — closure blocked"],
+  "artifact_contract": {
+    "DEMO_WALKTHROUGH.md": {
+      "commands": ["uv run recallops data-validate", "uv run recallops demo --recall-number H-1230-2026"],
+      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "approve", "edit", "reject", "escalate", "Review required", "Simulated action recorded", "Open — closure blocked", "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.", "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."]
+    },
+    "SUBMISSION_DOCUMENT.md": {
+      "commands": ["uv run recallops data-validate", "uv run recallops demo --recall-number H-1230-2026"],
+      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "approve", "edit", "reject", "escalate", "Review required", "Simulated action recorded", "Open — closure blocked", "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.", "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."]
+    },
+    "07_demo_story.mmd": {
+      "commands": [],
+      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "Review required", "Simulated action recorded", "Open — closure blocked"]
+    }
+  },
   "timeline": {
     "00:00": "Open case and state the official/synthetic boundary",
     "00:35": "Run investigation and show bounded graph/specialists",

@@ -26,7 +26,7 @@ Expected audience-facing source boundary: **official openFDA H-1230-2026** is th
 | 03:10 | “Approval is scoped to the action and case version. Only the approved graph node makes a simulated write.” | Select **Approve**, then **Simulate approved actions**; show status **Simulated action recorded** and the receipt. |
 | 04:20 | “Monitoring still protects closure: a missing acknowledgement, ambiguity, or reconciliation gap keeps the case open.” | In **Audit & Evaluation**, select **Request closure** and show **Open — closure blocked**. For the safe alternate decision, enter `escalate` with `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` |
 
-The agreed sequence ends at 04:20. Runtime UI strings and outcome values must be checked against `demo_contract.json` by Task 11 integration tests.
+The agreed sequence ends with the closure-blocked demonstration. Runtime UI strings and outcome values must be checked against `demo_contract.json` by Task 11 integration tests.
 
 ## Evaluator questions
 
