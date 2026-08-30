@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 import sys
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import (
@@ -50,111 +51,236 @@ IDENTIFIER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 CONCEPT_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-CONCEPT_STOP_WORDS = frozenset(
+QUERY_GLUE_WORDS = frozenset(
     {
+        "a",
+        "after",
+        "all",
+        "an",
+        "and",
+        "applies",
+        "apply",
         "about",
         "business",
+        "can",
+        "could",
+        "determines",
+        "did",
+        "do",
         "does",
         "evidence",
+        "explain",
+        "for",
         "followed",
         "from",
         "have",
+        "how",
+        "in",
         "inspect",
+        "is",
+        "it",
         "item",
         "know",
         "mean",
+        "may",
+        "of",
+        "on",
+        "or",
         "possible",
+        "policy",
         "question",
+        "require",
+        "requirements",
         "retailer",
         "should",
+        "the",
+        "their",
+        "them",
+        "these",
+        "this",
+        "to",
         "through",
+        "under",
+        "we",
         "what",
         "when",
         "where",
         "which",
+        "who",
+        "why",
         "with",
     }
 )
-CONCEPT_GROUPS: tuple[tuple[str, frozenset[str], frozenset[str]], ...] = (
-    (
-        "regulatory authority",
-        frozenset({"fda", "regulatory", "regulator"}),
-        frozenset({"fda", "regulatory", "regulator", "enforcement"}),
-    ),
-    (
+
+# The critic compares normalized domain concepts, not literal surface forms.  These
+# aliases intentionally remain small and auditable: retrieval is advisory, so an
+# unfamiliar material concept becomes an explicit gap instead of being guessed.
+CONCEPT_ALIASES = {
+    "acted": "effectiveness",
+    "actions": "remediation",
+    "batch": "lot",
+    "batches": "lot",
+    "class": "classification",
+    "classes": "classification",
+    "classification": "classification",
+    "classify": "classification",
+    "classified": "classification",
+    "close": "termination",
+    "closed": "termination",
+    "closure": "termination",
+    "communication": "effectiveness",
+    "communications": "effectiveness",
+    "consignee": "effectiveness",
+    "consignees": "effectiveness",
+    "correct": "remediation",
+    "corrected": "remediation",
+    "correction": "remediation",
+    "corrective": "remediation",
+    "critical": "cte",
+    "cte": "cte",
+    "ctes": "cte",
+    "danger": "hazard",
+    "disposition": "remediation",
+    "disposal": "remediation",
+    "dispose": "remediation",
+    "disposed": "remediation",
+    "downstream": "effectiveness",
+    "end": "termination",
+    "ended": "termination",
+    "event": "cte",
+    "events": "cte",
+    "facility": "facility",
+    "facilities": "facility",
+    "fda": "regulator",
+    "follow": "traceability",
+    "following": "traceability",
+    "follows": "traceability",
+    "finish": "termination",
+    "finished": "termination",
+    "fix": "remediation",
+    "fixes": "remediation",
+    "handoff": "traceability",
+    "handoffs": "traceability",
+    "hazard": "hazard",
+    "hazardous": "hazard",
+    "health": "hazard",
+    "held": "inventory",
+    "inventory": "inventory",
+    "kde": "kde",
+    "kdes": "kde",
+    "location": "facility",
+    "locations": "facility",
+    "lot": "lot",
+    "lots": "lot",
+    "move": "traceability",
+    "moved": "traceability",
+    "movement": "traceability",
+    "movements": "traceability",
+    "notice": "effectiveness",
+    "notices": "effectiveness",
+    "recipient": "effectiveness",
+    "recipients": "effectiveness",
+    "recall": "recall",
+    "recalled": "recall",
+    "recalls": "recall",
+    "receive": "receiving",
+    "received": "receiving",
+    "receiving": "receiving",
+    "receipt": "receiving",
+    "delivered": "receiving",
+    "delivery": "receiving",
+    "reconcile": "reconciliation",
+    "reconciled": "reconciliation",
+    "reconciliation": "reconciliation",
+    "regulator": "regulator",
+    "regulatory": "regulator",
+    "removal": "remediation",
+    "remove": "remediation",
+    "risk": "hazard",
+    "severity": "hazard",
+    "ship": "shipping",
+    "shipped": "shipping",
+    "shipment": "shipping",
+    "shipments": "shipping",
+    "shipping": "shipping",
+    "status": "remediation",
+    "stock": "inventory",
+    "store": "facility",
+    "stores": "facility",
+    "site": "facility",
+    "sites": "facility",
+    "supplier": "facility",
+    "suppliers": "facility",
+    "terminate": "termination",
+    "terminated": "termination",
+    "terminates": "termination",
+    "termination": "termination",
+    "trace": "traceability",
+    "traceability": "traceability",
+    "traced": "traceability",
+    "tracking": "traceability",
+    "took": "receiving",
+    "units": "inventory",
+    "unaccounted": "reconciliation",
+    "upc": "product",
+    "withdrawal": "recall",
+    "withdrawn": "recall",
+}
+CONCEPT_LABELS = {
+    "classification": "health-hazard classification",
+    "cte": "critical tracking events",
+    "effectiveness": "recall effectiveness",
+    "facility": "facility/location",
+    "hazard": "health hazard",
+    "inventory": "inventory/stock",
+    "kde": "key data elements",
+    "lot": "traceability lot/batch",
+    "product": "product identity",
+    "receiving": "receiving event",
+    "recall": "recall",
+    "reconciliation": "inventory reconciliation",
+    "regulator": "regulatory authority",
+    "remediation": "correction/disposition",
+    "shipping": "shipping event",
+    "termination": "recall termination/closure",
+    "traceability": "traceability handoff",
+}
+DOMAIN_CONCEPTS = frozenset(CONCEPT_LABELS)
+REGULATORY_ROUTE_CONCEPTS = frozenset(
+    {
+        "classification",
+        "cte",
+        "effectiveness",
+        "hazard",
+        "kde",
         "recall",
-        frozenset({"recall", "withdrawal"}),
-        frozenset({"recall", "removal", "correction", "withdrawal"}),
-    ),
-    (
-        "health-hazard classification",
-        frozenset({"class", "classification", "classify", "hazard"}),
-        frozenset({"class", "classification", "hazard", "health", "consequences"}),
-    ),
-    (
-        "traceability handoffs",
-        frozenset(
-            {
-                "follow",
-                "handoff",
-                "handoffs",
-                "movement",
-                "movements",
-                "move",
-                "moved",
-                "trace",
-                "traceability",
-                "tracking",
-            }
-        ),
-        frozenset(
-            {
-                "event",
-                "movement",
-                "receiving",
-                "shipping",
-                "traceability",
-                "tracking",
-                "visibility",
-            }
-        ),
-    ),
-    (
-        "recall effectiveness",
-        frozenset(
-            {
-                "acted",
-                "communication",
-                "consignee",
-                "downstream",
-                "effectiveness",
-                "notice",
-                "recipient",
-                "recipients",
-            }
-        ),
-        frozenset(
-            {
-                "communication",
-                "consignee",
-                "effectiveness",
-                "followed",
-                "instructions",
-                "received",
-            }
-        ),
-    ),
-    (
-        "inventory reconciliation",
-        frozenset({"inventory", "reconcile", "reconciliation", "units", "unaccounted"}),
-        frozenset({"inventory", "on", "hand", "reconciliation", "units", "unaccounted"}),
-    ),
-    (
-        "facility shipment",
-        frozenset({"facility", "shipment", "store", "supplier"}),
-        frozenset({"facility", "shipment", "shipping", "store", "supplier"}),
-    ),
+        "regulator",
+        "remediation",
+        "termination",
+    }
 )
+OPERATIONAL_ROUTE_CONCEPTS = frozenset(
+    {
+        "facility",
+        "inventory",
+        "lot",
+        "product",
+        "receiving",
+        "reconciliation",
+        "shipping",
+    }
+)
+OFFICIAL_SUPPORT_CONCEPTS = REGULATORY_ROUTE_CONCEPTS - {"cte", "kde"}
+SYNTHETIC_SUPPORT_CONCEPTS = OPERATIONAL_ROUTE_CONCEPTS - {"receiving", "shipping"}
+
+
+def _domain_concepts(text: str) -> tuple[set[str], set[str]]:
+    """Return canonical concepts and raw tokens consumed by their aliases."""
+
+    raw_tokens = set(CONCEPT_TOKEN_PATTERN.findall(text.casefold()))
+    consumed = {token for token in raw_tokens if token in CONCEPT_ALIASES}
+    concepts = {CONCEPT_ALIASES[token] for token in consumed}
+    return concepts, consumed
 
 
 class RetrievalBudgets(BaseModel):
@@ -177,16 +303,195 @@ class RetrievalToolCapability(BaseModel):
     callable_identity: str = Field(min_length=1)
 
 
-SearchCallable = Callable[[str, int, tuple[str, ...]], Awaitable[dict[str, Any]]]
-
-
-@dataclass(frozen=True)
-class _RetrievalConnection:
+class _CapabilityDescriptor(NamedTuple):
     connection_id: Literal["regulatory_search", "operational_search"]
     tool_name: Literal["search_regulatory_evidence", "search_operational_evidence"]
     source: SourceRoute
-    callable_identity: str
-    search: SearchCallable
+    intent: Literal["regulatory", "operational"]
+
+
+class _StdioServerIdentity(NamedTuple):
+    connection_id: Literal["regulatory_search", "operational_search"]
+    server_name: Literal["registry", "traceability"]
+    module: Literal[
+        "recallops.mcp.recall_registry_server",
+        "recallops.mcp.traceability_server",
+    ]
+
+
+class _RetrievalConfig(NamedTuple):
+    """Deeply immutable configuration retained by a sealed retrieval adapter."""
+
+    transport: Literal["direct", "stdio"]
+    data_dir: Path
+    source_mode: str
+    corpus_sha256: str
+    python_executable: Path | None
+    cwd: Path | None
+    environment: tuple[tuple[str, str], ...]
+    servers: tuple[_StdioServerIdentity, ...]
+    capabilities: tuple[_CapabilityDescriptor, ...]
+    digest: str
+
+
+_CAPABILITY_DESCRIPTORS = (
+    _CapabilityDescriptor(
+        connection_id="regulatory_search",
+        tool_name="search_regulatory_evidence",
+        source="official",
+        intent="regulatory",
+    ),
+    _CapabilityDescriptor(
+        connection_id="operational_search",
+        tool_name="search_operational_evidence",
+        source="synthetic",
+        intent="operational",
+    ),
+)
+_STDIO_SERVER_IDENTITIES = (
+    _StdioServerIdentity(
+        connection_id="regulatory_search",
+        server_name="registry",
+        module="recallops.mcp.recall_registry_server",
+    ),
+    _StdioServerIdentity(
+        connection_id="operational_search",
+        server_name="traceability",
+        module="recallops.mcp.traceability_server",
+    ),
+)
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PYTHON_EXECUTABLE = Path(sys.executable)
+
+
+def _stdio_environment(data_dir: Path, source_mode: str) -> tuple[tuple[str, str], ...]:
+    return (
+        ("RECALLOPS_DATA_DIR", str(data_dir)),
+        ("RECALLOPS_SOURCE_MODE", source_mode),
+    )
+
+
+def _retrieval_config_digest(config: _RetrievalConfig) -> str:
+    payload = json.dumps(
+        {
+            "transport": config.transport,
+            "data_dir": str(config.data_dir),
+            "source_mode": config.source_mode,
+            "corpus_sha256": config.corpus_sha256,
+            "python_executable": (
+                str(config.python_executable) if config.python_executable is not None else None
+            ),
+            "cwd": str(config.cwd) if config.cwd is not None else None,
+            "environment": config.environment,
+            "servers": config.servers,
+            "capabilities": config.capabilities,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _build_retrieval_config(transport: Literal["direct", "stdio"]) -> _RetrievalConfig:
+    settings = get_settings()
+    corpus = KnowledgeCorpus.load(data_dir=settings.data_dir)
+    provisional = _RetrievalConfig(
+        transport=transport,
+        data_dir=settings.data_dir,
+        source_mode=settings.source_mode,
+        corpus_sha256=corpus.manifest.corpus_sha256,
+        python_executable=_PYTHON_EXECUTABLE if transport == "stdio" else None,
+        cwd=_PROJECT_ROOT if transport == "stdio" else None,
+        environment=(
+            _stdio_environment(settings.data_dir, settings.source_mode)
+            if transport == "stdio"
+            else ()
+        ),
+        servers=_STDIO_SERVER_IDENTITIES if transport == "stdio" else (),
+        capabilities=_CAPABILITY_DESCRIPTORS,
+        digest="",
+    )
+    return provisional._replace(digest=_retrieval_config_digest(provisional))
+
+
+def _is_exact_string_pairs(value: Any) -> bool:
+    return type(value) is tuple and all(
+        type(pair) is tuple and len(pair) == 2 and type(pair[0]) is str and type(pair[1]) is str
+        for pair in value
+    )
+
+
+def _validate_retrieval_config(config: _RetrievalConfig, expected_digest: str) -> None:
+    path_type = type(_PROJECT_ROOT)
+    if type(config) is not _RetrievalConfig or type(expected_digest) is not str:
+        raise ValueError("sealed retrieval configuration has an invalid identity")
+    if (
+        type(config.transport) is not str
+        or type(config.data_dir) is not path_type
+        or type(config.source_mode) is not str
+        or type(config.corpus_sha256) is not str
+        or type(config.python_executable) not in {path_type, type(None)}
+        or type(config.cwd) not in {path_type, type(None)}
+        or not _is_exact_string_pairs(config.environment)
+        or type(config.servers) is not tuple
+        or any(type(server) is not _StdioServerIdentity for server in config.servers)
+        or type(config.capabilities) is not tuple
+        or any(type(item) is not _CapabilityDescriptor for item in config.capabilities)
+        or type(config.digest) is not str
+    ):
+        raise ValueError("sealed retrieval configuration has invalid types")
+    if (
+        not config.data_dir.is_absolute()
+        or config.source_mode not in {"snapshot", "live"}
+        or re.fullmatch(r"[0-9a-f]{64}", config.corpus_sha256) is None
+        or re.fullmatch(r"[0-9a-f]{64}", config.digest) is None
+        or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+        or config.capabilities != _CAPABILITY_DESCRIPTORS
+    ):
+        raise ValueError("sealed retrieval configuration is invalid")
+    if config.transport == "direct":
+        if (
+            config.python_executable is not None
+            or config.cwd is not None
+            or config.environment != ()
+            or config.servers != ()
+        ):
+            raise ValueError("sealed retrieval configuration has an invalid direct identity")
+    elif config.transport == "stdio":
+        if (
+            config.python_executable != _PYTHON_EXECUTABLE
+            or config.cwd != _PROJECT_ROOT
+            or config.environment != _stdio_environment(config.data_dir, config.source_mode)
+            or config.servers != _STDIO_SERVER_IDENTITIES
+        ):
+            raise ValueError("sealed retrieval configuration has an invalid stdio identity")
+    else:
+        raise ValueError("sealed retrieval configuration has an invalid transport")
+    computed_digest = _retrieval_config_digest(config)
+    if not hmac.compare_digest(config.digest, computed_digest) or not hmac.compare_digest(
+        config.digest, expected_digest
+    ):
+        raise ValueError("sealed retrieval configuration digest mismatch")
+
+
+def _manifest_for_config(
+    config: _RetrievalConfig,
+    expected_digest: str,
+) -> tuple[RetrievalToolCapability, ...]:
+    _validate_retrieval_config(config, expected_digest)
+    return tuple(
+        RetrievalToolCapability(
+            name=item.tool_name,
+            connection_id=item.connection_id,
+            source=item.source,
+            callable_identity=(
+                f"{config.transport}:sealed:config-sha256={expected_digest}:"
+                f"corpus-sha256={config.corpus_sha256}:{item.connection_id}"
+            ),
+        )
+        for item in config.capabilities
+    )
 
 
 _GATEWAY_FACTORY_TOKEN = object()
@@ -195,8 +500,7 @@ _GATEWAY_FACTORY_TOKEN = object()
 class ClosedRetrievalGateway:
     """Factory-built two-capability adapter with no Operations surface."""
 
-    __slots__ = ("_connections", "tool_manifest")
-    _CONNECTION_ORDER = ("regulatory_search", "operational_search")
+    __slots__ = ("_config", "_expected_digest")
 
     def __init__(
         self,
@@ -206,176 +510,36 @@ class ClosedRetrievalGateway:
     ) -> None:
         if _factory_token is not _GATEWAY_FACTORY_TOKEN:
             raise TypeError("ClosedRetrievalGateway is factory-built; use direct() or stdio()")
-        if transport == "direct":
-            connections = ClosedRetrievalGateway._build_direct_connections()
-        elif transport == "stdio":
-            connections = ClosedRetrievalGateway._build_stdio_connections()
-        else:
+        if transport not in {"direct", "stdio"}:
             raise TypeError("closed retrieval gateway requires a fixed transport identity")
-        if tuple(item.connection_id for item in connections) != self._CONNECTION_ORDER:
-            raise ValueError("closed retrieval gateway requires its two fixed read connections")
-        if len({item.search for item in connections}) != len(connections):
-            raise ValueError("closed retrieval connections must use distinct callables")
-        self._connections = connections
-        self.tool_manifest = tuple(
-            RetrievalToolCapability(
-                name=item.tool_name,
-                connection_id=item.connection_id,
-                source=item.source,
-                callable_identity=item.callable_identity,
-            )
-            for item in connections
-        )
+        config = _build_retrieval_config(transport)
+        object.__setattr__(self, "_config", config)
+        object.__setattr__(self, "_expected_digest", config.digest)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        del name, value
+        raise AttributeError("ClosedRetrievalGateway is sealed after factory construction")
+
+    def __delattr__(self, name: str) -> None:
+        del name
+        raise AttributeError("ClosedRetrievalGateway is sealed after factory construction")
 
     @property
     def connection_ids(self) -> tuple[str, ...]:
-        return tuple(item.connection_id for item in self._connections)
+        _validate_retrieval_config(self._config, self._expected_digest)
+        return tuple(item.connection_id for item in self._config.capabilities)
+
+    @property
+    def tool_manifest(self) -> tuple[RetrievalToolCapability, ...]:
+        return _manifest_for_config(self._config, self._expected_digest)
 
     @classmethod
     def direct(cls) -> ClosedRetrievalGateway:
         return cls("direct", _factory_token=_GATEWAY_FACTORY_TOKEN)
 
-    @staticmethod
-    def _build_direct_connections() -> tuple[_RetrievalConnection, ...]:
-        settings = get_settings()
-        corpus = KnowledgeCorpus.load(data_dir=settings.data_dir)
-        index = HybridIndex(corpus.documents)
-
-        async def regulatory_search(
-            query: str, top_k: int, record_types: tuple[str, ...]
-        ) -> dict[str, Any]:
-            return index.search(
-                HybridSearchRequest(
-                    query=query,
-                    top_k=top_k,
-                    source_filter="official",
-                    intent="regulatory",
-                    record_types=record_types,
-                )
-            ).model_dump(mode="json")
-
-        async def operational_search(
-            query: str, top_k: int, record_types: tuple[str, ...]
-        ) -> dict[str, Any]:
-            return index.search(
-                HybridSearchRequest(
-                    query=query,
-                    top_k=top_k,
-                    source_filter="synthetic",
-                    intent="operational",
-                    record_types=record_types,
-                )
-            ).model_dump(mode="json")
-
-        digest = corpus.manifest.corpus_sha256
-        return (
-            _RetrievalConnection(
-                connection_id="regulatory_search",
-                tool_name="search_regulatory_evidence",
-                source="official",
-                callable_identity=f"direct:anchored:{digest}:regulatory_search",
-                search=regulatory_search,
-            ),
-            _RetrievalConnection(
-                connection_id="operational_search",
-                tool_name="search_operational_evidence",
-                source="synthetic",
-                callable_identity=f"direct:anchored:{digest}:operational_search",
-                search=operational_search,
-            ),
-        )
-
     @classmethod
     def stdio(cls) -> ClosedRetrievalGateway:
         return cls("stdio", _factory_token=_GATEWAY_FACTORY_TOKEN)
-
-    @staticmethod
-    def _build_stdio_connections() -> tuple[_RetrievalConnection, ...]:
-        settings = get_settings()
-        corpus = KnowledgeCorpus.load(data_dir=settings.data_dir)
-        project_root = Path(__file__).resolve().parents[3]
-        environment = {
-            "RECALLOPS_DATA_DIR": str(settings.data_dir),
-            "RECALLOPS_SOURCE_MODE": settings.source_mode,
-        }
-        server_modules = {
-            "registry": "recallops.mcp.recall_registry_server",
-            "traceability": "recallops.mcp.traceability_server",
-        }
-        client = MultiServerMCPClient(
-            {
-                server: {
-                    "transport": "stdio",
-                    "command": sys.executable,
-                    "args": ["-m", module],
-                    "cwd": str(project_root),
-                    "env": environment,
-                }
-                for server, module in server_modules.items()
-            }
-        )
-
-        async def call_stdio(
-            server: str,
-            tool_name: str,
-            query: str,
-            top_k: int,
-            record_types: tuple[str, ...],
-        ) -> dict[str, Any]:
-            tool = next(
-                item
-                for item in await client.get_tools(server_name=server)
-                if item.name == tool_name
-            )
-            result = await tool.ainvoke(
-                {"query": query, "top_k": top_k, "record_types": list(record_types)}
-            )
-            content = result.content if hasattr(result, "content") else result
-            if isinstance(content, list) and content and isinstance(content[0], dict):
-                content = content[0].get("text", content)
-            if isinstance(content, str):
-                return json.loads(content)
-            if not isinstance(content, dict):
-                raise ValueError("retrieval MCP returned a non-object response")
-            return content
-
-        async def regulatory_search(
-            query: str, top_k: int, record_types: tuple[str, ...]
-        ) -> dict[str, Any]:
-            return await call_stdio(
-                "registry", "search_regulatory_evidence", query, top_k, record_types
-            )
-
-        async def operational_search(
-            query: str, top_k: int, record_types: tuple[str, ...]
-        ) -> dict[str, Any]:
-            return await call_stdio(
-                "traceability", "search_operational_evidence", query, top_k, record_types
-            )
-
-        digest = corpus.manifest.corpus_sha256
-        return (
-            _RetrievalConnection(
-                connection_id="regulatory_search",
-                tool_name="search_regulatory_evidence",
-                source="official",
-                callable_identity=(
-                    f"stdio:fixed:{sys.executable}:{server_modules['registry']}:"
-                    f"{digest}:regulatory_search"
-                ),
-                search=regulatory_search,
-            ),
-            _RetrievalConnection(
-                connection_id="operational_search",
-                tool_name="search_operational_evidence",
-                source="synthetic",
-                callable_identity=(
-                    f"stdio:fixed:{sys.executable}:{server_modules['traceability']}:"
-                    f"{digest}:operational_search"
-                ),
-                search=operational_search,
-            ),
-        )
 
     async def call(
         self,
@@ -385,13 +549,58 @@ class ClosedRetrievalGateway:
         top_k: int,
         record_types: tuple[str, ...],
     ) -> dict[str, Any]:
-        connection = next(
-            (item for item in self._connections if item.connection_id == connection_id),
+        config = self._config
+        expected_digest = self._expected_digest
+        _validate_retrieval_config(config, expected_digest)
+        descriptor = next(
+            (item for item in config.capabilities if item.connection_id == connection_id),
             None,
         )
-        if connection is None:
+        if descriptor is None:
             raise ValueError(f"unknown closed retrieval connection {connection_id!r}")
-        return await connection.search(query, top_k, record_types)
+        corpus = KnowledgeCorpus.load(data_dir=config.data_dir)
+        if corpus.manifest.corpus_sha256 != config.corpus_sha256:
+            raise ValueError("sealed retrieval configuration corpus identity mismatch")
+        request = HybridSearchRequest(
+            query=query,
+            top_k=top_k,
+            source_filter=descriptor.source,
+            intent=descriptor.intent,
+            record_types=record_types,
+        )
+        if config.transport == "direct":
+            return HybridIndex(corpus.documents).search(request).model_dump(mode="json")
+
+        server = next(
+            item for item in config.servers if item.connection_id == descriptor.connection_id
+        )
+        client = MultiServerMCPClient(
+            {
+                server.server_name: {
+                    "transport": "stdio",
+                    "command": str(config.python_executable),
+                    "args": ["-m", server.module],
+                    "cwd": str(config.cwd),
+                    "env": dict(config.environment),
+                }
+            }
+        )
+        tool = next(
+            item
+            for item in await client.get_tools(server_name=server.server_name)
+            if item.name == descriptor.tool_name
+        )
+        result = await tool.ainvoke(
+            request.model_dump(mode="json", exclude={"source_filter", "intent"})
+        )
+        content = result.content if hasattr(result, "content") else result
+        if isinstance(content, list) and content and isinstance(content[0], dict):
+            content = content[0].get("text", content)
+        if isinstance(content, str):
+            return json.loads(content)
+        if not isinstance(content, dict):
+            raise ValueError("retrieval MCP returned a non-object response")
+        return content
 
 
 class RetrievalQueryTrace(BaseModel):
@@ -530,41 +739,10 @@ class AgenticRetriever:
 
     @staticmethod
     def _plan(question: str) -> tuple[RetrievalIntent, tuple[SourceRoute, ...]]:
-        folded = question.casefold()
-        regulatory = any(
-            term in folded
-            for term in (
-                "fda",
-                "class i",
-                "class ii",
-                "class iii",
-                "classification",
-                "consignee",
-                "downstream recipient",
-                "effectiveness",
-                "hazard",
-                "notice",
-                "recall",
-                "regulatory",
-                "termination",
-                "traceability rule",
-                "withdrawal",
-            )
-        )
-        operational = bool(IDENTIFIER_PATTERN.search(question)) or any(
-            term in folded
-            for term in (
-                "facility",
-                "inventory",
-                "lot",
-                "northstar",
-                "reconciliation",
-                "shipment",
-                "store",
-                "supplier",
-                "units",
-                "upc",
-            )
+        concepts, _ = _domain_concepts(question)
+        regulatory = bool(concepts & REGULATORY_ROUTE_CONCEPTS)
+        operational = bool(IDENTIFIER_PATTERN.search(question)) or bool(
+            concepts & OPERATIONAL_ROUTE_CONCEPTS
         )
         if regulatory and operational:
             return "mixed", ("official", "synthetic")
@@ -634,17 +812,37 @@ class AgenticRetriever:
                     f"Requested identifier {identifier} is not covered by retrieved evidence."
                 )
         searchable_tokens = set(CONCEPT_TOKEN_PATTERN.findall(searchable))
+        searchable_concepts, _ = _domain_concepts(searchable)
+        official_concepts, _ = _domain_concepts(
+            " ".join(
+                f"{item.document.title} {item.document.text}"
+                for item in evidence
+                if item.document.source_class == "official"
+            )
+        )
+        synthetic_concepts, _ = _domain_concepts(
+            " ".join(
+                f"{item.document.title} {item.document.text}"
+                for item in evidence
+                if item.document.source_class == "synthetic"
+            )
+        )
         question_without_identifiers = IDENTIFIER_PATTERN.sub(" ", question.casefold())
         question_tokens = set(CONCEPT_TOKEN_PATTERN.findall(question_without_identifiers))
-        consumed: set[str] = set()
-        for label, triggers, support_terms in CONCEPT_GROUPS:
-            present = question_tokens & triggers
-            if not present:
-                continue
-            consumed.update(present)
-            if not searchable_tokens & support_terms:
-                gaps.append(f"Requested concept {label!r} is not covered by retrieved evidence.")
-        for token in sorted(question_tokens - consumed - CONCEPT_STOP_WORDS):
+        question_concepts, consumed = _domain_concepts(question_without_identifiers)
+        for concept in sorted(question_concepts & DOMAIN_CONCEPTS):
+            if concept in OFFICIAL_SUPPORT_CONCEPTS and "official" in sources:
+                supporting_concepts = official_concepts
+            elif concept in SYNTHETIC_SUPPORT_CONCEPTS and "synthetic" in sources:
+                supporting_concepts = synthetic_concepts
+            else:
+                supporting_concepts = searchable_concepts
+            if concept not in supporting_concepts:
+                gaps.append(
+                    f"Requested concept {CONCEPT_LABELS[concept]!r} is not covered by "
+                    "retrieved evidence."
+                )
+        for token in sorted(question_tokens - consumed - QUERY_GLUE_WORDS):
             if len(token) < 4 or token in searchable_tokens:
                 continue
             gaps.append(f"Requested concept {token!r} is not covered by retrieved evidence.")

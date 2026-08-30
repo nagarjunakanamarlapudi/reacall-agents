@@ -90,36 +90,84 @@ def test_closed_direct_gateway_has_only_two_manifest_bound_read_connections() ->
 
 
 def test_even_private_constructor_details_cannot_install_caller_executable_hooks() -> None:
-    """Break caught: importing underscored names still installed arbitrary coroutines."""
+    """Break caught: the factory product retained a writable callable connection tuple."""
 
-    async def regulatory_hook(query: str, top_k: int, record_types: tuple[str, ...]) -> dict:
-        raise AssertionError((query, top_k, record_types))
+    hook_called = False
 
-    async def operational_hook(query: str, top_k: int, record_types: tuple[str, ...]) -> dict:
-        raise AssertionError((query, top_k, record_types))
+    async def injected_hook(query: str, top_k: int, record_types: tuple[str, ...]) -> dict:
+        nonlocal hook_called
+        del query, top_k, record_types
+        hook_called = True
+        return {}
 
-    injected = (
-        agentic_module._RetrievalConnection(
-            connection_id="regulatory_search",
-            tool_name="search_regulatory_evidence",
-            source="official",
-            callable_identity="caller:regulatory",
-            search=regulatory_hook,
-        ),
-        agentic_module._RetrievalConnection(
-            connection_id="operational_search",
-            tool_name="search_operational_evidence",
-            source="synthetic",
-            callable_identity="caller:operational",
-            search=operational_hook,
-        ),
-    )
+    class InjectedConnection:
+        connection_id = "regulatory_search"
+        search = injected_hook
 
-    with pytest.raises(TypeError, match="fixed transport"):
-        ClosedRetrievalGateway(
-            injected,
-            _factory_token=agentic_module._GATEWAY_FACTORY_TOKEN,
+    gateway = ClosedRetrievalGateway.direct()
+    with pytest.raises(AttributeError, match="sealed"):
+        gateway._config = object()
+    with pytest.raises(AttributeError, match="sealed"):
+        gateway._connections = (InjectedConnection(),)
+    with pytest.raises(AttributeError, match="sealed"):
+        gateway.call = injected_hook
+    with pytest.raises(AttributeError, match="sealed"):
+        gateway.tool_manifest = ()
+    with pytest.raises(AttributeError, match="sealed"):
+        gateway.arbitrary_hook = injected_hook
+
+    assert not hasattr(gateway, "_connections")
+    assert hook_called is False
+
+
+@pytest.mark.asyncio
+async def test_self_consistent_private_config_replacement_fails_before_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recomputed attacker digest must not replace the factory-sealed identity."""
+
+    gateway = ClosedRetrievalGateway.direct()
+    config = getattr(gateway, "_config", None)
+    assert config is not None, "factory must retain an immutable config, never callables"
+    tampered = config._replace(source_mode="live", digest="")
+    tampered = tampered._replace(digest=agentic_module._retrieval_config_digest(tampered))
+    object.__setattr__(gateway, "_config", tampered)
+    hook_called = False
+
+    def poisoned_search(self: HybridIndex, request: HybridSearchRequest) -> HybridSearchResponse:
+        nonlocal hook_called
+        del self, request
+        hook_called = True
+        raise AssertionError("search hook must not run")
+
+    monkeypatch.setattr(HybridIndex, "search", poisoned_search)
+
+    with pytest.raises(ValueError, match="sealed retrieval configuration"):
+        await gateway.call(
+            "regulatory_search",
+            "FDA recall termination",
+            top_k=4,
+            record_types=(),
         )
+    assert hook_called is False
+
+
+def test_gateway_config_and_manifest_are_deeply_immutable_and_digest_bound() -> None:
+    gateway = ClosedRetrievalGateway.stdio()
+    config = getattr(gateway, "_config", None)
+    assert config is not None
+
+    def assert_deeply_immutable(value: object) -> None:
+        assert not isinstance(value, (dict, list, set))
+        assert not callable(value)
+        if isinstance(value, tuple):
+            for item in value:
+                assert_deeply_immutable(item)
+
+    assert_deeply_immutable(config)
+    with pytest.raises(AttributeError):
+        config.digest = "0" * 64
+    assert all(config.digest in item.callable_identity for item in gateway.tool_manifest)
 
 
 @pytest.mark.asyncio
@@ -240,16 +288,92 @@ def test_loop_state_rejects_count_trace_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_partially_in_vocabulary_nonsense_reports_uncovered_concepts() -> None:
-    """Break caught: one generic recall hit marks unrelated requested concepts covered."""
+@pytest.mark.parametrize(
+    ("question", "unsupported"),
+    [
+        ("quantum recall teleportation", {"quantum", "teleportation"}),
+        ("What is the FDA recall blockchain astrology policy?", {"blockchain", "astrology"}),
+        ("Explain recall submarine propulsion requirements", {"submarine", "propulsion"}),
+    ],
+)
+async def test_partially_in_vocabulary_nonsense_reports_uncovered_concepts(
+    question: str,
+    unsupported: set[str],
+) -> None:
+    """Generic recall hits cannot make unrelated high-information concepts covered."""
 
-    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(
-        "quantum recall teleportation"
-    )
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
 
     assert result.coverage_satisfied is False
-    assert any("quantum" in gap.casefold() for gap in result.evidence_gaps)
-    assert any("teleportation" in gap.casefold() for gap in result.evidence_gaps)
+    gaps = " ".join(result.evidence_gaps).casefold()
+    assert all(item in gaps for item in unsupported)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "expected_intent", "expected_citation"),
+    [
+        (
+            "When may FDA terminate a recall after correction and disposition?",
+            "regulatory",
+            "FDA-RECALL-EFFECTIVENESS",
+        ),
+        (
+            "When can FDA close a recall after corrective actions and product disposition?",
+            "regulatory",
+            "FDA-RECALL-EFFECTIVENESS",
+        ),
+        (
+            "Which locations received batch LOT-BG-042-03?",
+            "operational",
+            "NORTHSTAR-LOTS-LOT-BG-042-03",
+        ),
+        (
+            "What sites took delivery of batch LOT-BG-042-03?",
+            "operational",
+            "NORTHSTAR-LOTS-LOT-BG-042-03",
+        ),
+        (
+            "How do shipping and receiving critical tracking events follow a lot?",
+            "mixed",
+            "FDA-TRACEABILITY-CONCEPTS",
+        ),
+        (
+            "What health danger determines the recall class?",
+            "regulatory",
+            "FDA-RECALL-CLASSIFICATION",
+        ),
+        (
+            "Where is recalled stock held at STORE-16?",
+            "mixed",
+            "NORTHSTAR-FACILITIES-STORE-16",
+        ),
+    ],
+)
+async def test_normalized_domain_paraphrase_families_are_covered(
+    question: str,
+    expected_intent: str,
+    expected_citation: str,
+) -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+
+    assert result.intent == expected_intent
+    assert result.coverage_satisfied is True, result.evidence_gaps
+    assert expected_citation in {item.citation_id for item in result.citations}
+
+
+@pytest.mark.asyncio
+async def test_mixed_hazard_batch_facility_question_requires_both_source_families() -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(
+        "What FDA health-risk class applies to batch LOT-BG-042-03, and which facilities received it?"
+    )
+
+    assert result.intent == "mixed"
+    assert result.coverage_satisfied is True, result.evidence_gaps
+    assert {item.document.source_class for item in result.evidence} == {
+        "official",
+        "synthetic",
+    }
 
 
 @pytest.mark.asyncio
