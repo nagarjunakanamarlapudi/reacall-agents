@@ -1,13 +1,20 @@
-"""Approval-gated simulated writes with versioning and idempotent audit receipts."""
+"""Transactional SQLite-backed, approval-gated simulated operations."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from recallops.config import get_settings
 from recallops.models import ApprovalDecision, AuditReceipt, RecallCaseState
+from recallops.services.traceability import TraceabilityService
 
 
 class ApprovalRequiredError(PermissionError):
@@ -22,87 +29,190 @@ class ClosureBlockedError(ValueError):
     pass
 
 
+class IdempotencyConflictError(ValueError):
+    pass
+
+
+class OperationStoreError(RuntimeError):
+    pass
+
+
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
 class OperationsService:
+    """Every mutation is one SQLite IMMEDIATE transaction with a CAS version check."""
+
     def __init__(self, storage_path: Path | None = None) -> None:
-        self.storage_path = storage_path
-        self.cases: dict[str, RecallCaseState] = {}
-        self.receipts: dict[str, AuditReceipt] = {}
-        if storage_path and storage_path.exists():
-            stored = json.loads(storage_path.read_text())
-            self.cases = {
-                case_id: RecallCaseState.model_validate(case)
-                for case_id, case in stored.get("cases", {}).items()
-            }
-            self.receipts = {
-                key: AuditReceipt.model_validate(receipt)
-                for key, receipt in stored.get("receipts", {}).items()
-            }
+        self.storage_path = storage_path or get_settings().operations_db_path
+        try:
+            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._connection() as connection:
+                connection.executescript("""
+                    CREATE TABLE IF NOT EXISTS cases (
+                      case_id TEXT PRIMARY KEY, version INTEGER NOT NULL, state_json TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS receipts (
+                      receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+                      case_id TEXT NOT NULL REFERENCES cases(case_id), action_type TEXT NOT NULL,
+                      expected_version INTEGER NOT NULL, request_hash TEXT NOT NULL, receipt_json TEXT NOT NULL,
+                      UNIQUE(case_id, action_type, idempotency_key));
+                    CREATE TABLE IF NOT EXISTS acknowledgements (
+                      case_id TEXT NOT NULL REFERENCES cases(case_id), facility_id TEXT NOT NULL,
+                      acknowledged INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(case_id, facility_id));
+                    CREATE TABLE IF NOT EXISTS tasks (
+                      case_id TEXT NOT NULL REFERENCES cases(case_id), facility_id TEXT NOT NULL,
+                      status TEXT NOT NULL, PRIMARY KEY(case_id, facility_id));
+                """)
+        except sqlite3.Error as error:
+            raise OperationStoreError(f"unable to initialize operation store: {error}") from error
 
-    def _persist(self) -> None:
-        if self.storage_path is None:
-            return
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.storage_path.write_text(
-            json.dumps(
-                {
-                    "cases": {
-                        case_id: case.model_dump(mode="json")
-                        for case_id, case in self.cases.items()
-                    },
-                    "receipts": {
-                        key: receipt.model_dump(mode="json")
-                        for key, receipt in self.receipts.items()
-                    },
-                },
-                sort_keys=True,
-            )
-        )
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.storage_path, timeout=5, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute("PRAGMA foreign_keys=ON")
+            yield connection
+        finally:
+            connection.close()
 
-    def _require_approval(self, approval: ApprovalDecision) -> None:
-        if approval.decision != "approve":
-            raise ApprovalRequiredError("simulated writes require an explicit approve decision")
+    def _approval(self, approval: ApprovalDecision, key: str) -> None:
+        if (
+            approval.decision != "approve"
+            or not approval.actor.strip()
+            or not approval.justification.strip()
+        ):
+            raise ApprovalRequiredError("writes require approved, nonblank actor and justification")
+        if not key or not key.strip():
+            raise IdempotencyConflictError("idempotency key must be nonblank")
 
-    def _write(
+    def _request_hash(
+        self, case_id: str, action: str, expected: int, details: dict[str, Any]
+    ) -> str:
+        return hashlib.sha256(
+            _canonical(
+                {"case_id": case_id, "action": action, "expected": expected, "details": details}
+            ).encode()
+        ).hexdigest()
+
+    def get_case(self, case_id: str) -> RecallCaseState | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT state_json FROM cases WHERE case_id=?", (case_id,)
+            ).fetchone()
+        return RecallCaseState.model_validate_json(row["state_json"]) if row else None
+
+    @property
+    def cases(self) -> dict[str, RecallCaseState]:
+        with self._connection() as conn:
+            rows = conn.execute("SELECT case_id, state_json FROM cases").fetchall()
+        return {
+            row["case_id"]: RecallCaseState.model_validate_json(row["state_json"]) for row in rows
+        }
+
+    def _replay_or_conflict(
+        self, conn: sqlite3.Connection, key: str, request_hash: str
+    ) -> AuditReceipt | None:
+        row = conn.execute(
+            "SELECT request_hash, receipt_json FROM receipts WHERE idempotency_key=?", (key,)
+        ).fetchone()
+        if not row:
+            return None
+        if row["request_hash"] != request_hash:
+            raise IdempotencyConflictError("idempotency key is bound to a different request")
+        return AuditReceipt.model_validate_json(row["receipt_json"])
+
+    def _mutate(
         self,
         *,
         case_id: str,
-        action_type: str,
+        action: str,
         approval: ApprovalDecision,
-        expected_case_version: int,
-        idempotency_key: str,
-        details: dict[str, object],
+        expected: int,
+        key: str,
+        details: dict[str, Any],
+        transform: Any | None = None,
     ) -> AuditReceipt:
-        self._require_approval(approval)
-        existing = self.receipts.get(idempotency_key)
-        if existing:
-            return existing
-        case = self.cases.get(case_id)
-        if case is None:
-            raise KeyError(f"unknown case {case_id}")
-        if case.case_version != expected_case_version:
-            raise StaleCaseVersionError(
-                f"expected version {expected_case_version}, current version is {case.case_version}"
-            )
-        receipt = AuditReceipt(
-            receipt_id=str(uuid5(NAMESPACE_URL, f"{case_id}:{action_type}:{idempotency_key}")),
-            case_id=case_id,
-            action_type=action_type,
-            actor=approval.actor,
-            justification=approval.justification,
-            idempotency_key=idempotency_key,
-            case_version=case.case_version + 1,
-            status="simulated",
-            details=details,
-        )
-        self.receipts[idempotency_key] = receipt
-        self.cases[case_id] = case.model_copy(
-            update={
-                "case_version": receipt.case_version,
-                "write_receipts": [*case.write_receipts, receipt],
-            }
-        )
-        self._persist()
-        return receipt
+        self._approval(approval, key)
+        request_hash = self._request_hash(case_id, action, expected, details)
+        try:
+            with self._connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._replay_or_conflict(conn, key, request_hash)
+                if replay:
+                    conn.execute("COMMIT")
+                    return replay
+                row = conn.execute(
+                    "SELECT version, state_json FROM cases WHERE case_id=?", (case_id,)
+                ).fetchone()
+                if not row:
+                    raise KeyError(f"unknown case {case_id}")
+                if row["version"] != expected:
+                    raise StaleCaseVersionError(
+                        f"expected version {expected}, current version is {row['version']}"
+                    )
+                state = RecallCaseState.model_validate_json(row["state_json"])
+                if transform:
+                    state = transform(state)
+                receipt = AuditReceipt(
+                    receipt_id=str(uuid5(NAMESPACE_URL, f"{case_id}:{action}:{key}")),
+                    case_id=case_id,
+                    action_type=action,
+                    actor=approval.actor,
+                    justification=approval.justification,
+                    idempotency_key=key,
+                    case_version=expected + 1,
+                    status="simulated",
+                    details=details,
+                )
+                next_state = state.model_copy(
+                    update={
+                        "case_version": expected + 1,
+                        "write_receipts": [*state.write_receipts, receipt],
+                    }
+                )
+                updated = conn.execute(
+                    "UPDATE cases SET version=?, state_json=? WHERE case_id=? AND version=?",
+                    (expected + 1, next_state.model_dump_json(), case_id, expected),
+                )
+                if updated.rowcount != 1:
+                    raise StaleCaseVersionError("compare-and-swap lost concurrent update")
+                conn.execute(
+                    "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt.receipt_id,
+                        key,
+                        case_id,
+                        action,
+                        expected,
+                        request_hash,
+                        receipt.model_dump_json(),
+                    ),
+                )
+                if action == "create_facility_tasks":
+                    for facility_id in details["facility_ids"]:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO tasks VALUES (?, ?, ?)",
+                            (case_id, facility_id, "pending"),
+                        )
+                        conn.execute(
+                            "INSERT OR REPLACE INTO acknowledgements VALUES (?, ?, ?)",
+                            (case_id, facility_id, 0),
+                        )
+                if action == "record_acknowledgment":
+                    conn.execute(
+                        "INSERT OR REPLACE INTO acknowledgements VALUES (?, ?, ?)",
+                        (case_id, details["facility_id"], 1),
+                    )
+                conn.execute("COMMIT")
+                return receipt
+        except (ApprovalRequiredError, StaleCaseVersionError, IdempotencyConflictError, KeyError):
+            raise
+        except sqlite3.Error as error:
+            raise OperationStoreError(f"operation transaction failed: {error}") from error
 
     def create_case(
         self,
@@ -114,26 +224,65 @@ class OperationsService:
         idempotency_key: str,
         question: str = "",
     ) -> AuditReceipt:
-        self._require_approval(approval)
-        existing = self.receipts.get(idempotency_key)
-        if existing:
-            return existing
-        if expected_case_version != 0:
-            raise StaleCaseVersionError("new cases must use expected version 0")
-        if case_id in self.cases:
-            raise ValueError(f"case {case_id} already exists")
-        case = RecallCaseState(
-            case_id=case_id, thread_id=case_id, recall_number=recall_number, question=question
-        )
-        self.cases[case_id] = case
-        return self._write(
-            case_id=case_id,
-            action_type="create_case",
-            approval=approval,
-            expected_case_version=0,
-            idempotency_key=idempotency_key,
-            details={"recall_number": recall_number},
-        )
+        self._approval(approval, idempotency_key)
+        details = {"recall_number": recall_number, "question": question}
+        request_hash = self._request_hash(case_id, "create_case", expected_case_version, details)
+        try:
+            with self._connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                replay = self._replay_or_conflict(conn, idempotency_key, request_hash)
+                if replay:
+                    conn.execute("COMMIT")
+                    return replay
+                if expected_case_version != 0:
+                    raise StaleCaseVersionError("new cases require expected version 0")
+                traceability = TraceabilityService()
+                reconciliation = [traceability.reconcile_units("LOT-EXACT-170")]
+                state = RecallCaseState(
+                    case_id=case_id,
+                    thread_id=case_id,
+                    recall_number=recall_number,
+                    question=question,
+                    reconciliation=reconciliation,
+                    acknowledgements={"DC-NORTH": False},
+                )
+                receipt = AuditReceipt(
+                    receipt_id=str(
+                        uuid5(NAMESPACE_URL, f"{case_id}:create_case:{idempotency_key}")
+                    ),
+                    case_id=case_id,
+                    action_type="create_case",
+                    actor=approval.actor,
+                    justification=approval.justification,
+                    idempotency_key=idempotency_key,
+                    case_version=1,
+                    status="simulated",
+                    details=details,
+                )
+                state = state.model_copy(update={"case_version": 1, "write_receipts": [receipt]})
+                conn.execute(
+                    "INSERT INTO cases VALUES (?, ?, ?)", (case_id, 1, state.model_dump_json())
+                )
+                conn.execute(
+                    "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt.receipt_id,
+                        idempotency_key,
+                        case_id,
+                        "create_case",
+                        0,
+                        request_hash,
+                        receipt.model_dump_json(),
+                    ),
+                )
+                conn.execute("COMMIT")
+                return receipt
+        except (ApprovalRequiredError, StaleCaseVersionError, IdempotencyConflictError):
+            raise
+        except sqlite3.IntegrityError as error:
+            raise OperationStoreError(f"case creation failed: {error}") from error
+        except sqlite3.Error as error:
+            raise OperationStoreError(f"operation transaction failed: {error}") from error
 
     def apply_inventory_hold(
         self,
@@ -144,12 +293,12 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        return self._write(
+        return self._mutate(
             case_id=case_id,
-            action_type="apply_inventory_hold",
+            action="apply_inventory_hold",
             approval=approval,
-            expected_case_version=expected_case_version,
-            idempotency_key=idempotency_key,
+            expected=expected_case_version,
+            key=idempotency_key,
             details={"lot_ids": lot_ids},
         )
 
@@ -162,13 +311,24 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        return self._write(
+        def transform(state: RecallCaseState) -> RecallCaseState:
+            return state.model_copy(
+                update={
+                    "acknowledgements": {
+                        **state.acknowledgements,
+                        **{facility: False for facility in facility_ids},
+                    }
+                }
+            )
+
+        return self._mutate(
             case_id=case_id,
-            action_type="create_facility_tasks",
+            action="create_facility_tasks",
             approval=approval,
-            expected_case_version=expected_case_version,
-            idempotency_key=idempotency_key,
+            expected=expected_case_version,
+            key=idempotency_key,
             details={"facility_ids": facility_ids},
+            transform=transform,
         )
 
     def record_acknowledgment(
@@ -180,20 +340,17 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        receipt = self._write(
+        return self._mutate(
             case_id=case_id,
-            action_type="record_acknowledgment",
+            action="record_acknowledgment",
             approval=approval,
-            expected_case_version=expected_case_version,
-            idempotency_key=idempotency_key,
+            expected=expected_case_version,
+            key=idempotency_key,
             details={"facility_id": facility_id},
+            transform=lambda s: s.model_copy(
+                update={"acknowledgements": {**s.acknowledgements, facility_id: True}}
+            ),
         )
-        case = self.cases[case_id]
-        self.cases[case_id] = case.model_copy(
-            update={"acknowledgements": {**case.acknowledgements, facility_id: True}}
-        )
-        self._persist()
-        return receipt
 
     def record_disposition(
         self,
@@ -205,13 +362,27 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        return self._write(
+        def transform(state: RecallCaseState) -> RecallCaseState:
+            reconciliations = []
+            for item in state.reconciliation:
+                if item.lot_id == lot_id and disposition == "dispose_unaccounted":
+                    reconciliations.append(
+                        item.model_copy(
+                            update={"disposed": item.disposed + item.unaccounted, "unaccounted": 0}
+                        )
+                    )
+                else:
+                    reconciliations.append(item)
+            return state.model_copy(update={"reconciliation": reconciliations})
+
+        return self._mutate(
             case_id=case_id,
-            action_type="record_disposition",
+            action="record_disposition",
             approval=approval,
-            expected_case_version=expected_case_version,
-            idempotency_key=idempotency_key,
+            expected=expected_case_version,
+            key=idempotency_key,
             details={"lot_id": lot_id, "disposition": disposition},
+            transform=transform,
         )
 
     def close_case(
@@ -222,22 +393,28 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        case = self.cases.get(case_id)
-        if case is None:
+        state = self.get_case(case_id)
+        if state is None:
             raise KeyError(f"unknown case {case_id}")
-        if any(item.unaccounted != 0 for item in case.reconciliation):
+        if not state.reconciliation:
+            raise ClosureBlockedError("closure blocked: reconciliation has not been verified")
+        if any(item.unaccounted != 0 for item in state.reconciliation):
             raise ClosureBlockedError("closure blocked: unaccounted units remain")
-        if any(not acknowledged for acknowledged in case.acknowledgements.values()):
+        if not state.acknowledgements or any(
+            not value for value in state.acknowledgements.values()
+        ):
             raise ClosureBlockedError("closure blocked: facility acknowledgement remains")
-        receipt = self._write(
+        if (
+            any(item.get("classification") == "ambiguous" for item in state.candidate_lots)
+            or state.evidence_gaps
+        ):
+            raise ClosureBlockedError("closure blocked: unresolved evidence remains")
+        return self._mutate(
             case_id=case_id,
-            action_type="close_case",
+            action="close_case",
             approval=approval,
-            expected_case_version=expected_case_version,
-            idempotency_key=idempotency_key,
+            expected=expected_case_version,
+            key=idempotency_key,
             details={"closed_at": datetime.now(UTC).isoformat()},
+            transform=lambda s: s.model_copy(update={"status": "closed"}),
         )
-        latest = self.cases[case_id]
-        self.cases[case_id] = latest.model_copy(update={"status": "closed"})
-        self._persist()
-        return receipt

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Any
+from typing import Any, Protocol
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -12,6 +12,23 @@ from recallops.models import ApprovalDecision, RecallPredicate
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
+
+
+class Gateway(Protocol):
+    """Async JSON-compatible contract shared by direct and stdio adapters."""
+
+    async def search_recalls(self, query: str) -> list[dict[str, Any]]: ...
+    async def get_recall(self, recall_number: str) -> dict[str, Any] | None: ...
+    async def match_lots(self, predicate: RecallPredicate) -> list[dict[str, Any]]: ...
+    async def create_case(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
+def _json(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, list):
+        return [_json(item) for item in value]
+    return value
 
 
 class DirectGateway:
@@ -26,10 +43,10 @@ class DirectGateway:
         self.operations = operations or OperationsService()
 
     async def search_recalls(self, query: str):
-        return self.registry.search_recalls(query)
+        return _json(self.registry.search_recalls(query))
 
     async def get_recall(self, recall_number: str):
-        return self.registry.get_recall(recall_number)
+        return _json(self.registry.get_recall(recall_number))
 
     async def get_product_metadata(self, upc: str):
         return self.registry.get_product_metadata(upc)
@@ -53,13 +70,13 @@ class DirectGateway:
         return self.traceability.get_sales(lot_id)
 
     async def reconcile_units(self, lot_id: str):
-        return self.traceability.reconcile_units(lot_id)
+        return _json(self.traceability.reconcile_units(lot_id))
 
     async def create_case(self, **kwargs: Any):
-        return self.operations.create_case(**kwargs)
+        return _json(self.operations.create_case(**kwargs))
 
     async def apply_inventory_hold(self, **kwargs: Any):
-        return self.operations.apply_inventory_hold(**kwargs)
+        return _json(self.operations.apply_inventory_hold(**kwargs))
 
     async def create_facility_tasks(self, **kwargs: Any):
         return self.operations.create_facility_tasks(**kwargs)

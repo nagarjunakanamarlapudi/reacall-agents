@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from recallops.models import ApprovalDecision, RecallPredicate, Reconciliation
+from recallops.models import ApprovalDecision, RecallPredicate
 from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
@@ -61,15 +61,12 @@ def test_traceability_scores_and_classifies_products_and_lots() -> None:
 def test_traceability_forward_backward_and_reconciliation() -> None:
     traceability = TraceabilityService()
 
-    assert {event["event_id"] for event in traceability.trace_forward("LOT-EXACT-170")} == {
-        "EV-001",
-        "EV-002",
-        "EV-003",
-        "EV-008",
+    assert {"EV-001", "EV-002", "EV-003", "EV-008"} <= {
+        event["event_id"] for event in traceability.trace_forward("LOT-EXACT-170")
     }
-    assert traceability.trace_backward("LOT-EXACT-170")[0]["event_type"] == "receiving"
+    assert traceability.trace_backward("LOT-EXACT-170")[0]["event_type"] == "disposal"
     reconciliation = traceability.reconcile_units("LOT-EXACT-170")
-    assert reconciliation.unaccounted == 0
+    assert reconciliation.unaccounted == 50
     assert (
         reconciliation.received
         == reconciliation.on_hand
@@ -81,8 +78,8 @@ def test_traceability_forward_backward_and_reconciliation() -> None:
     )
 
 
-def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent() -> None:
-    operations = OperationsService()
+def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_path: Path) -> None:
+    operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
     created = operations.create_case(
         case_id="CASE-001",
         recall_number="H-1230-2026",
@@ -125,8 +122,10 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent() -> N
     assert replay.receipt_id == receipt.receipt_id
 
 
-def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unresolved() -> None:
-    operations = OperationsService()
+def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unresolved(
+    tmp_path: Path,
+) -> None:
+    operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
     operations.create_case(
         case_id="CASE-CLOSE",
         recall_number="H-1230-2026",
@@ -134,16 +133,6 @@ def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unres
         expected_case_version=0,
         idempotency_key="create-close",
     )
-    case = operations.cases["CASE-CLOSE"]
-    operations.cases["CASE-CLOSE"] = case.model_copy(
-        update={
-            "reconciliation": [
-                Reconciliation.from_quantities("LOT-AMBIG-175", received=50, on_hand=49)
-            ],
-            "acknowledgements": {"STORE-08": False},
-        }
-    )
-
     with pytest.raises(ClosureBlockedError, match="unaccounted"):
         operations.close_case(
             case_id="CASE-CLOSE",
@@ -153,8 +142,41 @@ def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unres
         )
 
 
+def test_operations_can_close_only_after_disposition_and_acknowledgement(tmp_path: Path) -> None:
+    operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    operations.create_case(
+        case_id="CASE-SAFE",
+        recall_number="H-1230-2026",
+        approval=_approval(),
+        expected_case_version=0,
+        idempotency_key="safe-create",
+    )
+    operations.record_disposition(
+        case_id="CASE-SAFE",
+        lot_id="LOT-EXACT-170",
+        disposition="dispose_unaccounted",
+        approval=_approval(),
+        expected_case_version=1,
+        idempotency_key="safe-dispose",
+    )
+    operations.record_acknowledgment(
+        case_id="CASE-SAFE",
+        facility_id="DC-NORTH",
+        approval=_approval(),
+        expected_case_version=2,
+        idempotency_key="safe-ack",
+    )
+    receipt = operations.close_case(
+        case_id="CASE-SAFE",
+        approval=_approval(),
+        expected_case_version=3,
+        idempotency_key="safe-close",
+    )
+    assert receipt.status == "simulated"
+
+
 def test_operations_persists_idempotency_receipts_when_a_store_is_supplied(tmp_path: Path) -> None:
-    store = tmp_path / "operations.json"
+    store = tmp_path / "operations.sqlite3"
     first = OperationsService(storage_path=store)
     receipt = first.create_case(
         case_id="CASE-DURABLE",

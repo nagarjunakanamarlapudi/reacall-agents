@@ -1,4 +1,7 @@
+from copy import deepcopy
 from pathlib import Path
+
+import pytest
 
 from recallops.data.generator import generate_demo_dataset
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot, validate_manifest
@@ -40,3 +43,24 @@ def test_demo_generation_is_deterministic_and_preserves_quantity_fixture(tmp_pat
         exact_lot[key]
         for key in ("on_hand", "quarantined", "sold", "returned", "disposed", "unaccounted")
     )
+
+
+@pytest.mark.parametrize(
+    ("collection", "field", "value"),
+    [
+        ("products", "origin", "bad"),
+        ("lots", "product_id", "missing"),
+        ("facilities", "facility_id", "DC-SOUTH"),
+        ("events", "lot_id", "missing"),
+        ("inventory_positions", "on_hand", -1),
+        ("supplier_shipments", "lot_id", "missing"),
+        ("facility_acknowledgements", "acknowledged", "yes"),
+    ],
+)
+def test_manifest_validation_rejects_tampered_record_classes(
+    collection: str, field: str, value: object
+) -> None:
+    dataset = deepcopy(load_demo_dataset())
+    dataset.pop("manifest")
+    dataset[collection][0][field] = value
+    assert validate_manifest(dataset)

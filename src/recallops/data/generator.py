@@ -32,12 +32,12 @@ def _dataset(seed: int) -> dict[str, Any]:
         {
             "product_id": "P-PROBABLE",
             "name": "Northstar Farm Fresh Large Eggs 18 ct",
-            "upc": "092825095569",
+            "upc": "011110609039",
         },
         {
             "product_id": "P-NEAR",
             "name": "Northstar Cage Free Large Eggs 12 ct",
-            "upc": "099999999991",
+            "upc": "011110609038",
         },
         {
             "product_id": "P-CONTROL",
@@ -55,10 +55,10 @@ def _dataset(seed: int) -> dict[str, Any]:
             "received_units": 1200,
             "on_hand": 300,
             "quarantined": 200,
-            "sold": 600,
+            "sold": 550,
             "returned": 20,
             "disposed": 80,
-            "unaccounted": 0,
+            "unaccounted": 50,
         },
         {
             "lot_id": "LOT-PROBABLE-160",
@@ -132,9 +132,12 @@ def _dataset(seed: int) -> dict[str, Any]:
         },
     ]
     facilities = [
-        {"facility_id": "DC-NORTH", "kind": "distribution_center"},
-        {"facility_id": "DC-SOUTH", "kind": "distribution_center"},
-        *({"facility_id": f"STORE-{number:02}", "kind": "store"} for number in range(1, 9)),
+        {"facility_id": "DC-NORTH", "kind": "distribution_center", "origin": ORIGIN},
+        {"facility_id": "DC-SOUTH", "kind": "distribution_center", "origin": ORIGIN},
+        *(
+            {"facility_id": f"STORE-{number:02}", "kind": "store", "origin": ORIGIN}
+            for number in range(1, 9)
+        ),
     ]
     events = [
         {
@@ -198,6 +201,40 @@ def _dataset(seed: int) -> dict[str, Any]:
             "to_facility": "DC-NORTH",
         },
     ]
+    # Reconciliation derives from these immutable event and inventory records, not lot aggregates.
+    for lot in lots:
+        if not any(
+            event["lot_id"] == lot["lot_id"] and event["event_type"] == "receiving"
+            for event in events
+        ):
+            events.append(
+                {
+                    "event_id": f"EV-R-{lot['lot_id']}",
+                    "lot_id": lot["lot_id"],
+                    "event_type": "receiving",
+                    "quantity": lot["received_units"],
+                    "to_facility": "DC-NORTH",
+                }
+            )
+        for event_type, field in (
+            ("sale", "sold"),
+            ("return", "returned"),
+            ("quarantine", "quarantined"),
+            ("disposal", "disposed"),
+        ):
+            if lot[field] and not any(
+                event["lot_id"] == lot["lot_id"] and event["event_type"] == event_type
+                for event in events
+            ):
+                events.append(
+                    {
+                        "event_id": f"EV-{event_type[:1].upper()}-{lot['lot_id']}",
+                        "lot_id": lot["lot_id"],
+                        "event_type": event_type,
+                        "quantity": lot[field],
+                        "from_facility": "STORE-01",
+                    }
+                )
     return {
         "dataset_id": "northstar-demo-20260830",
         "seed": seed,
@@ -208,17 +245,27 @@ def _dataset(seed: int) -> dict[str, Any]:
         "lots": [{**lot, "origin": ORIGIN} for lot in lots],
         "facilities": facilities,
         "events": [
-            {**event, "origin": ORIGIN, "occurred_at": "2026-08-01T12:00:00Z"} for event in events
+            {**event, "origin": ORIGIN, "occurred_at": f"2026-08-01T12:{index:02}:00Z"}
+            for index, event in enumerate(events)
         ],
         "inventory_positions": [
-            {"lot_id": lot["lot_id"], "facility_id": "DC-NORTH", "on_hand": lot["on_hand"]}
+            {
+                "position_id": f"INV-{lot['lot_id']}",
+                "lot_id": lot["lot_id"],
+                "facility_id": "DC-NORTH",
+                "on_hand": lot["on_hand"],
+                "origin": ORIGIN,
+            }
             for lot in lots
         ],
-        "supplier_shipments": [{"shipment_id": "SHIP-001", "lot_id": "LOT-EXACT-170"}],
+        "supplier_shipments": [
+            {"shipment_id": "SHIP-001", "lot_id": "LOT-EXACT-170", "origin": ORIGIN}
+        ],
         "facility_acknowledgements": [
             {
                 "facility_id": facility["facility_id"],
                 "acknowledged": facility["facility_id"] != "STORE-08",
+                "origin": ORIGIN,
             }
             for facility in facilities
         ],

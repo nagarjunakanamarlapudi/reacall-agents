@@ -25,10 +25,9 @@ class RecallRegistryService:
     def get_product_metadata(self, upc: str) -> dict[str, str] | None:
         record = load_recall_snapshot()
         normalized = "".join(character for character in upc if character.isdigit())
-        if normalized in "".join(
-            character
-            for character in record.payload["product_description"]
-            if character.isdigit() or character == " "
-        ):
+        haystack = "".join(
+            character for character in record.payload["product_description"] if character.isdigit()
+        )
+        if normalized in haystack:
             return {"upc": normalized, "source": "openFDA recall product description"}
         return None

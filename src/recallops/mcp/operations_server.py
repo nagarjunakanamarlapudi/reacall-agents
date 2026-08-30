@@ -3,11 +3,10 @@
 from fastmcp import FastMCP
 
 from recallops.mcp.common import approval_from_input, jsonable
-from recallops.paths import OPERATIONS_STATE_PATH
 from recallops.services.operations import OperationsService
 
 mcp = FastMCP("Recall Operations MCP", instructions="Approval-gated simulated operations only.")
-service = OperationsService(storage_path=OPERATIONS_STATE_PATH)
+service = OperationsService()
 
 
 def _approval(decision: str, actor: str, justification: str):

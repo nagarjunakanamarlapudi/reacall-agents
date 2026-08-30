@@ -41,12 +41,39 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if dataset.get("origin") != ORIGIN:
         errors.append("dataset is not labelled synthetic")
-    product_ids = {product["product_id"] for product in dataset.get("products", [])}
-    lot_ids = {lot["lot_id"] for lot in dataset.get("lots", [])}
-    facility_ids = {facility["facility_id"] for facility in dataset.get("facilities", [])}
+    required_counts = {"products": 4, "lots": 6, "facilities": 10}
+    for name, count in required_counts.items():
+        if len(dataset.get(name, [])) != count:
+            errors.append(f"unexpected {name} count")
+
+    def ids(name: str, field: str) -> set[str]:
+        values = [row.get(field) for row in dataset.get(name, [])]
+        if len(values) != len(set(values)) or any(value is None for value in values):
+            errors.append(f"duplicate or missing {name} ids")
+        return set(values)
+
+    for collection in (
+        "products",
+        "lots",
+        "facilities",
+        "events",
+        "inventory_positions",
+        "supplier_shipments",
+        "facility_acknowledgements",
+    ):
+        if any(row.get("origin") != ORIGIN for row in dataset.get(collection, [])):
+            errors.append(f"unlabelled origin in {collection}")
+    product_ids = ids("products", "product_id")
+    lot_ids = ids("lots", "lot_id")
+    facility_ids = ids("facilities", "facility_id")
+    ids("events", "event_id")
+    ids("inventory_positions", "position_id")
+    ids("supplier_shipments", "shipment_id")
     for lot in dataset.get("lots", []):
         if lot["product_id"] not in product_ids:
             errors.append(f"unknown product for {lot['lot_id']}")
+        if lot.get("received_units", 0) < 0 or lot.get("julian_date", 0) not in range(1, 367):
+            errors.append(f"invalid lot quantity/date for {lot['lot_id']}")
         expected = sum(
             lot[key]
             for key in ("on_hand", "quarantined", "sold", "returned", "disposed", "unaccounted")
@@ -59,6 +86,23 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
         for key in ("from_facility", "to_facility"):
             if event.get(key) and event[key] not in facility_ids:
                 errors.append(f"unknown facility for {event['event_id']}")
+        if event.get("quantity", -1) < 0 or not event.get("occurred_at"):
+            errors.append(f"invalid event for {event['event_id']}")
+    for row in dataset.get("inventory_positions", []):
+        if (
+            row.get("lot_id") not in lot_ids
+            or row.get("facility_id") not in facility_ids
+            or row.get("on_hand", -1) < 0
+        ):
+            errors.append("invalid inventory position")
+    for row in dataset.get("supplier_shipments", []):
+        if row.get("lot_id") not in lot_ids:
+            errors.append("invalid supplier shipment")
+    for row in dataset.get("facility_acknowledgements", []):
+        if row.get("facility_id") not in facility_ids or not isinstance(
+            row.get("acknowledged"), bool
+        ):
+            errors.append("invalid facility acknowledgement")
     return errors
 
 
