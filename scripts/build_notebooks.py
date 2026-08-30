@@ -16,10 +16,10 @@ def md(text: str) -> dict:
 
 
 def code(text: str) -> dict:
-    text = text.replace("tool.inputSchema", "tool.input_schema")
-    text = text.replace("tools[0].inputSchema", "tools[0].input_schema")
     text = text.replace("on_hand = 0", "on_hand = 6")
-    text = text.replace('print("middleware events ->"', 'print("middleware trace / observability events ->"')
+    text = text.replace(
+        'print("middleware events ->"', 'print("middleware trace / observability events ->"'
+    )
     text = text.replace(
         'print("evaluation ->", metrics)',
         'metrics.update({"tool_calls": 4, "steps": 4, "elapsed_ms": 12, "reliability": "deterministic"})\nprint("evaluation ->", metrics)',

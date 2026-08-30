@@ -3,14 +3,12 @@
 Run with: python3 -m unittest discover -s tests/docs -p 'test_*.py'
 """
 
-from pathlib import Path
 import json
 import re
 import subprocess
 import unittest
-from typing import Optional
+from pathlib import Path
 from xml.etree import ElementTree
-
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
@@ -85,12 +83,16 @@ DIAGRAM_LABELS = {
 
 
 class DocumentationContractTests(unittest.TestCase):
-    def assert_demo_artifact_contract(self, path: Path, contract: dict, text: Optional[str] = None) -> None:
+    def assert_demo_artifact_contract(
+        self, path: Path, contract: dict, text: str | None = None
+    ) -> None:
         artifact = contract["artifact_contract"][path.name]
         content = text if text is not None else path.read_text(encoding="utf-8")
         last_position = -1
         for stamp in contract["timeline"]:
-            self.assertEqual(content.count(stamp), 1, f"{path.name} must contain {stamp} exactly once")
+            self.assertEqual(
+                content.count(stamp), 1, f"{path.name} must contain {stamp} exactly once"
+            )
             position = content.index(stamp)
             self.assertGreater(position, last_position, f"{path.name} must preserve timeline order")
             last_position = position
@@ -203,7 +205,9 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertEqual(package["engines"]["node"], "24.15.0")
         self.assertEqual(package["packageManager"], "npm@11.12.1")
         self.assertEqual(package["devDependencies"]["@mermaid-js/mermaid-cli"], "11.12.0")
-        self.assertEqual(lock["packages"]["node_modules/@mermaid-js/mermaid-cli"]["version"], "11.12.0")
+        self.assertEqual(
+            lock["packages"]["node_modules/@mermaid-js/mermaid-cli"]["version"], "11.12.0"
+        )
 
     def test_submission_handout_and_ai_log_are_honest_and_presenter_ready(self) -> None:
         handout = (DOCS / "SUBMISSION_DOCUMENT.md").read_text(encoding="utf-8")
