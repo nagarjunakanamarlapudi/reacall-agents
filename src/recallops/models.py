@@ -187,5 +187,11 @@ class RecallCaseState(BaseModel):
     human_decision: ApprovalDecision | None = None
     write_receipts: list[AuditReceipt] = Field(default_factory=list)
     acknowledgements: dict[str, bool] = Field(default_factory=dict)
+    tool_trace: list[dict[str, Any]] = Field(default_factory=list)
+    node_trace: list[dict[str, Any]] = Field(default_factory=list)
     evidence_gaps: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    latency_ms: int = Field(default=0, ge=0)
+    estimated_tokens: int = Field(default=0, ge=0)
+    tool_call_count: int = Field(default=0, ge=0)
+    model_mode: str = "deterministic"
