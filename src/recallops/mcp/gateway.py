@@ -8,7 +8,15 @@ from typing import Any, Protocol
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from recallops.models import ApprovalDecision, RecallPredicate
+from recallops.models import (
+    ApprovalDecision,
+    CandidateProduct,
+    InventoryPosition,
+    LotMatch,
+    ProductMetadata,
+    RecallPredicate,
+    TraceEvent,
+)
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
@@ -19,14 +27,28 @@ class Gateway(Protocol):
 
     async def search_recalls(self, query: str) -> list[dict[str, Any]]: ...
     async def get_recall(self, recall_number: str) -> dict[str, Any] | None: ...
+    async def get_product_metadata(self, upc: str) -> dict[str, Any] | None: ...
+    async def find_candidate_products(self, predicate: RecallPredicate) -> list[dict[str, Any]]: ...
     async def match_lots(self, predicate: RecallPredicate) -> list[dict[str, Any]]: ...
+    async def trace_forward(self, lot_id: str) -> list[dict[str, Any]]: ...
+    async def trace_backward(self, lot_id: str) -> list[dict[str, Any]]: ...
+    async def get_inventory(self, lot_id: str | None = None) -> list[dict[str, Any]]: ...
+    async def get_sales(self, lot_id: str) -> list[dict[str, Any]]: ...
+    async def reconcile_units(self, lot_id: str) -> dict[str, Any]: ...
     async def create_case(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def apply_inventory_hold(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def create_facility_tasks(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def record_acknowledgment(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def record_disposition(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def close_case(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
 def _json(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
-    if isinstance(value, list):
+    if isinstance(value, dict):
+        return {key: _json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
         return [_json(item) for item in value]
     return value
 
@@ -49,25 +71,44 @@ class DirectGateway:
         return _json(self.registry.get_recall(recall_number))
 
     async def get_product_metadata(self, upc: str):
-        return self.registry.get_product_metadata(upc)
+        value = self.registry.get_product_metadata(upc)
+        return _json(ProductMetadata.model_validate(value)) if value else None
 
     async def find_candidate_products(self, predicate: RecallPredicate):
-        return self.traceability.find_candidate_products(predicate)
+        return _json(
+            [
+                CandidateProduct.model_validate(item)
+                for item in self.traceability.find_candidate_products(predicate)
+            ]
+        )
 
     async def match_lots(self, predicate: RecallPredicate):
-        return self.traceability.match_lots(predicate)
+        return _json(
+            [LotMatch.model_validate(item) for item in self.traceability.match_lots(predicate)]
+        )
 
     async def trace_forward(self, lot_id: str):
-        return self.traceability.trace_forward(lot_id)
+        return _json(
+            [TraceEvent.model_validate(item) for item in self.traceability.trace_forward(lot_id)]
+        )
 
     async def trace_backward(self, lot_id: str):
-        return self.traceability.trace_backward(lot_id)
+        return _json(
+            [TraceEvent.model_validate(item) for item in self.traceability.trace_backward(lot_id)]
+        )
 
     async def get_inventory(self, lot_id: str | None = None):
-        return self.traceability.get_inventory(lot_id)
+        return _json(
+            [
+                InventoryPosition.model_validate(item)
+                for item in self.traceability.get_inventory(lot_id)
+            ]
+        )
 
     async def get_sales(self, lot_id: str):
-        return self.traceability.get_sales(lot_id)
+        return _json(
+            [TraceEvent.model_validate(item) for item in self.traceability.get_sales(lot_id)]
+        )
 
     async def reconcile_units(self, lot_id: str):
         return _json(self.traceability.reconcile_units(lot_id))
@@ -79,16 +120,16 @@ class DirectGateway:
         return _json(self.operations.apply_inventory_hold(**kwargs))
 
     async def create_facility_tasks(self, **kwargs: Any):
-        return self.operations.create_facility_tasks(**kwargs)
+        return _json(self.operations.create_facility_tasks(**kwargs))
 
     async def record_acknowledgment(self, **kwargs: Any):
-        return self.operations.record_acknowledgment(**kwargs)
+        return _json(self.operations.record_acknowledgment(**kwargs))
 
     async def record_disposition(self, **kwargs: Any):
-        return self.operations.record_disposition(**kwargs)
+        return _json(self.operations.record_disposition(**kwargs))
 
     async def close_case(self, **kwargs: Any):
-        return self.operations.close_case(**kwargs)
+        return _json(self.operations.close_case(**kwargs))
 
 
 class StdioMCPGateway:
@@ -186,9 +227,11 @@ class StdioMCPGateway:
             "operations",
             name,
             {
-                **kwargs,
+                **_json(kwargs),
                 "decision": approval.decision,
                 "actor": approval.actor,
                 "justification": approval.justification,
+                "approved_at": approval.approved_at.isoformat(),
+                "action_ids": approval.action_ids,
             },
         )

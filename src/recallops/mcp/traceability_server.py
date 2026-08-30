@@ -2,51 +2,55 @@
 
 from fastmcp import FastMCP
 
-from recallops.mcp.common import jsonable
-from recallops.models import RecallPredicate
+from recallops.models import (
+    CandidateProduct,
+    InventoryPosition,
+    LotMatch,
+    RecallPredicate,
+    Reconciliation,
+    TraceEvent,
+)
 from recallops.services.traceability import TraceabilityService
 
 mcp = FastMCP("Traceability MCP", instructions="Read-only Northstar synthetic digital twin.")
 service = TraceabilityService()
 
 
-def _predicate(payload: dict) -> RecallPredicate:
-    return RecallPredicate.model_validate(payload)
+@mcp.tool()
+def find_candidate_products(predicate: RecallPredicate) -> list[CandidateProduct]:
+    return [
+        CandidateProduct.model_validate(item) for item in service.find_candidate_products(predicate)
+    ]
 
 
 @mcp.tool()
-def find_candidate_products(predicate: dict) -> list[dict]:
-    return service.find_candidate_products(_predicate(predicate))
+def match_lots(predicate: RecallPredicate) -> list[LotMatch]:
+    return [LotMatch.model_validate(item) for item in service.match_lots(predicate)]
 
 
 @mcp.tool()
-def match_lots(predicate: dict) -> list[dict]:
-    return service.match_lots(_predicate(predicate))
+def trace_forward(lot_id: str) -> list[TraceEvent]:
+    return [TraceEvent.model_validate(item) for item in service.trace_forward(lot_id)]
 
 
 @mcp.tool()
-def trace_forward(lot_id: str) -> list[dict]:
-    return service.trace_forward(lot_id)
+def trace_backward(lot_id: str) -> list[TraceEvent]:
+    return [TraceEvent.model_validate(item) for item in service.trace_backward(lot_id)]
 
 
 @mcp.tool()
-def trace_backward(lot_id: str) -> list[dict]:
-    return service.trace_backward(lot_id)
+def get_inventory(lot_id: str | None = None) -> list[InventoryPosition]:
+    return [InventoryPosition.model_validate(item) for item in service.get_inventory(lot_id)]
 
 
 @mcp.tool()
-def get_inventory(lot_id: str | None = None) -> list[dict]:
-    return service.get_inventory(lot_id)
+def get_sales(lot_id: str) -> list[TraceEvent]:
+    return [TraceEvent.model_validate(item) for item in service.get_sales(lot_id)]
 
 
 @mcp.tool()
-def get_sales(lot_id: str) -> list[dict]:
-    return service.get_sales(lot_id)
-
-
-@mcp.tool()
-def reconcile_units(lot_id: str) -> dict:
-    return jsonable(service.reconcile_units(lot_id))
+def reconcile_units(lot_id: str) -> Reconciliation:
+    return service.reconcile_units(lot_id)
 
 
 @mcp.resource("recallops://policy/synthetic-boundary")

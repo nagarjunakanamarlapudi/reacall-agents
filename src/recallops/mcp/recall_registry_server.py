@@ -2,7 +2,7 @@
 
 from fastmcp import FastMCP
 
-from recallops.mcp.common import jsonable
+from recallops.models import ProductMetadata, RecallRecord
 from recallops.services.recall_registry import RecallRegistryService
 
 mcp = FastMCP("Recall Registry MCP", instructions="Read-only frozen openFDA recall registry.")
@@ -10,22 +10,23 @@ service = RecallRegistryService()
 
 
 @mcp.tool()
-def search_recalls(query: str) -> list[dict]:
+def search_recalls(query: str) -> list[RecallRecord]:
     """Search the pinned official recall notice."""
-    return [jsonable(record) for record in service.search_recalls(query)]
+    return service.search_recalls(query)
 
 
 @mcp.tool()
-def get_recall(recall_number: str) -> dict | None:
+def get_recall(recall_number: str) -> RecallRecord | None:
     """Get an official frozen recall record by recall number."""
     record = service.get_recall(recall_number)
-    return jsonable(record) if record else None
+    return record
 
 
 @mcp.tool()
-def get_product_metadata(upc: str) -> dict | None:
+def get_product_metadata(upc: str) -> ProductMetadata | None:
     """Return recall-source UPC metadata when the UPC appears in the public notice."""
-    return service.get_product_metadata(upc)
+    metadata = service.get_product_metadata(upc)
+    return ProductMetadata.model_validate(metadata) if metadata else None
 
 
 @mcp.resource("recallops://policy/provenance")
