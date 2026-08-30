@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from numbers import Real
 from threading import Lock
 from typing import Any, Literal
 
@@ -32,6 +34,32 @@ class TraceEvent(BaseModel):
     duration_ms: float = Field(ge=0)
     attempt: int | None = Field(default=None, ge=1)
     attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("event_id", "operation", mode="before")
+    @classmethod
+    def identifiers_must_be_trimmed_and_nonblank(cls, value: Any) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("trace identifiers must be nonblank strings")
+        return value.strip()
+
+    @field_validator("duration_ms", mode="before")
+    @classmethod
+    def duration_must_be_strict_finite_real(cls, value: Any) -> float:
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError("duration_ms must be a finite nonnegative real number")
+        duration = float(value)
+        if not math.isfinite(duration) or duration < 0:
+            raise ValueError("duration_ms must be a finite nonnegative real number")
+        return duration
+
+    @field_validator("attempt", mode="before")
+    @classmethod
+    def attempt_must_be_strict_positive_integer(cls, value: Any) -> int | None:
+        if value is None:
+            return None
+        if type(value) is not int or value <= 0:
+            raise ValueError("attempt must be a strict positive integer")
+        return value
 
     @field_validator("timestamp")
     @classmethod

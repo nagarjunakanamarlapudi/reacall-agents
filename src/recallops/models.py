@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 PUBLIC_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
@@ -15,6 +15,25 @@ Provenance = Literal["OFFICIAL_OPENFDA_SNAPSHOT", "LIVE_OPENFDA"]
 ActionDecision = Literal["approve", "edit", "reject", "escalate"]
 MatchClassification = Literal["exact", "probable", "ambiguous", "rejected"]
 Disposition = Literal["dispose_unaccounted", "quarantined", "returned"]
+
+
+def validate_case_version(value: object, field_name: str = "case_version") -> int:
+    """Reject coercible values at every safety-critical case-version boundary."""
+
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field_name} must be a strict nonnegative integer")
+    return value
+
+
+def _validate_case_version_field(value: object) -> int:
+    return validate_case_version(value)
+
+
+CaseVersion = Annotated[
+    int,
+    BeforeValidator(_validate_case_version_field),
+    Field(ge=0),
+]
 
 
 def _compact(value: str) -> str:
@@ -229,7 +248,7 @@ class ProposedAction(BaseModel):
     target_ids: tuple[str, ...] = Field(default_factory=tuple)
     rationale: str = Field(min_length=1)
     evidence_ids: tuple[str, ...] = Field(default_factory=tuple)
-    expected_case_version: int = Field(ge=0)
+    expected_case_version: CaseVersion
 
     @field_validator("action_id", "case_id", "rationale")
     @classmethod
@@ -282,7 +301,7 @@ class ApprovalDecision(BaseModel):
     actor: str = Field(min_length=1)
     justification: str = Field(min_length=1)
     approved_at: datetime
-    approved_case_version: int = Field(ge=0)
+    approved_case_version: CaseVersion
     approved_case_id: str = Field(min_length=1)
     action_ids: tuple[str, ...] = Field(min_length=1)
     action_bindings: tuple[ApprovalBinding, ...] = Field(min_length=1)
@@ -313,7 +332,7 @@ class AuditReceipt(BaseModel):
     actor: str
     justification: str
     idempotency_key: str
-    case_version: int = Field(ge=0)
+    case_version: CaseVersion
     status: Literal["simulated", "rejected"]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     details: dict[str, Any] = Field(default_factory=dict)
@@ -324,7 +343,7 @@ class RecallCaseState(BaseModel):
     thread_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: Literal["open", "closed"] = "open"
-    case_version: int = Field(default=0, ge=0)
+    case_version: CaseVersion = 0
     recall_number: str
     question: str = ""
     source_mode: str = "snapshot"

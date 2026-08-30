@@ -8,8 +8,14 @@ from collections.abc import Collection, Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticSerializationError, to_jsonable_python
 
-from recallops.models import ApprovalDecision, ProposedAction, proposed_action_digest
+from recallops.models import (
+    ApprovalDecision,
+    ProposedAction,
+    proposed_action_digest,
+    validate_case_version,
+)
 
 MASKED_VALUE = "[MASKED]"
 PUBLIC_PROVENANCE = frozenset({"OFFICIAL_OPENFDA_SNAPSHOT", "LIVE_OPENFDA"})
@@ -138,10 +144,17 @@ class ApprovalGuard:
         proposed_action: ProposedAction,
         expected_case_version: int,
     ) -> ApprovalDecision:
-        if expected_case_version < 0:
-            raise ValueError("expected_case_version must be nonnegative")
+        validate_case_version(expected_case_version, "expected_case_version")
         if approval is None:
             raise ApprovalDeniedError("explicit human approval is required")
+        validate_case_version(
+            approval.approved_case_version,
+            "approved_case_version",
+        )
+        validate_case_version(
+            proposed_action.expected_case_version,
+            "proposed_action.expected_case_version",
+        )
         if approval.decision != "approve":
             raise ApprovalDeniedError("side effects require an explicit approve decision")
         if not approval.actor.strip() or not approval.justification.strip():
@@ -222,7 +235,13 @@ def _json_copy(value: Any, *, is_sensitive: Any) -> Any:
             if not math.isfinite(item):
                 raise ValueError("JSON numbers must be finite")
             return item
-        raise TypeError(f"unsupported JSON value: {type(item).__name__}")
+        try:
+            converted = to_jsonable_python(item)
+        except (PydanticSerializationError, TypeError, ValueError) as error:
+            raise TypeError(f"unsupported JSON value: {type(item).__name__}") from error
+        if converted is item:
+            raise TypeError(f"unsupported JSON value: {type(item).__name__}")
+        return normalize(converted)
 
     return normalize(value)
 

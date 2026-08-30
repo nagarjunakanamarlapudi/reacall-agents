@@ -426,3 +426,106 @@ async def test_direct_and_stdio_preserve_reviewed_version_for_rejection_conflict
         expected_error = IdempotencyConflictError if gateway is direct else Exception
         with pytest.raises(expected_error, match="idempotency key is bound"):
             await gateway.apply_inventory_hold(**changed_review)
+
+
+@pytest.mark.parametrize(
+    ("mutation_name", "change"),
+    [
+        ("case_id", {"case_id": "CASE-CROSS-REPLAY"}),
+        ("action_id", {"action_id": "post-review-action-id"}),
+        ("action_type", {"action_type": "create_facility_tasks"}),
+        ("target_ids", {"target_ids": ["LOT-EXACT-170"]}),
+        ("evidence_ids", {"evidence_ids": ["EV-POST-REVIEW"]}),
+        ("rationale", {"rationale": "Changed after the human reviewed it."}),
+        ("expected_case_version", {"expected_case_version": 2}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_direct_and_stdio_reject_every_post_approval_action_mutation_identically(
+    tmp_path: Path,
+    mutation_name: str,
+    change: dict,
+) -> None:
+    case_id = f"CASE-MUTATION-{mutation_name.upper()}"
+    direct_db = tmp_path / f"direct-{mutation_name}.sqlite3"
+    stdio_db = tmp_path / f"stdio-{mutation_name}.sqlite3"
+    gateways = [
+        DirectGateway(operations=OperationsService(storage_path=direct_db)),
+        StdioMCPGateway(_connections(stdio_db)),
+    ]
+    messages: list[str] = []
+
+    for gateway in gateways:
+        await gateway.create_case(**_case_kwargs(case_id))
+        reviewed = _review(case_id, "apply_inventory_hold", 1, ["LOT-PROBABLE-160"])
+        changed_action = ProposedAction.model_validate(
+            {**reviewed["proposed_action"].model_dump(mode="python"), **change}
+        )
+        with pytest.raises(Exception) as rejected:
+            await gateway.apply_inventory_hold(
+                case_id=case_id,
+                lot_ids=["LOT-PROBABLE-160"],
+                proposed_action=changed_action,
+                approval=reviewed["approval"],
+                expected_case_version=1,
+                idempotency_key=f"rejected-{mutation_name}",
+            )
+        messages.append(str(rejected.value))
+
+    assert messages[0] in messages[1]
+
+
+@pytest.mark.parametrize("gateway_kind", ["direct", "stdio"])
+@pytest.mark.asyncio
+async def test_exact_proposal_replay_is_one_receipt_but_changed_proposal_conflicts(
+    tmp_path: Path,
+    gateway_kind: str,
+) -> None:
+    case_id = f"CASE-PROPOSAL-REPLAY-{gateway_kind.upper()}"
+    database = tmp_path / f"proposal-replay-{gateway_kind}.sqlite3"
+    gateway = (
+        DirectGateway(operations=OperationsService(storage_path=database))
+        if gateway_kind == "direct"
+        else StdioMCPGateway(_connections(database))
+    )
+    await gateway.create_case(**_case_kwargs(case_id))
+    accepted = {
+        "case_id": case_id,
+        "lot_ids": ["LOT-PROBABLE-160"],
+        **_review(case_id, "apply_inventory_hold", 1, ["LOT-PROBABLE-160"]),
+        "expected_case_version": 1,
+        "idempotency_key": "proposal-replay",
+    }
+
+    first = await gateway.apply_inventory_hold(**accepted)
+    assert await gateway.apply_inventory_hold(**accepted) == first
+
+    changed_action = accepted["proposed_action"].model_copy(
+        update={"rationale": "A separately reviewed alternative rationale."}
+    )
+    changed_approval = accepted["approval"].model_copy(
+        update={
+            "action_bindings": (
+                ApprovalBinding(
+                    action_id=changed_action.action_id,
+                    action_digest=proposed_action_digest(changed_action),
+                ),
+            )
+        }
+    )
+    expected_error = IdempotencyConflictError if gateway_kind == "direct" else Exception
+    with pytest.raises(expected_error, match="idempotency key is bound"):
+        await gateway.apply_inventory_hold(
+            **{
+                **accepted,
+                "proposed_action": changed_action,
+                "approval": changed_approval,
+            }
+        )
+
+    stored = OperationsService(storage_path=database).get_case(case_id)
+    assert stored is not None
+    assert stored.case_version == 2
+    assert [receipt.action_type for receipt in stored.write_receipts].count(
+        "apply_inventory_hold"
+    ) == 1

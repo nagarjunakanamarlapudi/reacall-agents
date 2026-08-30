@@ -4,12 +4,17 @@ import pytest
 from pydantic import ValidationError
 
 from recallops.models import (
+    ApprovalBinding,
     ApprovalDecision,
+    AuditReceipt,
     Lot,
     Product,
+    ProposedAction,
+    RecallCaseState,
     RecallPredicate,
     RecallRecord,
     Reconciliation,
+    proposed_action_digest,
 )
 
 
@@ -62,6 +67,79 @@ def test_approval_decision_requires_the_reviewed_case_version() -> None:
             justification="checked evidence",
             approved_at=datetime.now(UTC),
         )
+
+
+@pytest.mark.parametrize(
+    "invalid_version",
+    [True, 1.0, "1", float("nan"), float("inf"), -1],
+)
+def test_every_case_version_contract_requires_a_strict_nonnegative_integer(
+    invalid_version: object,
+) -> None:
+    action = ProposedAction(
+        action_id="action-1",
+        action_type="apply_inventory_hold",
+        case_id="CASE-1",
+        target_ids=["LOT-1"],
+        rationale="Reviewed containment action.",
+        expected_case_version=1,
+    )
+    approval = ApprovalDecision(
+        decision="approve",
+        actor="reviewer",
+        justification="Reviewed exact action.",
+        approved_at=datetime(2026, 8, 30, tzinfo=UTC),
+        approved_case_version=1,
+        approved_case_id=action.case_id,
+        action_ids=[action.action_id],
+        action_bindings=[
+            ApprovalBinding(
+                action_id=action.action_id,
+                action_digest=proposed_action_digest(action),
+            )
+        ],
+    )
+    contracts = [
+        (
+            ProposedAction,
+            action.model_dump(mode="python"),
+            "expected_case_version",
+        ),
+        (
+            ApprovalDecision,
+            approval.model_dump(mode="python"),
+            "approved_case_version",
+        ),
+        (
+            AuditReceipt,
+            {
+                "receipt_id": "receipt-1",
+                "case_id": action.case_id,
+                "action_type": action.action_type,
+                "actor": approval.actor,
+                "justification": approval.justification,
+                "idempotency_key": "key-1",
+                "case_version": 2,
+                "status": "simulated",
+            },
+            "case_version",
+        ),
+        (
+            RecallCaseState,
+            {
+                "case_id": action.case_id,
+                "thread_id": "thread-1",
+                "recall_number": "H-1230-2026",
+                "case_version": 1,
+            },
+            "case_version",
+        ),
+    ]
+
+    for model, payload, field in contracts:
+        payload[field] = invalid_version
+        with pytest.raises(ValidationError, match=field):
+            model.model_validate(payload)
 
 
 def test_verified_reconciliation_requires_balanced_nonnegative_evidence() -> None:

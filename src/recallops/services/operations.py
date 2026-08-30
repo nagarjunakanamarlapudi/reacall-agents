@@ -20,6 +20,7 @@ from recallops.models import (
     RecallCaseState,
     Reconciliation,
     proposed_action_digest,
+    validate_case_version,
 )
 from recallops.services.traceability import TraceabilityService
 
@@ -134,6 +135,15 @@ class OperationsService:
         target_ids: list[str],
         evidence_ids: list[str] | None = None,
     ) -> None:
+        validate_case_version(expected, "expected_case_version")
+        validate_case_version(
+            approval.approved_case_version,
+            "approved_case_version",
+        )
+        validate_case_version(
+            proposed_action.expected_case_version,
+            "proposed_action.expected_case_version",
+        )
         if (
             approval.decision != "approve"
             or not approval.actor.strip()
@@ -291,6 +301,7 @@ class OperationsService:
         transform: Any | None = None,
         validator: Any | None = None,
     ) -> AuditReceipt:
+        validate_case_version(expected, "expected_case_version")
         self._validate_idempotency_key(key)
         request_hash = self._request_hash(
             case_id, action, expected, details, approval, proposed_action
@@ -413,6 +424,7 @@ class OperationsService:
         idempotency_key: str,
         question: str = "",
     ) -> AuditReceipt:
+        validate_case_version(expected_case_version, "expected_case_version")
         self._validate_idempotency_key(idempotency_key)
         required_nonempty = {
             "confirmed_lot_ids": confirmed_lot_ids,

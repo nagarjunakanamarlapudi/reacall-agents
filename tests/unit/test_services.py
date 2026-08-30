@@ -134,6 +134,85 @@ def test_operations_service_rejects_cross_case_or_mutated_reviewed_action(
         )
 
 
+@pytest.mark.parametrize(
+    "invalid_version",
+    [True, 1.0, "1", float("nan"), float("inf"), -1],
+)
+def test_operations_service_requires_strict_versions_on_create_and_mutation(
+    tmp_path: Path,
+    invalid_version: object,
+) -> None:
+    case_id = "CASE-STRICT-VERSION"
+    case_input = _case_input()
+    create_review = _review(
+        "create_case",
+        case_id,
+        0,
+        case_input["confirmed_lot_ids"],
+        evidence_ids=case_input["trace_event_ids"],
+    )
+    service = OperationsService(storage_path=tmp_path / f"strict-{type(invalid_version).__name__}")
+
+    with pytest.raises(ValueError, match="strict nonnegative integer"):
+        service.create_case(
+            case_id=case_id,
+            **case_input,
+            **create_review,
+            expected_case_version=invalid_version,
+            idempotency_key="invalid-create",
+        )
+
+    service.create_case(
+        case_id=case_id,
+        **case_input,
+        **create_review,
+        expected_case_version=0,
+        idempotency_key="valid-create",
+    )
+    with pytest.raises(ValueError, match="strict nonnegative integer"):
+        service.apply_inventory_hold(
+            case_id=case_id,
+            lot_ids=case_input["confirmed_lot_ids"],
+            **_review(
+                "apply_inventory_hold",
+                case_id,
+                1,
+                case_input["confirmed_lot_ids"],
+            ),
+            expected_case_version=invalid_version,
+            idempotency_key="invalid-mutation",
+        )
+
+
+def test_operations_service_revalidates_model_copy_version_bypasses(tmp_path: Path) -> None:
+    case_id = "CASE-COPIED-VERSION"
+    case_input = _case_input()
+    reviewed = _create_action(case_id)
+    copied_action = reviewed.model_copy(update={"expected_case_version": False})
+    copied_approval = _bound_approval(reviewed).model_copy(
+        update={
+            "approved_case_version": False,
+            "action_bindings": (
+                ApprovalBinding(
+                    action_id=copied_action.action_id,
+                    action_digest=proposed_action_digest(copied_action),
+                ),
+            ),
+        }
+    )
+    service = OperationsService(storage_path=tmp_path / "copied-version.sqlite3")
+
+    with pytest.raises(ValueError, match="approved_case_version"):
+        service.create_case(
+            case_id=case_id,
+            **case_input,
+            proposed_action=copied_action,
+            approval=copied_approval,
+            expected_case_version=0,
+            idempotency_key="copied-version",
+        )
+
+
 def test_registry_lookup_and_no_result_fallback() -> None:
     registry = RecallRegistryService()
 

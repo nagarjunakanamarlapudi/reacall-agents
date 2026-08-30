@@ -6,7 +6,7 @@ import asyncio
 import inspect
 import math
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from functools import wraps
 from numbers import Integral, Real
 from threading import Lock
@@ -51,6 +51,22 @@ def _finite_number(
         comparator = "greater than" if exclusive else "at least"
         raise ValueError(f"{name} must be a finite number {comparator} {minimum}")
     return numeric
+
+
+def _is_async_callable(operation: Callable[..., Any]) -> bool:
+    return inspect.iscoroutinefunction(operation) or inspect.iscoroutinefunction(
+        getattr(operation, "__call__", None)
+    )
+
+
+def _close_awaitable(awaitable: Any) -> None:
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+        return
+    cancel = getattr(awaitable, "cancel", None)
+    if callable(cancel):
+        cancel()
 
 
 class CallBudget:
@@ -158,7 +174,32 @@ class CircuitBreaker:
                 self._opened_at = self._clock()
             self._probe_in_progress = False
 
+    def defer_awaitable_probe(self) -> None:
+        """Release a probe until a returned awaitable actually starts executing."""
+
+        with self._lock:
+            if self._state == "half_open":
+                self._state = "open"
+                self._probe_in_progress = False
+
     def call[**P, R](self, operation: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+        if _is_async_callable(operation):
+
+            async def invoke_async_operation() -> Any:
+                self.before_call()
+                try:
+                    resolved = await operation(*args, **kwargs)
+                except Exception as error:
+                    self.record_failure(error)
+                    raise
+                except BaseException:
+                    self.record_aborted()
+                    raise
+                self.record_success()
+                return resolved
+
+            return cast(R, _DeferredCoroutine(invoke_async_operation))
+
         self.before_call()
         try:
             result = operation(*args, **kwargs)
@@ -169,8 +210,14 @@ class CircuitBreaker:
             self.record_aborted()
             raise
         if inspect.isawaitable(result):
+            self.defer_awaitable_probe()
 
             async def finish_awaitable() -> Any:
+                try:
+                    self.before_call()
+                except BaseException:
+                    _close_awaitable(result)
+                    raise
                 try:
                     resolved = await result
                 except Exception as error:
@@ -182,7 +229,13 @@ class CircuitBreaker:
                 self.record_success()
                 return resolved
 
-            return cast(R, finish_awaitable())
+            return cast(
+                R,
+                _DeferredCoroutine(
+                    finish_awaitable,
+                    close_before_start=lambda: _close_awaitable(result),
+                ),
+            )
         self.record_success()
         return result
 
@@ -203,6 +256,65 @@ class CircuitBreaker:
 
     def reset(self) -> None:
         self.record_success()
+
+
+class _DeferredCoroutine[R](Coroutine[Any, Any, R]):
+    """Coroutine that performs no acquisition until its first execution step."""
+
+    def __init__(
+        self,
+        runner_factory: Callable[[], Coroutine[Any, Any, R]],
+        *,
+        close_before_start: Callable[[], None] | None = None,
+    ) -> None:
+        self._runner_factory = runner_factory
+        self._close_before_start = close_before_start
+        self._runner: Coroutine[Any, Any, R] | None = None
+        self._closed = False
+
+    def __await__(self) -> _DeferredCoroutine[R]:
+        return self
+
+    def __iter__(self) -> _DeferredCoroutine[R]:
+        return self
+
+    def __next__(self) -> Any:
+        return self.send(None)
+
+    def _ensure_runner(self) -> Coroutine[Any, Any, R]:
+        if self._closed:
+            raise RuntimeError("cannot reuse already awaited coroutine")
+        if self._runner is None:
+            self._runner = self._runner_factory()
+        return self._runner
+
+    def send(self, value: Any) -> Any:
+        return self._ensure_runner().send(value)
+
+    def throw(self, typ: Any, val: Any = None, tb: Any = None) -> Any:
+        if self._runner is not None:
+            return self._runner.throw(typ, val, tb)
+        self.close()
+        if isinstance(typ, BaseException):
+            error = typ
+        elif isinstance(val, BaseException):
+            error = val
+        elif val is None:
+            error = typ()
+        else:
+            error = typ(val)
+        if tb is not None:
+            raise error.with_traceback(tb)
+        raise error
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._runner is not None:
+            self._runner.close()
+        elif self._close_before_start is not None:
+            self._close_before_start()
 
 
 def with_retry[**P, R](
@@ -250,11 +362,7 @@ def with_retry[**P, R](
                 attributes=attributes,
             )
 
-    is_async_callable = inspect.iscoroutinefunction(operation) or inspect.iscoroutinefunction(
-        getattr(operation, "__call__", None)
-    )
-
-    if is_async_callable:
+    if _is_async_callable(operation):
 
         @wraps(operation)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
@@ -397,16 +505,18 @@ def with_retry[**P, R](
                 raise
             else:
                 if inspect.isawaitable(result):
+                    if breaker is not None:
+                        breaker.defer_awaitable_probe()
 
                     async def continue_as_async(first_result: Any) -> Any:
                         current_result = first_result
                         current_started_at = started_at
                         for current_attempt in range(attempt, max_attempts + 1):
                             try:
+                                if breaker is not None:
+                                    breaker.before_call()
                                 if current_attempt != attempt:
                                     current_started_at = time.monotonic()
-                                    if breaker is not None:
-                                        breaker.before_call()
                                     if budget is not None:
                                         budget.consume()
                                     current_result = operation(*args, **kwargs)
@@ -415,6 +525,8 @@ def with_retry[**P, R](
                                 else:
                                     resolved = current_result
                             except CircuitOpenError as error:
+                                if current_attempt == attempt:
+                                    _close_awaitable(current_result)
                                 record_attempt(
                                     status="circuit_open",
                                     started_at=current_started_at,
@@ -483,7 +595,13 @@ def with_retry[**P, R](
                                 return resolved
                         raise RuntimeError("unreachable retry state")
 
-                    return cast(R, continue_as_async(result))
+                    return cast(
+                        R,
+                        _DeferredCoroutine(
+                            lambda: continue_as_async(result),
+                            close_before_start=lambda: _close_awaitable(result),
+                        ),
+                    )
                 if breaker is not None:
                     breaker.record_success()
                 record_attempt(status="success", started_at=started_at, attempt=attempt)

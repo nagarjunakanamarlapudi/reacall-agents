@@ -4,7 +4,9 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from enum import Enum
 from threading import Barrier
+from uuid import UUID
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -35,8 +37,10 @@ from recallops.agents.telemetry import TraceEvent, TraceRecorder
 from recallops.models import (
     ApprovalBinding,
     ApprovalDecision,
+    AuditReceipt,
     Product,
     ProposedAction,
+    RecallRecord,
     proposed_action_digest,
 )
 
@@ -387,6 +391,110 @@ async def test_circuit_call_does_not_record_awaitable_success_before_awaiting() 
     assert breaker.failure_count == 1
 
 
+def test_circuit_call_close_before_first_await_does_not_strand_half_open_probe() -> None:
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+
+    def returns_awaitable():
+        async def deferred_probe() -> str:
+            return "unused"
+
+        return deferred_probe()
+
+    pending = breaker.call(returns_awaitable)
+    assert breaker.state == "open"
+    pending.close()
+
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_circuit_call_cancel_before_first_await_does_not_strand_half_open_probe() -> None:
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+
+    def returns_awaitable():
+        async def deferred_probe() -> str:
+            return "unused"
+
+        return deferred_probe()
+
+    pending = breaker.call(returns_awaitable)
+    assert breaker.state == "open"
+    task = asyncio.create_task(pending)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+def test_dynamic_await_retry_close_before_first_await_releases_half_open_probe() -> None:
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+
+    def returns_awaitable():
+        async def deferred_probe() -> str:
+            return "unused"
+
+        return deferred_probe()
+
+    pending = with_retry(returns_awaitable, breaker=breaker)()
+    assert breaker.state == "open"
+    pending.close()
+
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_await_retry_cancel_before_first_await_releases_half_open_probe() -> None:
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+
+    def returns_awaitable():
+        async def deferred_probe() -> str:
+            return "unused"
+
+        return deferred_probe()
+
+    pending = with_retry(returns_awaitable, breaker=breaker)()
+    assert breaker.state == "open"
+    task = asyncio.create_task(pending)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
 def test_base_exception_during_sync_half_open_retry_releases_probe_lease() -> None:
     now = [10.0]
     breaker = CircuitBreaker(
@@ -598,6 +706,44 @@ def test_approval_guard_rejects_blank_action_and_invalid_expected_version() -> N
         guard.validate(_approval(), proposed_action=_action(), expected_case_version=-1)
 
 
+@pytest.mark.parametrize(
+    "invalid_version",
+    [True, 1.0, "1", float("nan"), float("inf"), -1],
+)
+def test_approval_guard_requires_a_strict_nonnegative_expected_version(
+    invalid_version: object,
+) -> None:
+    with pytest.raises(ValueError, match="strict nonnegative integer"):
+        ApprovalGuard().validate(
+            _approval(),
+            proposed_action=_action(),
+            expected_case_version=invalid_version,
+        )
+
+
+def test_approval_guard_revalidates_versions_from_model_copy_bypasses() -> None:
+    reviewed = _action(version=0)
+    copied_action = reviewed.model_copy(update={"expected_case_version": False})
+    copied_approval = _approval(action=reviewed, version=0).model_copy(
+        update={
+            "approved_case_version": False,
+            "action_bindings": (
+                ApprovalBinding(
+                    action_id=copied_action.action_id,
+                    action_digest=proposed_action_digest(copied_action),
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="approved_case_version"):
+        ApprovalGuard().validate(
+            copied_approval,
+            proposed_action=copied_action,
+            expected_case_version=0,
+        )
+
+
 def test_approval_contract_rejects_blank_actor_or_justification() -> None:
     payload = _approval().model_dump(mode="json")
     payload["actor"] = " "
@@ -683,6 +829,66 @@ def test_mask_sensitive_recurses_into_models_and_canonicalizes_unordered_collect
     }
     assert contact.customer_email == "ada@example.test"
     assert json.dumps(masked, allow_nan=False)
+
+
+def test_mask_sensitive_serializes_real_pydantic_json_scalars_deterministically() -> None:
+    class DemoStatus(Enum):
+        READY = "ready"
+
+    action = _action()
+    approval = _approval(action=action)
+    recall = RecallRecord(
+        recall_number="H-1230-2026",
+        source="openFDA",
+        provenance="OFFICIAL_OPENFDA_SNAPSHOT",
+        retrieved_at=datetime(2026, 8, 30, 12, 0, tzinfo=UTC),
+        payload={
+            "customer_email": "ada@example.test",
+            "source_uuid": UUID("12345678-1234-5678-1234-567812345678"),
+            "status": DemoStatus.READY,
+        },
+    )
+    receipt = AuditReceipt(
+        receipt_id="receipt-1",
+        case_id=action.case_id,
+        action_type=action.action_type,
+        actor=approval.actor,
+        justification=approval.justification,
+        idempotency_key="key-1",
+        case_version=5,
+        status="simulated",
+        created_at=datetime(2026, 8, 30, 12, 1, tzinfo=UTC),
+        details={"customer_name": "Ada", "tags": frozenset({"z", "a"})},
+    )
+    observation = wrap_tool_observation(
+        "apply_inventory_hold",
+        receipt,
+        provenance="SIMULATED_RECALL_OPERATIONS",
+    )
+
+    masked = mask_sensitive(
+        {
+            "approval": approval,
+            "recall": recall,
+            "receipt": receipt,
+            "observation": observation,
+        }
+    )
+
+    assert masked["approval"]["approved_at"] == "2026-08-30T00:00:00Z"
+    assert masked["recall"]["retrieved_at"] == "2026-08-30T12:00:00Z"
+    assert masked["recall"]["payload"] == {
+        "customer_email": "[MASKED]",
+        "source_uuid": "12345678-1234-5678-1234-567812345678",
+        "status": "ready",
+    }
+    assert masked["receipt"]["created_at"] == "2026-08-30T12:01:00Z"
+    assert masked["receipt"]["details"] == {
+        "customer_name": "[MASKED]",
+        "tags": ["a", "z"],
+    }
+    assert masked["observation"]["records"][0]["value"]["receipt_id"] == "receipt-1"
+    assert json.dumps(masked, sort_keys=True, allow_nan=False)
 
 
 def test_mask_sensitive_uses_explicit_extra_sensitive_keys() -> None:
@@ -1049,6 +1255,58 @@ def test_trace_recorder_rejects_non_json_or_nonfinite_attributes() -> None:
             duration_ms=0,
             attributes={"value": float("nan")},
         )
+
+
+@pytest.mark.parametrize(
+    "duration",
+    [True, "1", float("nan"), float("inf"), float("-inf"), -1],
+)
+def test_trace_event_requires_a_strict_finite_nonnegative_duration(duration: object) -> None:
+    with pytest.raises(ValidationError, match="duration_ms"):
+        TraceEvent(
+            event_id="trace-1",
+            timestamp=datetime(2026, 8, 30, tzinfo=UTC),
+            boundary="tool",
+            operation="search_recalls",
+            status="success",
+            duration_ms=duration,
+        )
+
+
+@pytest.mark.parametrize("attempt", [True, 1.0, "1", 0, -1])
+def test_trace_event_requires_a_strict_positive_integer_attempt(attempt: object) -> None:
+    with pytest.raises(ValidationError, match="attempt"):
+        TraceEvent(
+            event_id="trace-1",
+            timestamp=datetime(2026, 8, 30, tzinfo=UTC),
+            boundary="tool",
+            operation="search_recalls",
+            status="success",
+            duration_ms=0,
+            attempt=attempt,
+        )
+
+
+def test_trace_event_trims_identifiers_and_is_strict_json_serializable() -> None:
+    event = TraceEvent(
+        event_id="  trace-1  ",
+        timestamp=datetime(2026, 8, 30, tzinfo=UTC),
+        boundary="tool",
+        operation="  search_recalls  ",
+        status="success",
+        duration_ms=1,
+        attempt=1,
+    )
+
+    assert event.event_id == "trace-1"
+    assert event.operation == "search_recalls"
+    assert json.dumps(event.model_dump(mode="json"), allow_nan=False)
+
+    for field in ("event_id", "operation"):
+        payload = event.model_dump(mode="python")
+        payload[field] = "   "
+        with pytest.raises(ValidationError, match=field):
+            TraceEvent.model_validate(payload)
 
 
 def test_trace_recorder_canonicalizes_mapping_and_set_attributes() -> None:
