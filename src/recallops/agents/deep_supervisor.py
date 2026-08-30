@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import inspect
 import json
 import math
 import os
 import sys
 from dataclasses import dataclass
-from typing import Annotated, Any, NotRequired
+from pathlib import Path
+from typing import Annotated, Any, NamedTuple, NotRequired
 
 from deepagents import (
     GeneralPurposeSubagentProfile,
@@ -45,7 +47,14 @@ from recallops.agents.specialists import (
 from recallops.config import Settings, get_settings
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
-from recallops.models import RecallPredicate
+from recallops.models import (
+    CandidateProduct,
+    InventoryPosition,
+    LotMatch,
+    ProductMetadata,
+    RecallPredicate,
+    TraceEvent,
+)
 from recallops.paths import PROJECT_ROOT
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
@@ -77,11 +86,26 @@ _PARENT_GRAPH_NODES = frozenset(
 _SUBAGENT_GRAPH_NODES = frozenset(
     {"__start__", "model", "tools", "PatchToolCallsMiddleware.before_agent"}
 )
-_STDIO_SERVERS = {
-    "registry": "recallops.mcp.recall_registry_server",
-    "traceability": "recallops.mcp.traceability_server",
-    "operations": "recallops.mcp.operations_server",
-}
+_STDIO_SERVERS = (
+    ("registry", "recallops.mcp.recall_registry_server"),
+    ("traceability", "recallops.mcp.traceability_server"),
+    ("operations", "recallops.mcp.operations_server"),
+)
+_STDIO_READ_SERVERS = _STDIO_SERVERS[:2]
+_PYTHON_EXECUTABLE = Path(sys.executable)
+_REGISTRY_READ_TOOL_NAMES = frozenset({"search_recalls", "get_recall", "get_product_metadata"})
+_TRACEABILITY_READ_TOOL_NAMES = frozenset(
+    {
+        "find_candidate_products",
+        "match_lots",
+        "trace_forward",
+        "trace_backward",
+        "get_inventory",
+        "get_sales",
+        "reconcile_units",
+    }
+)
+_TRUSTED_READ_TOOL_NAMES = _REGISTRY_READ_TOOL_NAMES | _TRACEABILITY_READ_TOOL_NAMES
 _RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "recall-intelligence": RecallIntelligence,
     "product-lot-matching": ProductLotAssessment,
@@ -171,12 +195,18 @@ class DeepSupervisor:
     capability_manifest: dict[str, str]
 
 
-@dataclass(frozen=True)
-class _ClosedDirectReads:
-    """Reconstructed services with no reference to caller-owned executable state."""
+class _ReadConfig(NamedTuple):
+    """Deeply immutable, digest-bound configuration retained by compiled tools."""
 
-    registry: RecallRegistryService
-    traceability: TraceabilityService
+    transport: str
+    data_dir: Path
+    source_mode: str
+    operations_db_path: Path
+    python_executable: Path | None
+    cwd: Path | None
+    environment: tuple[tuple[str, str], ...]
+    servers: tuple[tuple[str, str], ...]
+    digest: str
 
 
 def specialist_catalog() -> list[SpecialistDefinition]:
@@ -319,41 +349,41 @@ def _validate_traceability_service(
         raise ValueError("trusted RecallOps read gateway requires the validated dataset snapshot")
 
 
-def _trusted_stdio_environment(settings: Settings) -> dict[str, str]:
-    """Return a closed environment overriding every variable inherited by MCP stdio."""
-    return {
-        "HOME": str(PROJECT_ROOT / ".recallops-runtime" / "stdio-home"),
-        "LOGNAME": "recallops",
-        "PATH": os.defpath,
-        "SHELL": "/bin/sh",
-        "TERM": "dumb",
-        "USER": "recallops",
-        "PYTHONPATH": "",
-        "PYTHONNOUSERSITE": "1",
-        "RECALLOPS_DATA_DIR": str(settings.data_dir),
-        "RECALLOPS_OPERATIONS_DB": str(settings.operations_db_path),
-        "RECALLOPS_SOURCE_MODE": settings.source_mode,
-    }
+def _trusted_stdio_environment(
+    data_dir: Path,
+    source_mode: str,
+    operations_db_path: Path,
+) -> tuple[tuple[str, str], ...]:
+    """Return immutable entries overriding every environment variable MCP inherits."""
+    return (
+        ("HOME", str(PROJECT_ROOT / ".recallops-runtime" / "stdio-home")),
+        ("LOGNAME", "recallops"),
+        ("PATH", os.defpath),
+        ("PYTHONNOUSERSITE", "1"),
+        ("PYTHONPATH", ""),
+        ("RECALLOPS_DATA_DIR", str(data_dir)),
+        ("RECALLOPS_OPERATIONS_DB", str(operations_db_path)),
+        ("RECALLOPS_SOURCE_MODE", source_mode),
+        ("SHELL", "/bin/sh"),
+        ("TERM", "dumb"),
+        ("USER", "recallops"),
+    )
 
 
-def _trusted_stdio_connections(settings: Settings) -> dict[str, dict[str, object]]:
-    environment = _trusted_stdio_environment(settings)
-    return {
-        server: {
-            "transport": "stdio",
-            "command": sys.executable,
-            "args": ["-I", "-m", module],
-            "cwd": str(PROJECT_ROOT),
-            "env": dict(environment),
-        }
-        for server, module in _STDIO_SERVERS.items()
-    }
-
-
-def _stdio_connection_digest(gateway: StdioMCPGateway, server: str) -> str:
-    connection = gateway.client.connections[server]
+def _read_config_digest(config: _ReadConfig) -> str:
     payload = json.dumps(
-        connection,
+        {
+            "transport": config.transport,
+            "data_dir": str(config.data_dir),
+            "source_mode": config.source_mode,
+            "operations_db_path": str(config.operations_db_path),
+            "python_executable": (
+                str(config.python_executable) if config.python_executable is not None else None
+            ),
+            "cwd": str(config.cwd) if config.cwd is not None else None,
+            "environment": config.environment,
+            "servers": config.servers,
+        },
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
@@ -361,13 +391,109 @@ def _stdio_connection_digest(gateway: StdioMCPGateway, server: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _make_read_config(transport: str, settings: Settings) -> _ReadConfig:
+    if transport == "direct":
+        provisional = _ReadConfig(
+            transport="direct",
+            data_dir=settings.data_dir,
+            source_mode=settings.source_mode,
+            operations_db_path=settings.operations_db_path,
+            python_executable=None,
+            cwd=None,
+            environment=(),
+            servers=(),
+            digest="",
+        )
+    elif transport == "stdio":
+        provisional = _ReadConfig(
+            transport="stdio",
+            data_dir=settings.data_dir,
+            source_mode=settings.source_mode,
+            operations_db_path=settings.operations_db_path,
+            python_executable=_PYTHON_EXECUTABLE,
+            cwd=PROJECT_ROOT,
+            environment=_trusted_stdio_environment(
+                settings.data_dir,
+                settings.source_mode,
+                settings.operations_db_path,
+            ),
+            servers=_STDIO_READ_SERVERS,
+            digest="",
+        )
+    else:  # pragma: no cover - only trusted factory literals call this helper
+        raise ValueError("unsupported RecallOps read transport")
+    return provisional._replace(digest=_read_config_digest(provisional))
+
+
+def _has_exact_string_pairs(value: Any) -> bool:
+    if type(value) is not tuple:
+        return False
+    for pair in value:
+        if (
+            type(pair) is not tuple
+            or len(pair) != 2
+            or type(pair[0]) is not str
+            or type(pair[1]) is not str
+        ):
+            return False
+    return True
+
+
+def _validate_read_config(config: _ReadConfig) -> None:
+    path_type = type(PROJECT_ROOT)
+    if type(config) is not _ReadConfig:
+        raise ValueError("trusted RecallOps requires an exact immutable read configuration")
+    if (
+        type(config.transport) is not str
+        or type(config.data_dir) is not path_type
+        or type(config.source_mode) is not str
+        or type(config.operations_db_path) is not path_type
+        or type(config.digest) is not str
+        or not _has_exact_string_pairs(config.environment)
+        or not _has_exact_string_pairs(config.servers)
+    ):
+        raise ValueError("trusted RecallOps immutable read configuration has invalid types")
+    if (
+        not config.data_dir.is_absolute()
+        or not config.operations_db_path.is_absolute()
+        or config.source_mode not in {"snapshot", "live"}
+    ):
+        raise ValueError("trusted RecallOps immutable read configuration is invalid")
+    if config.transport == "direct":
+        if (
+            config.python_executable is not None
+            or config.cwd is not None
+            or config.environment != ()
+            or config.servers != ()
+        ):
+            raise ValueError("trusted RecallOps direct read configuration is invalid")
+    elif config.transport == "stdio":
+        if type(config.python_executable) is not path_type or type(config.cwd) is not path_type:
+            raise ValueError("trusted RecallOps stdio read configuration has invalid types")
+        if (
+            not config.python_executable.is_absolute()
+            or not config.cwd.is_absolute()
+            or config.python_executable != _PYTHON_EXECUTABLE
+            or config.cwd != PROJECT_ROOT
+            or config.servers != _STDIO_READ_SERVERS
+            or config.environment
+            != _trusted_stdio_environment(
+                config.data_dir,
+                config.source_mode,
+                config.operations_db_path,
+            )
+        ):
+            raise ValueError("trusted RecallOps stdio read configuration is invalid")
+    else:
+        raise ValueError("trusted RecallOps immutable read transport is invalid")
+    expected_digest = _read_config_digest(config)
+    if not hmac.compare_digest(config.digest, expected_digest):
+        raise ValueError("trusted RecallOps immutable read configuration digest mismatch")
+
+
 def _close_read_gateway(
     gateway: DirectGateway | StdioMCPGateway,
-) -> tuple[
-    str,
-    _ClosedDirectReads | StdioMCPGateway,
-    type[DirectGateway] | type[StdioMCPGateway],
-]:
+) -> _ReadConfig:
     if type(gateway) is DirectGateway:
         gateway_state = _exact_state(
             gateway,
@@ -447,17 +573,7 @@ def _close_read_gateway(
             or operations_state["source_mode"] != settings.source_mode
         ):
             raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
-        closed = _ClosedDirectReads(
-            registry=RecallRegistryService(
-                data_dir=settings.data_dir,
-                source_mode=settings.source_mode,
-            ),
-            traceability=TraceabilityService(
-                data_dir=settings.data_dir,
-                source_mode=settings.source_mode,
-            ),
-        )
-        return "direct", closed, DirectGateway
+        return _make_read_config("direct", settings)
     if type(gateway) is StdioMCPGateway:
         gateway_state = _exact_state(
             gateway,
@@ -497,9 +613,12 @@ def _close_read_gateway(
         )
         if any(value is not None for value in callback_state.values()):
             raise ValueError("trusted RecallOps stdio callbacks must all be disabled")
-        if not _has_exact_keys(connections, frozenset(_STDIO_SERVERS)):
+        if not _has_exact_keys(
+            connections,
+            frozenset(server for server, _module in _STDIO_SERVERS),
+        ):
             raise ValueError("trusted RecallOps stdio server identity set is incomplete")
-        for server, module in _STDIO_SERVERS.items():
+        for server, module in _STDIO_SERVERS:
             connection = connections[server]
             if type(connection) is not dict:
                 raise ValueError(
@@ -525,9 +644,137 @@ def _close_read_gateway(
             if transport != "stdio" or command != sys.executable or args != ["-m", module]:
                 raise ValueError(f"trusted RecallOps stdio server identity mismatch: {server}")
         settings = _validated_settings()
-        closed = StdioMCPGateway(_trusted_stdio_connections(settings))
-        return "stdio", closed, StdioMCPGateway
+        return _make_read_config("stdio", settings)
     raise ValueError("read_gateway must be a trusted RecallOps read gateway")
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if type(value) is dict:
+        return {key: _json_value(item) for key, item in value.items()}
+    if type(value) in {list, tuple}:
+        return [_json_value(item) for item in value]
+    return value
+
+
+def _invoke_direct_read(config: _ReadConfig, tool_name: str, payload: dict[str, Any]) -> Any:
+    if tool_name in _REGISTRY_READ_TOOL_NAMES:
+        registry = RecallRegistryService(
+            data_dir=config.data_dir,
+            source_mode=config.source_mode,
+        )
+        if tool_name == "search_recalls":
+            return _json_value(registry.search_recalls(payload["query"]))
+        if tool_name == "get_recall":
+            return _json_value(registry.get_recall(payload["recall_number"]))
+        metadata = registry.get_product_metadata(payload["upc"])
+        return _json_value(ProductMetadata.model_validate(metadata)) if metadata else None
+
+    traceability = TraceabilityService(
+        data_dir=config.data_dir,
+        source_mode=config.source_mode,
+    )
+    if tool_name == "find_candidate_products":
+        return _json_value(
+            [
+                CandidateProduct.model_validate(item)
+                for item in traceability.find_candidate_products(payload["predicate"])
+            ]
+        )
+    if tool_name == "match_lots":
+        return _json_value(
+            [
+                LotMatch.model_validate(item)
+                for item in traceability.match_lots(payload["predicate"])
+            ]
+        )
+    if tool_name == "trace_forward":
+        return _json_value(
+            [
+                TraceEvent.model_validate(item)
+                for item in traceability.trace_forward(payload["lot_id"])
+            ]
+        )
+    if tool_name == "trace_backward":
+        return _json_value(
+            [
+                TraceEvent.model_validate(item)
+                for item in traceability.trace_backward(payload["lot_id"])
+            ]
+        )
+    if tool_name == "get_inventory":
+        return _json_value(
+            [
+                InventoryPosition.model_validate(item)
+                for item in traceability.get_inventory(payload["lot_id"])
+            ]
+        )
+    if tool_name == "get_sales":
+        return _json_value(
+            [TraceEvent.model_validate(item) for item in traceability.get_sales(payload["lot_id"])]
+        )
+    return _json_value(traceability.reconcile_units(payload["lot_id"]))
+
+
+def _stdio_server_for_tool(config: _ReadConfig, tool_name: str) -> tuple[str, str]:
+    expected_server = "registry" if tool_name in _REGISTRY_READ_TOOL_NAMES else "traceability"
+    return next(pair for pair in config.servers if pair[0] == expected_server)
+
+
+async def _invoke_stdio_read(
+    config: _ReadConfig,
+    tool_name: str,
+    payload: dict[str, Any],
+) -> Any:
+    server, module = _stdio_server_for_tool(config, tool_name)
+    connection = {
+        server: {
+            "transport": "stdio",
+            "command": str(config.python_executable),
+            "args": ["-I", "-m", module],
+            "cwd": str(config.cwd),
+            "env": dict(config.environment),
+        }
+    }
+    gateway = StdioMCPGateway(connection)
+    try:
+        if tool_name == "search_recalls":
+            return await gateway.search_recalls(payload["query"])
+        if tool_name == "get_recall":
+            return await gateway.get_recall(payload["recall_number"])
+        if tool_name == "get_product_metadata":
+            return await gateway.get_product_metadata(payload["upc"])
+        if tool_name == "find_candidate_products":
+            return await gateway.find_candidate_products(payload["predicate"])
+        if tool_name == "match_lots":
+            return await gateway.match_lots(payload["predicate"])
+        if tool_name == "trace_forward":
+            return await gateway.trace_forward(payload["lot_id"])
+        if tool_name == "trace_backward":
+            return await gateway.trace_backward(payload["lot_id"])
+        if tool_name == "get_inventory":
+            return await gateway.get_inventory(payload["lot_id"])
+        if tool_name == "get_sales":
+            return await gateway.get_sales(payload["lot_id"])
+        return await gateway.reconcile_units(payload["lot_id"])
+    finally:
+        # MultiServerMCPClient has no persistent resource to close. Every tool
+        # discovery and invocation owns an MCP session context that closes on exit.
+        del gateway
+
+
+async def _invoke_trusted_read(
+    config: _ReadConfig,
+    tool_name: str,
+    payload: dict[str, Any],
+) -> Any:
+    _validate_read_config(config)
+    if type(tool_name) is not str or tool_name not in _TRUSTED_READ_TOOL_NAMES:
+        raise ValueError("trusted RecallOps read capability is invalid")
+    if config.transport == "direct":
+        return _invoke_direct_read(config, tool_name, payload)
+    return await _invoke_stdio_read(config, tool_name, payload)
 
 
 def _trusted_read_tools(
@@ -535,47 +782,83 @@ def _trusted_read_tools(
 ) -> tuple[dict[str, BaseTool], dict[str, str]]:
     if gateway is None:
         return {}, {}
-    transport, closed_gateway, gateway_type = _close_read_gateway(gateway)
+    read_config = _close_read_gateway(gateway)
 
     async def search_recalls(query: str) -> Any:
         """Search official recall registry evidence."""
-        return await gateway_type.search_recalls(closed_gateway, query)
+        return await _invoke_trusted_read(read_config, "search_recalls", {"query": query})
 
     async def get_recall(recall_number: str) -> Any:
         """Get one official recall record by recall number."""
-        return await gateway_type.get_recall(closed_gateway, recall_number)
+        return await _invoke_trusted_read(
+            read_config,
+            "get_recall",
+            {"recall_number": recall_number},
+        )
 
     async def get_product_metadata(upc: str) -> Any:
         """Get official product metadata by UPC."""
-        return await gateway_type.get_product_metadata(closed_gateway, upc)
+        return await _invoke_trusted_read(
+            read_config,
+            "get_product_metadata",
+            {"upc": upc},
+        )
 
     async def find_candidate_products(predicate: RecallPredicate) -> Any:
         """Find synthetic retailer product candidates for a recall predicate."""
-        return await gateway_type.find_candidate_products(closed_gateway, predicate)
+        return await _invoke_trusted_read(
+            read_config,
+            "find_candidate_products",
+            {"predicate": predicate},
+        )
 
     async def match_lots(predicate: RecallPredicate) -> Any:
         """Match synthetic retailer lots to a recall predicate."""
-        return await gateway_type.match_lots(closed_gateway, predicate)
+        return await _invoke_trusted_read(
+            read_config,
+            "match_lots",
+            {"predicate": predicate},
+        )
 
     async def trace_forward(lot_id: str) -> Any:
         """Trace a synthetic lot forward through the facility network."""
-        return await gateway_type.trace_forward(closed_gateway, lot_id)
+        return await _invoke_trusted_read(
+            read_config,
+            "trace_forward",
+            {"lot_id": lot_id},
+        )
 
     async def trace_backward(lot_id: str) -> Any:
         """Trace a synthetic lot backward to its receiving root."""
-        return await gateway_type.trace_backward(closed_gateway, lot_id)
+        return await _invoke_trusted_read(
+            read_config,
+            "trace_backward",
+            {"lot_id": lot_id},
+        )
 
     async def get_inventory(lot_id: str | None = None) -> Any:
         """Read synthetic retailer inventory positions."""
-        return await gateway_type.get_inventory(closed_gateway, lot_id)
+        return await _invoke_trusted_read(
+            read_config,
+            "get_inventory",
+            {"lot_id": lot_id},
+        )
 
     async def get_sales(lot_id: str) -> Any:
         """Read synthetic retailer sale events for a lot."""
-        return await gateway_type.get_sales(closed_gateway, lot_id)
+        return await _invoke_trusted_read(
+            read_config,
+            "get_sales",
+            {"lot_id": lot_id},
+        )
 
     async def reconcile_units(lot_id: str) -> Any:
         """Read evidence-backed synthetic unit reconciliation for a lot."""
-        return await gateway_type.reconcile_units(closed_gateway, lot_id)
+        return await _invoke_trusted_read(
+            read_config,
+            "reconcile_units",
+            {"lot_id": lot_id},
+        )
 
     functions = {
         function.__name__: function
@@ -600,20 +883,20 @@ def _trusted_read_tools(
         )
         for name, function in functions.items()
     }
-    if transport == "direct":
+    if read_config.transport == "direct":
         identities = {
             name: (
-                f"direct:reconstructed:{'RecallRegistryService' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'TraceabilityService'}.{name}"
+                f"direct:reconstructed:immutable:config-sha256={read_config.digest}:"
+                f"{'RecallRegistryService' if name in _REGISTRY_READ_TOOL_NAMES else 'TraceabilityService'}.{name}"
             )
             for name in tools
         }
     else:
-        if type(closed_gateway) is not StdioMCPGateway:
-            raise ValueError("trusted RecallOps stdio reconstruction identity is invalid")
         identities = {
             name: (
-                f"stdio:reconstructed:{'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability'}:"
-                f"config-sha256={_stdio_connection_digest(closed_gateway, 'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability')}:{name}"
+                f"stdio:reconstructed:immutable:"
+                f"{'registry' if name in _REGISTRY_READ_TOOL_NAMES else 'traceability'}:"
+                f"config-sha256={read_config.digest}:{name}"
             )
             for name in tools
         }

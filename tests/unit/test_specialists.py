@@ -980,6 +980,14 @@ async def test_fixed_stdio_gateway_is_reconstructed_before_compilation() -> None
         "command": "/definitely/not/a/command",
         "args": [],
     }
+    callback_invoked = False
+
+    async def injected_callback(*args: Any) -> None:
+        nonlocal callback_invoked
+        del args
+        callback_invoked = True
+
+    caller_gateway.client.callbacks.on_progress = injected_callback
     assert all(
         identity.startswith("stdio:reconstructed:")
         for identity in supervisor.capability_manifest.values()
@@ -990,10 +998,223 @@ async def test_fixed_stdio_gateway_is_reconstructed_before_compilation() -> None
         .bound._tools_by_name["get_recall"]
     )
 
-    recall = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    first = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    second = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
 
-    assert recall["recall_number"] == "H-1230-2026"
-    assert recall["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
+    assert callback_invoked is False
+    assert first == second
+    assert first["recall_number"] == "H-1230-2026"
+    assert first["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
+
+
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+def test_compiled_read_coroutines_capture_only_deeply_immutable_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+) -> None:
+    """Catches mutable services, clients, or mappings retained after compilation."""
+    from pathlib import Path
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+    from recallops.services.traceability import TraceabilityService
+
+    if transport == "direct":
+        storage_path = (tmp_path / "immutable.sqlite3").resolve()
+        monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+        gateway: Any = DirectGateway(operations=OperationsService(storage_path=storage_path))
+    else:
+        gateway = StdioMCPGateway()
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+    forbidden = (
+        dict,
+        list,
+        set,
+        DirectGateway,
+        StdioMCPGateway,
+        RecallRegistryService,
+        TraceabilityService,
+        MultiServerMCPClient,
+    )
+
+    def assert_deeply_immutable(value: Any) -> None:
+        assert not isinstance(value, forbidden), type(value)
+        if isinstance(value, tuple):
+            for item in value:
+                assert_deeply_immutable(item)
+        else:
+            assert type(value) in {str, int, float, bool, type(None), type(Path())}
+
+    captured_configs: list[Any] = []
+    for subgraph in module._compiled_subagent_graphs(supervisor.graph).values():
+        for tool in module._compiled_tools(subgraph).values():
+            if tool.name not in supervisor.exposed_read_tool_names:
+                continue
+            coroutine = tool.coroutine
+            closure = inspect.getclosurevars(coroutine)
+            for value in (
+                *closure.nonlocals.values(),
+                *closure.globals.values(),
+                *(coroutine.__defaults__ or ()),
+                *(coroutine.__kwdefaults__ or {}).values(),
+            ):
+                if inspect.isfunction(value):
+                    continue
+                assert_deeply_immutable(value)
+            config = closure.nonlocals["read_config"]
+            captured_configs.append(config)
+            with pytest.raises(AttributeError):
+                config.digest = "0" * 64
+            assert f"config-sha256={config.digest}" in supervisor.capability_manifest[tool.name]
+
+    assert captured_configs
+    assert len({id(config) for config in captured_configs}) == 1
+
+
+@pytest.mark.asyncio
+async def test_compiled_read_rejects_tampered_immutable_config_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches execution that trusts a replaced post-build config without revalidation."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    storage_path = (tmp_path / "tamper.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    freevars = dict(
+        zip(
+            get_recall.coroutine.__code__.co_freevars,
+            get_recall.coroutine.__closure__,
+            strict=True,
+        )
+    )
+    config = freevars["read_config"].cell_contents
+    freevars["read_config"].cell_contents = config._replace(digest="0" * 64)
+    constructed: list[RecallRegistryService] = []
+    original_init = RecallRegistryService.__init__
+
+    def track_init(self: RecallRegistryService, *args: Any, **kwargs: Any) -> None:
+        constructed.append(self)
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", track_init)
+
+    with pytest.raises(ValueError, match="immutable read configuration digest"):
+        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reads_construct_distinct_direct_services_and_stdio_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches repeated/concurrent tools sharing a retained mutable service or client."""
+    import asyncio
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    storage_path = (tmp_path / "concurrent.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    direct = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    direct_tool = (
+        module._compiled_subagent_graphs(direct.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    direct_instances: list[RecallRegistryService] = []
+    original_registry_init = RecallRegistryService.__init__
+
+    def track_registry(self: RecallRegistryService, *args: Any, **kwargs: Any) -> None:
+        direct_instances.append(self)
+        original_registry_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", track_registry)
+    direct_results = await asyncio.gather(
+        *(direct_tool.ainvoke({"recall_number": "H-1230-2026"}) for _ in range(3))
+    )
+    assert len(direct_instances) == 3
+    assert len({id(instance) for instance in direct_instances}) == 3
+    assert all(result == direct_results[0] for result in direct_results)
+
+    trace_tool = (
+        module._compiled_subagent_graphs(direct.graph)["product-lot-matching"]
+        .nodes["tools"]
+        .bound._tools_by_name["find_candidate_products"]
+    )
+    trace_instances: list[TraceabilityService] = []
+    original_trace_init = TraceabilityService.__init__
+
+    def track_trace(self: TraceabilityService, *args: Any, **kwargs: Any) -> None:
+        trace_instances.append(self)
+        original_trace_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(TraceabilityService, "__init__", track_trace)
+    from recallops.agents.specialists import investigate_recall
+
+    predicate = investigate_recall(load_recall_snapshot()).predicate
+    trace_results = await asyncio.gather(
+        *(trace_tool.ainvoke({"predicate": predicate}) for _ in range(2))
+    )
+    assert len(trace_instances) == 2
+    assert len({id(instance) for instance in trace_instances}) == 2
+    assert trace_results[0] == trace_results[1]
+
+    stdio = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=StdioMCPGateway(),
+    )
+    stdio_tool = (
+        module._compiled_subagent_graphs(stdio.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    stdio_instances: list[StdioMCPGateway] = []
+    original_stdio_init = StdioMCPGateway.__init__
+
+    def track_stdio(self: StdioMCPGateway, *args: Any, **kwargs: Any) -> None:
+        stdio_instances.append(self)
+        original_stdio_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(StdioMCPGateway, "__init__", track_stdio)
+    stdio_results = await asyncio.gather(
+        *(stdio_tool.ainvoke({"recall_number": "H-1230-2026"}) for _ in range(2))
+    )
+    assert len(stdio_instances) == 2
+    assert len({id(instance.client) for instance in stdio_instances}) == 2
+    assert all(result == stdio_results[0] for result in stdio_results)
+    assert stdio_results[0]["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
 
 
 @pytest.mark.parametrize(
@@ -1161,9 +1382,8 @@ async def test_reconstructed_stdio_is_isolated_from_later_process_cwd(
     tmp_path: Any,
 ) -> None:
     """Catches relative module discovery executing a package planted in a later cwd."""
-    import hashlib
-    import json
     import sys
+    from pathlib import Path
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 
@@ -1189,25 +1409,17 @@ async def test_reconstructed_stdio_is_isolated_from_later_process_cwd(
         .nodes["tools"]
         .bound._tools_by_name["get_recall"]
     )
-    closed_gateway = inspect.getclosurevars(get_recall.coroutine).nonlocals["closed_gateway"]
-    connection = closed_gateway.client.connections["registry"]
-    assert connection["command"] == sys.executable
-    assert connection["args"] == [
-        "-I",
-        "-m",
-        "recallops.mcp.recall_registry_server",
-    ]
-    assert connection["cwd"] == str(PROJECT_ROOT)
-    assert connection["env"]["RECALLOPS_DATA_DIR"].endswith("/data")
-    assert connection["env"]["HOME"] == str(PROJECT_ROOT / ".recallops-runtime" / "stdio-home")
-    identity_payload = json.dumps(
-        connection,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    expected_digest = hashlib.sha256(identity_payload).hexdigest()
-    assert f"config-sha256={expected_digest}" in supervisor.capability_manifest["get_recall"]
+    read_config = inspect.getclosurevars(get_recall.coroutine).nonlocals["read_config"]
+    environment = dict(read_config.environment)
+    assert read_config.python_executable == Path(sys.executable)
+    assert read_config.cwd == PROJECT_ROOT
+    assert read_config.servers == (
+        ("registry", "recallops.mcp.recall_registry_server"),
+        ("traceability", "recallops.mcp.traceability_server"),
+    )
+    assert environment["RECALLOPS_DATA_DIR"].endswith("/data")
+    assert environment["HOME"] == str(PROJECT_ROOT / ".recallops-runtime" / "stdio-home")
+    assert f"config-sha256={read_config.digest}" in supervisor.capability_manifest["get_recall"]
 
     monkeypatch.chdir(tmp_path)
     recall = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
