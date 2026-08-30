@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import time
 from collections.abc import Callable
 from functools import wraps
+from numbers import Integral, Real
 from threading import Lock
 from typing import Any, Literal, cast
 
@@ -29,13 +31,33 @@ class CallBudgetExceeded(RuntimeError):
     """Raised before a call that would exceed its configured budget."""
 
 
+def _positive_integer(name: str, value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(value)
+
+
+def _finite_number(
+    name: str,
+    value: object,
+    *,
+    minimum: float,
+    exclusive: bool = False,
+) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite number")
+    numeric = float(value)
+    if not math.isfinite(numeric) or (numeric <= minimum if exclusive else numeric < minimum):
+        comparator = "greater than" if exclusive else "at least"
+        raise ValueError(f"{name} must be a finite number {comparator} {minimum}")
+    return numeric
+
+
 class CallBudget:
     """Count actual call attempts and fail closed at a fixed limit."""
 
     def __init__(self, limit: int) -> None:
-        if limit <= 0:
-            raise ValueError("call budget limit must be positive")
-        self.limit = limit
+        self.limit = _positive_integer("call budget limit", limit)
         self.used = 0
 
     @property
@@ -67,12 +89,10 @@ class CircuitBreaker:
         clock: Callable[[], float] = time.monotonic,
         counts_failure: Callable[[BaseException], bool] | None = None,
     ) -> None:
-        if failure_threshold <= 0:
-            raise ValueError("failure_threshold must be positive")
-        if reset_timeout_seconds < 0:
-            raise ValueError("reset_timeout_seconds must be nonnegative")
-        self.failure_threshold = failure_threshold
-        self.reset_timeout_seconds = reset_timeout_seconds
+        self.failure_threshold = _positive_integer("failure_threshold", failure_threshold)
+        self.reset_timeout_seconds = _finite_number(
+            "reset_timeout_seconds", reset_timeout_seconds, minimum=0
+        )
         self._clock = clock
         self._counts_failure = counts_failure or (
             lambda error: isinstance(error, TransientCallError)
@@ -116,11 +136,24 @@ class CircuitBreaker:
 
     def record_failure(self, error: BaseException) -> None:
         if not self._counts_failure(error):
-            self.record_success()
+            with self._lock:
+                if self._state == "half_open":
+                    self._state = "open"
+                    self._opened_at = self._clock()
+                self._probe_in_progress = False
             return
         with self._lock:
             self._failure_count += 1
             if self._state == "half_open" or self._failure_count >= self.failure_threshold:
+                self._state = "open"
+                self._opened_at = self._clock()
+            self._probe_in_progress = False
+
+    def record_aborted(self) -> None:
+        """Release an interrupted probe without claiming dependency recovery."""
+
+        with self._lock:
+            if self._state == "half_open":
                 self._state = "open"
                 self._opened_at = self._clock()
             self._probe_in_progress = False
@@ -132,6 +165,24 @@ class CircuitBreaker:
         except Exception as error:
             self.record_failure(error)
             raise
+        except BaseException:
+            self.record_aborted()
+            raise
+        if inspect.isawaitable(result):
+
+            async def finish_awaitable() -> Any:
+                try:
+                    resolved = await result
+                except Exception as error:
+                    self.record_failure(error)
+                    raise
+                except BaseException:
+                    self.record_aborted()
+                    raise
+                self.record_success()
+                return resolved
+
+            return cast(R, finish_awaitable())
         self.record_success()
         return result
 
@@ -143,6 +194,9 @@ class CircuitBreaker:
             result = await operation(*args, **kwargs)
         except Exception as error:
             self.record_failure(error)
+            raise
+        except BaseException:
+            self.record_aborted()
             raise
         self.record_success()
         return result
@@ -168,12 +222,13 @@ def with_retry[**P, R](
 ) -> Callable[P, R]:
     """Wrap a sync or async callable with bounded transient-only retry."""
 
-    if max_attempts <= 0:
-        raise ValueError("max_attempts must be positive")
-    if base_delay_seconds < 0:
-        raise ValueError("base_delay_seconds must be nonnegative")
-    if backoff_multiplier <= 0:
-        raise ValueError("backoff_multiplier must be positive")
+    max_attempts = _positive_integer("max_attempts", max_attempts)
+    base_delay_seconds = _finite_number("base_delay_seconds", base_delay_seconds, minimum=0)
+    backoff_multiplier = _finite_number(
+        "backoff_multiplier", backoff_multiplier, minimum=0, exclusive=True
+    )
+    if operation_kind not in {"read", "model", "write"}:
+        raise ValueError("operation_kind must be 'read', 'model', or 'write'")
 
     should_retry = retry_if or (lambda error: isinstance(error, TransientCallError))
     trace_operation = operation_name or getattr(operation, "__qualname__", "call")
@@ -195,7 +250,11 @@ def with_retry[**P, R](
                 attributes=attributes,
             )
 
-    if inspect.iscoroutinefunction(operation):
+    is_async_callable = inspect.iscoroutinefunction(operation) or inspect.iscoroutinefunction(
+        getattr(operation, "__call__", None)
+    )
+
+    if is_async_callable:
 
         @wraps(operation)
         async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
@@ -216,6 +275,8 @@ def with_retry[**P, R](
                     )
                     raise
                 except CallBudgetExceeded as error:
+                    if breaker is not None:
+                        breaker.record_aborted()
                     record_attempt(
                         status="blocked",
                         started_at=started_at,
@@ -251,6 +312,16 @@ def with_retry[**P, R](
                         sleep_result = sleep(delay)
                         if inspect.isawaitable(sleep_result):
                             await sleep_result
+                except BaseException as error:
+                    if breaker is not None:
+                        breaker.record_aborted()
+                    record_attempt(
+                        status="error",
+                        started_at=started_at,
+                        attempt=attempt,
+                        attributes={"error_type": type(error).__name__},
+                    )
+                    raise
                 else:
                     if breaker is not None:
                         breaker.record_success()
@@ -279,6 +350,8 @@ def with_retry[**P, R](
                 )
                 raise
             except CallBudgetExceeded as error:
+                if breaker is not None:
+                    breaker.record_aborted()
                 record_attempt(
                     status="blocked",
                     started_at=started_at,
@@ -312,7 +385,105 @@ def with_retry[**P, R](
                     time.sleep(delay)
                 else:
                     sleep(delay)
+            except BaseException as error:
+                if breaker is not None:
+                    breaker.record_aborted()
+                record_attempt(
+                    status="error",
+                    started_at=started_at,
+                    attempt=attempt,
+                    attributes={"error_type": type(error).__name__},
+                )
+                raise
             else:
+                if inspect.isawaitable(result):
+
+                    async def continue_as_async(first_result: Any) -> Any:
+                        current_result = first_result
+                        current_started_at = started_at
+                        for current_attempt in range(attempt, max_attempts + 1):
+                            try:
+                                if current_attempt != attempt:
+                                    current_started_at = time.monotonic()
+                                    if breaker is not None:
+                                        breaker.before_call()
+                                    if budget is not None:
+                                        budget.consume()
+                                    current_result = operation(*args, **kwargs)
+                                if inspect.isawaitable(current_result):
+                                    resolved = await current_result
+                                else:
+                                    resolved = current_result
+                            except CircuitOpenError as error:
+                                record_attempt(
+                                    status="circuit_open",
+                                    started_at=current_started_at,
+                                    attempt=current_attempt,
+                                    attributes={"error_type": type(error).__name__},
+                                )
+                                raise
+                            except CallBudgetExceeded as error:
+                                if breaker is not None:
+                                    breaker.record_aborted()
+                                record_attempt(
+                                    status="blocked",
+                                    started_at=current_started_at,
+                                    attempt=current_attempt,
+                                    attributes={"error_type": type(error).__name__},
+                                )
+                                raise
+                            except Exception as error:
+                                if breaker is not None:
+                                    breaker.record_failure(error)
+                                retryable = operation_kind != "write" and should_retry(error)
+                                if not retryable or current_attempt == max_attempts:
+                                    record_attempt(
+                                        status="error",
+                                        started_at=current_started_at,
+                                        attempt=current_attempt,
+                                        attributes={"error_type": type(error).__name__},
+                                    )
+                                    raise
+                                delay = base_delay_seconds * backoff_multiplier ** (
+                                    current_attempt - 1
+                                )
+                                record_attempt(
+                                    status="retry",
+                                    started_at=current_started_at,
+                                    attempt=current_attempt,
+                                    attributes={
+                                        "delay_seconds": delay,
+                                        "error_type": type(error).__name__,
+                                    },
+                                )
+                                if sleep is None:
+                                    await asyncio.sleep(delay)
+                                else:
+                                    sleep_result = sleep(delay)
+                                    if inspect.isawaitable(sleep_result):
+                                        await sleep_result
+                            except BaseException as error:
+                                if breaker is not None:
+                                    breaker.record_aborted()
+                                record_attempt(
+                                    status="error",
+                                    started_at=current_started_at,
+                                    attempt=current_attempt,
+                                    attributes={"error_type": type(error).__name__},
+                                )
+                                raise
+                            else:
+                                if breaker is not None:
+                                    breaker.record_success()
+                                record_attempt(
+                                    status="success",
+                                    started_at=current_started_at,
+                                    attempt=current_attempt,
+                                )
+                                return resolved
+                        raise RuntimeError("unreachable retry state")
+
+                    return cast(R, continue_as_async(result))
                 if breaker is not None:
                     breaker.record_success()
                 record_attempt(status="success", started_at=started_at, attempt=attempt)

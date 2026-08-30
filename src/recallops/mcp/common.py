@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from recallops.models import ActionDecision, ApprovalDecision
+from recallops.models import ActionDecision, ApprovalBinding, ApprovalDecision
 
 
 def approval_from_input(
@@ -14,7 +14,9 @@ def approval_from_input(
     justification: str,
     approved_at: datetime,
     approved_case_version: int,
+    approved_case_id: str,
     action_ids: list[str],
+    action_bindings: list[ApprovalBinding],
 ) -> ApprovalDecision:
     return ApprovalDecision(
         decision=decision,
@@ -22,7 +24,9 @@ def approval_from_input(
         justification=justification,
         approved_at=approved_at,
         approved_case_version=approved_case_version,
+        approved_case_id=approved_case_id,
         action_ids=action_ids,
+        action_bindings=action_bindings,
     )
 
 

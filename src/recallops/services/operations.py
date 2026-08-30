@@ -16,8 +16,10 @@ from recallops.models import (
     ApprovalDecision,
     AuditReceipt,
     Disposition,
+    ProposedAction,
     RecallCaseState,
     Reconciliation,
+    proposed_action_digest,
 )
 from recallops.services.traceability import TraceabilityService
 
@@ -121,7 +123,17 @@ class OperationsService:
         if not key or not key.strip():
             raise IdempotencyConflictError("idempotency key must be nonblank")
 
-    def _approval(self, approval: ApprovalDecision, expected: int) -> None:
+    def _approval(
+        self,
+        approval: ApprovalDecision,
+        expected: int,
+        *,
+        case_id: str,
+        action_type: str,
+        proposed_action: ProposedAction,
+        target_ids: list[str],
+        evidence_ids: list[str] | None = None,
+    ) -> None:
         if (
             approval.decision != "approve"
             or not approval.actor.strip()
@@ -132,6 +144,30 @@ class OperationsService:
             raise ApprovalRequiredError(
                 "approval must be bound to the current expected case version"
             )
+        if approval.approved_case_id != case_id or proposed_action.case_id != case_id:
+            raise ApprovalRequiredError("approval binding must match the operation case ID")
+        if proposed_action.expected_case_version != expected:
+            raise ApprovalRequiredError(
+                "reviewed action must match the current expected case version"
+            )
+        if proposed_action.action_type != action_type:
+            raise ApprovalRequiredError("reviewed action type does not match the operation")
+        if tuple(target_ids) != proposed_action.target_ids:
+            raise ApprovalRequiredError("reviewed action targets do not match the operation")
+        if evidence_ids is not None and tuple(evidence_ids) != proposed_action.evidence_ids:
+            raise ApprovalRequiredError("reviewed action evidence does not match the operation")
+        binding = next(
+            (
+                item
+                for item in approval.action_bindings
+                if item.action_id == proposed_action.action_id
+            ),
+            None,
+        )
+        if binding is None or proposed_action.action_id not in approval.action_ids:
+            raise ApprovalRequiredError("reviewed action is outside the approval binding scope")
+        if binding.action_digest != proposed_action_digest(proposed_action):
+            raise ApprovalRequiredError("approval binding does not match the reviewed action")
 
     def _validate_authoritative_evidence(
         self,
@@ -191,6 +227,7 @@ class OperationsService:
         expected: int,
         details: dict[str, Any],
         approval: ApprovalDecision,
+        proposed_action: ProposedAction,
     ) -> str:
         return hashlib.sha256(
             _canonical(
@@ -200,6 +237,7 @@ class OperationsService:
                     "expected": expected,
                     "details": details,
                     "approval": approval.model_dump(mode="json"),
+                    "proposed_action": proposed_action.model_dump(mode="json"),
                 }
             ).encode()
         ).hexdigest()
@@ -244,20 +282,33 @@ class OperationsService:
         case_id: str,
         action: str,
         approval: ApprovalDecision,
+        proposed_action: ProposedAction,
         expected: int,
         key: str,
         details: dict[str, Any],
+        target_ids: list[str],
+        evidence_ids: list[str] | None = None,
         transform: Any | None = None,
         validator: Any | None = None,
     ) -> AuditReceipt:
         self._validate_idempotency_key(key)
-        request_hash = self._request_hash(case_id, action, expected, details, approval)
+        request_hash = self._request_hash(
+            case_id, action, expected, details, approval, proposed_action
+        )
         try:
             with self._transaction() as conn:
                 replay = self._replay_or_conflict(conn, key, request_hash)
                 if replay:
                     return replay
-                self._approval(approval, expected)
+                self._approval(
+                    approval,
+                    expected,
+                    case_id=case_id,
+                    action_type=action,
+                    proposed_action=proposed_action,
+                    target_ids=target_ids,
+                    evidence_ids=evidence_ids,
+                )
                 row = conn.execute(
                     "SELECT version, state_json FROM cases WHERE case_id=?", (case_id,)
                 ).fetchone()
@@ -285,7 +336,10 @@ class OperationsService:
                     idempotency_key=key,
                     case_version=expected + 1,
                     status="simulated",
-                    details=details,
+                    details={
+                        **details,
+                        "reviewed_action": proposed_action.model_dump(mode="json"),
+                    },
                 )
                 next_state = state.model_copy(
                     update={
@@ -353,6 +407,7 @@ class OperationsService:
         required_facilities: list[str],
         reconciliation: list[Reconciliation | dict[str, Any]],
         evidence_gaps: list[str],
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -390,14 +445,27 @@ class OperationsService:
             "evidence_gaps": evidence_gaps,
         }
         request_hash = self._request_hash(
-            case_id, "create_case", expected_case_version, details, approval
+            case_id,
+            "create_case",
+            expected_case_version,
+            details,
+            approval,
+            proposed_action,
         )
         try:
             with self._transaction() as conn:
                 replay = self._replay_or_conflict(conn, idempotency_key, request_hash)
                 if replay:
                     return replay
-                self._approval(approval, expected_case_version)
+                self._approval(
+                    approval,
+                    expected_case_version,
+                    case_id=case_id,
+                    action_type="create_case",
+                    proposed_action=proposed_action,
+                    target_ids=confirmed_lot_ids,
+                    evidence_ids=trace_event_ids,
+                )
                 if expected_case_version != 0:
                     raise StaleCaseVersionError("new cases require expected version 0")
                 self._validate_authoritative_evidence(
@@ -429,7 +497,10 @@ class OperationsService:
                     idempotency_key=idempotency_key,
                     case_version=1,
                     status="simulated",
-                    details=details,
+                    details={
+                        **details,
+                        "reviewed_action": proposed_action.model_dump(mode="json"),
+                    },
                 )
                 state = state.model_copy(update={"case_version": 1, "write_receipts": [receipt]})
                 conn.execute(
@@ -466,6 +537,7 @@ class OperationsService:
         *,
         case_id: str,
         lot_ids: list[str],
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -474,9 +546,11 @@ class OperationsService:
             case_id=case_id,
             action="apply_inventory_hold",
             approval=approval,
+            proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
             details={"lot_ids": lot_ids},
+            target_ids=lot_ids,
         )
 
     def create_facility_tasks(
@@ -484,6 +558,7 @@ class OperationsService:
         *,
         case_id: str,
         facility_ids: list[str],
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -515,9 +590,11 @@ class OperationsService:
             case_id=case_id,
             action="create_facility_tasks",
             approval=approval,
+            proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
             details={"facility_ids": facility_ids},
+            target_ids=facility_ids,
             transform=transform,
             validator=validator,
         )
@@ -527,6 +604,7 @@ class OperationsService:
         *,
         case_id: str,
         facility_id: str,
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -541,9 +619,11 @@ class OperationsService:
             case_id=case_id,
             action="record_acknowledgment",
             approval=approval,
+            proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
             details={"facility_id": facility_id},
+            target_ids=[facility_id],
             transform=lambda s: s.model_copy(
                 update={"acknowledgements": {**s.acknowledgements, facility_id: True}}
             ),
@@ -557,6 +637,7 @@ class OperationsService:
         lot_id: str,
         disposition: Disposition,
         evidence_id: str,
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -606,9 +687,12 @@ class OperationsService:
             case_id=case_id,
             action="record_disposition",
             approval=approval,
+            proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
             details={"lot_id": lot_id, "disposition": disposition, "evidence_id": evidence_id},
+            target_ids=[lot_id],
+            evidence_ids=[evidence_id],
             transform=transform,
         )
 
@@ -616,6 +700,7 @@ class OperationsService:
         self,
         *,
         case_id: str,
+        proposed_action: ProposedAction,
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
@@ -683,9 +768,11 @@ class OperationsService:
             case_id=case_id,
             action="close_case",
             approval=approval,
+            proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
             details={},
+            target_ids=[],
             transform=lambda s: s.model_copy(update={"status": "closed"}),
             validator=validator,
         )

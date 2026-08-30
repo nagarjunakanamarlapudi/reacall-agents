@@ -8,7 +8,14 @@ import pytest
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
-from recallops.models import ApprovalDecision, RecallPredicate, Reconciliation
+from recallops.models import (
+    ApprovalBinding,
+    ApprovalDecision,
+    ProposedAction,
+    RecallPredicate,
+    Reconciliation,
+    proposed_action_digest,
+)
 from recallops.services.operations import (
     ApprovalRequiredError,
     IdempotencyConflictError,
@@ -71,15 +78,40 @@ def _predicate() -> RecallPredicate:
     )
 
 
-def _approval(version: int) -> ApprovalDecision:
-    return ApprovalDecision(
+def _review(
+    case_id: str,
+    action_type: str,
+    version: int,
+    target_ids: list[str],
+    *,
+    evidence_ids: list[str] | None = None,
+    approved_version: int | None = None,
+) -> dict:
+    action = ProposedAction(
+        action_id=f"{case_id}-{action_type}-{version}",
+        action_type=action_type,
+        case_id=case_id,
+        target_ids=target_ids,
+        rationale=f"Reviewed {action_type} through MCP.",
+        evidence_ids=evidence_ids or [],
+        expected_case_version=version,
+    )
+    approval = ApprovalDecision(
         decision="approve",
         actor="integration-reviewer",
         justification="reviewed exact integration evidence",
         approved_at=datetime(2026, 8, 30, 15, version, tzinfo=UTC),
-        approved_case_version=version,
-        action_ids=[f"integration-action-{version}"],
+        approved_case_version=version if approved_version is None else approved_version,
+        approved_case_id=case_id,
+        action_ids=[action.action_id],
+        action_bindings=[
+            ApprovalBinding(
+                action_id=action.action_id,
+                action_digest=proposed_action_digest(action),
+            )
+        ],
     )
+    return {"proposed_action": action, "approval": approval}
 
 
 def _reconciliation() -> Reconciliation:
@@ -88,7 +120,7 @@ def _reconciliation() -> Reconciliation:
 
 def _case_kwargs(case_id: str = "CASE-MCP-INTEGRATION") -> dict:
     events = TraceabilityService().trace_forward("LOT-PROBABLE-160")
-    return {
+    payload = {
         "case_id": case_id,
         "recall_number": "H-1230-2026",
         "confirmed_lot_ids": ["LOT-PROBABLE-160"],
@@ -96,9 +128,18 @@ def _case_kwargs(case_id: str = "CASE-MCP-INTEGRATION") -> dict:
         "required_facilities": ["DC-SOUTH", "STORE-03"],
         "reconciliation": [_reconciliation()],
         "evidence_gaps": [],
-        "approval": _approval(0),
         "expected_case_version": 0,
         "idempotency_key": "mcp-create",
+    }
+    return {
+        **payload,
+        **_review(
+            case_id,
+            "create_case",
+            0,
+            payload["confirmed_lot_ids"],
+            evidence_ids=payload["trace_event_ids"],
+        ),
     }
 
 
@@ -166,7 +207,13 @@ async def test_all_servers_discovery_schemas_resources_trace_and_restart_replay(
         "record_disposition",
         "close_case",
     }:
-        assert "approved_case_version" in by_name[operation_name].args_schema["required"]
+        required = by_name[operation_name].args_schema["required"]
+        assert {
+            "approved_case_version",
+            "approved_case_id",
+            "action_bindings",
+            "proposed_action",
+        } <= set(required)
     disposition_schema = by_name["record_disposition"].args_schema["properties"]["disposition"]
     assert disposition_schema["enum"] == [
         "dispose_unaccounted",
@@ -177,15 +224,13 @@ async def test_all_servers_discovery_schemas_resources_trace_and_restart_replay(
     trace = await by_name["trace_forward"].ainvoke({"lot_id": "LOT-EXACT-170"})
     assert "EV-001" in str(trace)
 
+    case_kwargs = _case_kwargs()
+    create_approval = case_kwargs["approval"]
     create_payload = {
-        **_case_kwargs(),
+        **case_kwargs,
         "reconciliation": [_reconciliation().model_dump(mode="json")],
-        "decision": "approve",
-        "actor": _approval(0).actor,
-        "justification": _approval(0).justification,
-        "approved_at": _approval(0).approved_at.isoformat(),
-        "approved_case_version": _approval(0).approved_case_version,
-        "action_ids": _approval(0).action_ids,
+        "proposed_action": case_kwargs["proposed_action"].model_dump(mode="json"),
+        **create_approval.model_dump(mode="json"),
     }
     create_payload.pop("approval")
     created = _tool_json(await by_name["create_case"].ainvoke(create_payload))
@@ -193,14 +238,20 @@ async def test_all_servers_discovery_schemas_resources_trace_and_restart_replay(
         {
             "case_id": "CASE-MCP-INTEGRATION",
             "facility_ids": ["DC-SOUTH", "STORE-03"],
-            "decision": "approve",
-            "actor": _approval(1).actor,
-            "justification": _approval(1).justification,
-            "approved_at": _approval(1).approved_at.isoformat(),
-            "approved_case_version": _approval(1).approved_case_version,
-            "action_ids": _approval(1).action_ids,
             "expected_case_version": 1,
             "idempotency_key": "mcp-tasks",
+            "proposed_action": _review(
+                "CASE-MCP-INTEGRATION",
+                "create_facility_tasks",
+                1,
+                ["DC-SOUTH", "STORE-03"],
+            )["proposed_action"].model_dump(mode="json"),
+            **_review(
+                "CASE-MCP-INTEGRATION",
+                "create_facility_tasks",
+                1,
+                ["DC-SOUTH", "STORE-03"],
+            )["approval"].model_dump(mode="json"),
         }
     )
 
@@ -236,7 +287,12 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
             {
                 "case_id": "CASE-MCP-INTEGRATION",
                 "lot_ids": ["LOT-PROBABLE-160"],
-                "approval": _approval(1),
+                **_review(
+                    "CASE-MCP-INTEGRATION",
+                    "apply_inventory_hold",
+                    1,
+                    ["LOT-PROBABLE-160"],
+                ),
                 "expected_case_version": 1,
                 "idempotency_key": "matrix-hold",
             },
@@ -246,7 +302,12 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
             {
                 "case_id": "CASE-MCP-INTEGRATION",
                 "facility_ids": ["DC-SOUTH", "STORE-03"],
-                "approval": _approval(2),
+                **_review(
+                    "CASE-MCP-INTEGRATION",
+                    "create_facility_tasks",
+                    2,
+                    ["DC-SOUTH", "STORE-03"],
+                ),
                 "expected_case_version": 2,
                 "idempotency_key": "matrix-tasks",
             },
@@ -256,7 +317,12 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
             {
                 "case_id": "CASE-MCP-INTEGRATION",
                 "facility_id": "DC-SOUTH",
-                "approval": _approval(3),
+                **_review(
+                    "CASE-MCP-INTEGRATION",
+                    "record_acknowledgment",
+                    3,
+                    ["DC-SOUTH"],
+                ),
                 "expected_case_version": 3,
                 "idempotency_key": "matrix-ack",
             },
@@ -268,7 +334,13 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
                 "lot_id": "LOT-PROBABLE-160",
                 "disposition": "quarantined",
                 "evidence_id": "EV-Q-LOT-PROBABLE-160",
-                "approval": _approval(5),
+                **_review(
+                    "CASE-MCP-INTEGRATION",
+                    "record_disposition",
+                    5,
+                    ["LOT-PROBABLE-160"],
+                    evidence_ids=["EV-Q-LOT-PROBABLE-160"],
+                ),
                 "expected_case_version": 5,
                 "idempotency_key": "matrix-disposition",
             },
@@ -277,7 +349,7 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
             "close_case",
             {
                 "case_id": "CASE-MCP-INTEGRATION",
-                "approval": _approval(6),
+                **_review("CASE-MCP-INTEGRATION", "close_case", 6, []),
                 "expected_case_version": 6,
                 "idempotency_key": "matrix-close",
             },
@@ -293,7 +365,12 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
     second_ack = {
         "case_id": "CASE-MCP-INTEGRATION",
         "facility_id": "STORE-03",
-        "approval": _approval(4),
+        **_review(
+            "CASE-MCP-INTEGRATION",
+            "record_acknowledgment",
+            4,
+            ["STORE-03"],
+        ),
         "expected_case_version": 4,
         "idempotency_key": "matrix-ack-store",
     }
@@ -322,7 +399,13 @@ async def test_direct_and_stdio_preserve_reviewed_version_for_rejection_conflict
         stale_review = {
             "case_id": case_id,
             "lot_ids": ["LOT-PROBABLE-160"],
-            "approval": _approval(0),
+            **_review(
+                case_id,
+                "apply_inventory_hold",
+                1,
+                ["LOT-PROBABLE-160"],
+                approved_version=0,
+            ),
             "expected_case_version": 1,
             "idempotency_key": "stale-reviewed-version",
         }
@@ -332,13 +415,14 @@ async def test_direct_and_stdio_preserve_reviewed_version_for_rejection_conflict
 
         accepted = {
             **stale_review,
-            "approval": _approval(1),
+            **_review(case_id, "apply_inventory_hold", 1, ["LOT-PROBABLE-160"]),
             "idempotency_key": "approval-replay",
         }
         first = await gateway.apply_inventory_hold(**accepted)
         assert await gateway.apply_inventory_hold(**accepted) == first
 
-        changed_review = {**accepted, "approval": _approval(0)}
+        changed_approval = accepted["approval"].model_copy(update={"approved_case_version": 0})
+        changed_review = {**accepted, "approval": changed_approval}
         expected_error = IdempotencyConflictError if gateway is direct else Exception
         with pytest.raises(expected_error, match="idempotency key is bound"):
             await gateway.apply_inventory_hold(**changed_review)

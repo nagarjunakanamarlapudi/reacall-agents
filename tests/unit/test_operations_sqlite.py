@@ -9,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from recallops.models import ApprovalDecision, Reconciliation
+from recallops.models import (
+    ApprovalBinding,
+    ApprovalDecision,
+    ProposedAction,
+    Reconciliation,
+    proposed_action_digest,
+)
 from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
@@ -25,14 +31,40 @@ SUCCESS_LOT = "LOT-PROBABLE-160"
 GAPPED_LOT = "LOT-EXACT-170"
 
 
-def approval(version: int = 0) -> ApprovalDecision:
-    return ApprovalDecision(
+def reviewed(
+    case_id: str,
+    action_type: str,
+    version: int,
+    target_ids: list[str],
+    *,
+    evidence_ids: list[str] | None = None,
+    actor: str = "reviewer",
+) -> dict[str, Any]:
+    action = ProposedAction(
+        action_id=f"{case_id}-{action_type}-{version}",
+        action_type=action_type,
+        case_id=case_id,
+        target_ids=target_ids,
+        rationale=f"Reviewed {action_type} against authoritative evidence.",
+        evidence_ids=evidence_ids or [],
+        expected_case_version=version,
+    )
+    approval = ApprovalDecision(
         decision="approve",
-        actor="reviewer",
+        actor=actor,
         justification="evidence",
         approved_at=datetime(2026, 8, 30, 12, version, tzinfo=UTC),
         approved_case_version=version,
+        approved_case_id=case_id,
+        action_ids=[action.action_id],
+        action_bindings=[
+            ApprovalBinding(
+                action_id=action.action_id,
+                action_digest=proposed_action_digest(action),
+            )
+        ],
     )
+    return {"proposed_action": action, "approval": approval}
 
 
 def reconciliation(*, lot_id: str = SUCCESS_LOT, verified: bool = True) -> Reconciliation:
@@ -65,10 +97,17 @@ def case_input(
 
 
 def create(service: OperationsService, case_id: str, *, lot_id: str = SUCCESS_LOT) -> None:
+    payload = case_input(lot_id=lot_id)
     service.create_case(
         case_id=case_id,
-        **case_input(lot_id=lot_id),
-        approval=approval(0),
+        **payload,
+        **reviewed(
+            case_id,
+            "create_case",
+            0,
+            payload["confirmed_lot_ids"],
+            evidence_ids=payload["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key=f"{case_id}-create",
     )
@@ -79,7 +118,7 @@ def make_ready(service: OperationsService, case_id: str) -> int:
     service.create_facility_tasks(
         case_id=case_id,
         facility_ids=["DC-SOUTH", "STORE-03"],
-        approval=approval(1),
+        **reviewed(case_id, "create_facility_tasks", 1, ["DC-SOUTH", "STORE-03"]),
         expected_case_version=1,
         idempotency_key=f"{case_id}-tasks",
     )
@@ -88,7 +127,7 @@ def make_ready(service: OperationsService, case_id: str) -> int:
         service.record_acknowledgment(
             case_id=case_id,
             facility_id=facility_id,
-            approval=approval(version),
+            **reviewed(case_id, "record_acknowledgment", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"{case_id}-ack-{facility_id}",
         )
@@ -110,7 +149,7 @@ def _process_hold(database: str, key: str) -> str:
         OperationsService(storage_path=Path(database)).apply_inventory_hold(
             case_id="CASE-CAS",
             lot_ids=["LOT-EXACT-170"],
-            approval=approval(1),
+            **reviewed("CASE-CAS", "apply_inventory_hold", 1, ["LOT-EXACT-170"]),
             expected_case_version=1,
             idempotency_key=key,
         )
@@ -125,7 +164,7 @@ def _process_close_or_task(database: str, action: str) -> str:
         if action == "close":
             service.close_case(
                 case_id="CASE-RACE",
-                approval=approval(4),
+                **reviewed("CASE-RACE", "close_case", 4, []),
                 expected_case_version=4,
                 idempotency_key="race-close",
             )
@@ -133,7 +172,7 @@ def _process_close_or_task(database: str, action: str) -> str:
             service.create_facility_tasks(
                 case_id="CASE-RACE",
                 facility_ids=["DC-SOUTH"],
-                approval=approval(4),
+                **reviewed("CASE-RACE", "create_facility_tasks", 4, ["DC-SOUTH"]),
                 expected_case_version=4,
                 idempotency_key="race-task",
             )
@@ -145,11 +184,18 @@ def _process_close_or_task(database: str, action: str) -> str:
 def test_sqlite_idempotency_binds_the_full_request_and_survives_restart(tmp_path: Path) -> None:
     database = tmp_path / "operations.sqlite3"
     first = OperationsService(storage_path=database)
-    approved = approval(0)
+    payload = case_input()
+    approved = reviewed(
+        "CASE-SQL",
+        "create_case",
+        0,
+        payload["confirmed_lot_ids"],
+        evidence_ids=payload["trace_event_ids"],
+    )
     receipt = first.create_case(
         case_id="CASE-SQL",
-        **case_input(),
-        approval=approved,
+        **payload,
+        **approved,
         expected_case_version=0,
         idempotency_key="request-1",
     )
@@ -157,8 +203,8 @@ def test_sqlite_idempotency_binds_the_full_request_and_survives_restart(tmp_path
         OperationsService(storage_path=database)
         .create_case(
             case_id="CASE-SQL",
-            **case_input(),
-            approval=approved,
+            **payload,
+            **approved,
             expected_case_version=0,
             idempotency_key="request-1",
         )
@@ -168,8 +214,14 @@ def test_sqlite_idempotency_binds_the_full_request_and_survives_restart(tmp_path
     with pytest.raises(IdempotencyConflictError):
         OperationsService(storage_path=database).create_case(
             case_id="OTHER",
-            **case_input(),
-            approval=approval(0),
+            **payload,
+            **reviewed(
+                "OTHER",
+                "create_case",
+                0,
+                payload["confirmed_lot_ids"],
+                evidence_ids=payload["trace_event_ids"],
+            ),
             expected_case_version=0,
             idempotency_key="request-1",
         )
@@ -189,24 +241,32 @@ def test_sqlite_compare_and_swap_allows_only_one_separate_process_expected_versi
 def test_idempotency_binds_approval_identity_and_close_replays(tmp_path: Path) -> None:
     database = tmp_path / "operations.sqlite3"
     service = OperationsService(storage_path=database)
-    approved = approval(0)
+    payload = case_input()
+    approved = reviewed(
+        "CASE-REPLAY",
+        "create_case",
+        0,
+        payload["confirmed_lot_ids"],
+        evidence_ids=payload["trace_event_ids"],
+    )
     service.create_case(
         case_id="CASE-REPLAY",
-        **case_input(),
-        approval=approved,
+        **payload,
+        **approved,
         expected_case_version=0,
         idempotency_key="create",
     )
     with pytest.raises(IdempotencyConflictError):
         service.create_case(
             case_id="CASE-REPLAY",
-            **case_input(),
-            approval=ApprovalDecision(
-                decision="approve",
+            **payload,
+            **reviewed(
+                "CASE-REPLAY",
+                "create_case",
+                0,
+                payload["confirmed_lot_ids"],
+                evidence_ids=payload["trace_event_ids"],
                 actor="other",
-                justification="evidence",
-                approved_at=datetime.now(UTC),
-                approved_case_version=0,
             ),
             expected_case_version=0,
             idempotency_key="create",
@@ -214,7 +274,7 @@ def test_idempotency_binds_approval_identity_and_close_replays(tmp_path: Path) -
     service.create_facility_tasks(
         case_id="CASE-REPLAY",
         facility_ids=["DC-SOUTH", "STORE-03"],
-        approval=approval(1),
+        **reviewed("CASE-REPLAY", "create_facility_tasks", 1, ["DC-SOUTH", "STORE-03"]),
         expected_case_version=1,
         idempotency_key="tasks",
     )
@@ -222,13 +282,13 @@ def test_idempotency_binds_approval_identity_and_close_replays(tmp_path: Path) -
         service.record_acknowledgment(
             case_id="CASE-REPLAY",
             facility_id=facility_id,
-            approval=approval(version),
+            **reviewed("CASE-REPLAY", "record_acknowledgment", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"ack-{facility_id}",
         )
     first = service.close_case(
         case_id="CASE-REPLAY",
-        approval=approval(4),
+        **reviewed("CASE-REPLAY", "close_case", 4, []),
         expected_case_version=4,
         idempotency_key="close",
     )
@@ -236,7 +296,7 @@ def test_idempotency_binds_approval_identity_and_close_replays(tmp_path: Path) -
         OperationsService(storage_path=database)
         .close_case(
             case_id="CASE-REPLAY",
-            approval=approval(4),
+            **reviewed("CASE-REPLAY", "close_case", 4, []),
             expected_case_version=4,
             idempotency_key="close",
         )
@@ -255,11 +315,19 @@ def test_create_case_requires_real_evidence_and_fresh_case_cannot_close(tmp_path
     ):
         payload = case_input()
         payload[missing] = []
+        targets = payload["confirmed_lot_ids"]
+        evidence = payload["trace_event_ids"]
         with pytest.raises(ValueError, match=missing):
             service.create_case(
                 case_id=f"CASE-EMPTY-{missing}",
                 **payload,
-                approval=approval(0),
+                **reviewed(
+                    f"CASE-EMPTY-{missing}",
+                    "create_case",
+                    0,
+                    targets,
+                    evidence_ids=evidence,
+                ),
                 expected_case_version=0,
                 idempotency_key=f"empty-{missing}",
             )
@@ -268,7 +336,7 @@ def test_create_case_requires_real_evidence_and_fresh_case_cannot_close(tmp_path
     with pytest.raises(ClosureBlockedError, match="task|acknowledgement"):
         service.close_case(
             case_id="CASE-FRESH",
-            approval=approval(1),
+            **reviewed("CASE-FRESH", "close_case", 1, []),
             expected_case_version=1,
             idempotency_key="fresh-close",
         )
@@ -281,7 +349,7 @@ def test_realistic_case_sequence_persists_tasks_and_closes(tmp_path: Path) -> No
     service.create_facility_tasks(
         case_id="CASE-SUCCESS",
         facility_ids=["DC-SOUTH", "STORE-03"],
-        approval=approval(1),
+        **reviewed("CASE-SUCCESS", "create_facility_tasks", 1, ["DC-SOUTH", "STORE-03"]),
         expected_case_version=1,
         idempotency_key="success-tasks",
     )
@@ -298,13 +366,13 @@ def test_realistic_case_sequence_persists_tasks_and_closes(tmp_path: Path) -> No
         service.record_acknowledgment(
             case_id="CASE-SUCCESS",
             facility_id=facility_id,
-            approval=approval(version),
+            **reviewed("CASE-SUCCESS", "record_acknowledgment", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"success-ack-{facility_id}",
         )
     receipt = service.close_case(
         case_id="CASE-SUCCESS",
-        approval=approval(4),
+        **reviewed("CASE-SUCCESS", "close_case", 4, []),
         expected_case_version=4,
         idempotency_key="success-close",
     )
@@ -332,7 +400,7 @@ def test_acknowledgement_requires_a_persisted_task(tmp_path: Path) -> None:
         service.record_acknowledgment(
             case_id="CASE-NO-TASK",
             facility_id="DC-NORTH",
-            approval=approval(1),
+            **reviewed("CASE-NO-TASK", "record_acknowledgment", 1, ["DC-NORTH"]),
             expected_case_version=1,
             idempotency_key="no-task-ack",
         )
@@ -347,7 +415,13 @@ def test_disposition_rejects_values_outside_the_concrete_domain(tmp_path: Path) 
             lot_id="LOT-EXACT-170",
             disposition="made_up",
             evidence_id="EV-NOPE",
-            approval=approval(1),
+            **reviewed(
+                "CASE-BAD-DISPOSITION",
+                "record_disposition",
+                1,
+                ["LOT-EXACT-170"],
+                evidence_ids=["EV-NOPE"],
+            ),
             expected_case_version=1,
             idempotency_key="bad-disposition",
         )
@@ -412,7 +486,7 @@ def test_no_new_task_can_be_added_after_close(tmp_path: Path) -> None:
     make_ready(service, "CASE-CLOSED")
     service.close_case(
         case_id="CASE-CLOSED",
-        approval=approval(4),
+        **reviewed("CASE-CLOSED", "close_case", 4, []),
         expected_case_version=4,
         idempotency_key="closed-close",
     )
@@ -420,7 +494,7 @@ def test_no_new_task_can_be_added_after_close(tmp_path: Path) -> None:
         service.create_facility_tasks(
             case_id="CASE-CLOSED",
             facility_ids=["DC-SOUTH"],
-            approval=approval(5),
+            **reviewed("CASE-CLOSED", "create_facility_tasks", 5, ["DC-SOUTH"]),
             expected_case_version=5,
             idempotency_key="closed-late-task",
         )
@@ -439,14 +513,20 @@ def test_close_requires_zero_gaps_and_verified_reconciliation(
     service.create_case(
         case_id=case_id,
         **case_payload,
-        approval=approval(0),
+        **reviewed(
+            case_id,
+            "create_case",
+            0,
+            case_payload["confirmed_lot_ids"],
+            evidence_ids=case_payload["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key=f"{case_id}-create",
     )
     service.create_facility_tasks(
         case_id=case_id,
         facility_ids=["DC-SOUTH", "STORE-03"],
-        approval=approval(1),
+        **reviewed(case_id, "create_facility_tasks", 1, ["DC-SOUTH", "STORE-03"]),
         expected_case_version=1,
         idempotency_key=f"{case_id}-tasks",
     )
@@ -454,14 +534,14 @@ def test_close_requires_zero_gaps_and_verified_reconciliation(
         service.record_acknowledgment(
             case_id=case_id,
             facility_id=facility_id,
-            approval=approval(version),
+            **reviewed(case_id, "record_acknowledgment", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"{case_id}-ack-{facility_id}",
         )
     with pytest.raises(ClosureBlockedError, match=message):
         service.close_case(
             case_id=case_id,
-            approval=approval(4),
+            **reviewed(case_id, "close_case", 4, []),
             expected_case_version=4,
             idempotency_key=f"{case_id}-close",
         )
@@ -471,9 +551,13 @@ def test_close_rejects_approval_for_an_older_case_version(tmp_path: Path) -> Non
     service = OperationsService(storage_path=tmp_path / "operations.sqlite3")
     make_ready(service, "CASE-OLD-APPROVAL")
     with pytest.raises(ApprovalRequiredError, match="current expected case version"):
+        stale_review = reviewed("CASE-OLD-APPROVAL", "close_case", 3, [])
+        stale_review["proposed_action"] = stale_review["proposed_action"].model_copy(
+            update={"expected_case_version": 4}
+        )
         service.close_case(
             case_id="CASE-OLD-APPROVAL",
-            approval=approval(3),
+            **stale_review,
             expected_case_version=4,
             idempotency_key="old-approval-close",
         )
@@ -487,7 +571,13 @@ def test_case_creation_rejects_non_authoritative_trace_evidence(tmp_path: Path) 
         service.create_case(
             case_id="CASE-EVIDENCE-MISMATCH",
             **payload,
-            approval=approval(0),
+            **reviewed(
+                "CASE-EVIDENCE-MISMATCH",
+                "create_case",
+                0,
+                payload["confirmed_lot_ids"],
+                evidence_ids=payload["trace_event_ids"],
+            ),
             expected_case_version=0,
             idempotency_key="evidence-mismatch-create",
         )
@@ -501,15 +591,19 @@ def test_changed_approved_case_version_conflicts_with_existing_idempotency_key(
     service.apply_inventory_hold(
         case_id="CASE-APPROVAL-HASH",
         lot_ids=[SUCCESS_LOT],
-        approval=approval(1),
+        **reviewed("CASE-APPROVAL-HASH", "apply_inventory_hold", 1, [SUCCESS_LOT]),
         expected_case_version=1,
         idempotency_key="approval-version-key",
     )
     with pytest.raises(IdempotencyConflictError):
+        changed_review = reviewed("CASE-APPROVAL-HASH", "apply_inventory_hold", 1, [SUCCESS_LOT])
+        changed_review["approval"] = changed_review["approval"].model_copy(
+            update={"approved_case_version": 0}
+        )
         service.apply_inventory_hold(
             case_id="CASE-APPROVAL-HASH",
             lot_ids=[SUCCESS_LOT],
-            approval=approval(0),
+            **changed_review,
             expected_case_version=1,
             idempotency_key="approval-version-key",
         )
@@ -566,7 +660,13 @@ def test_case_creation_rejects_each_non_authoritative_evidence_class(
         service.create_case(
             case_id=f"CASE-{tamper}",
             **payload,
-            approval=approval(0),
+            **reviewed(
+                f"CASE-{tamper}",
+                "create_case",
+                0,
+                payload["confirmed_lot_ids"],
+                evidence_ids=payload["trace_event_ids"],
+            ),
             expected_case_version=0,
             idempotency_key=f"create-{tamper}",
         )
@@ -578,7 +678,12 @@ def test_exact_lot_authoritative_fifty_unit_gap_cannot_be_closed(tmp_path: Path)
     service.create_facility_tasks(
         case_id="CASE-EXACT-GAP",
         facility_ids=["DC-NORTH", "STORE-01", "STORE-02"],
-        approval=approval(1),
+        **reviewed(
+            "CASE-EXACT-GAP",
+            "create_facility_tasks",
+            1,
+            ["DC-NORTH", "STORE-01", "STORE-02"],
+        ),
         expected_case_version=1,
         idempotency_key="exact-tasks",
     )
@@ -587,7 +692,7 @@ def test_exact_lot_authoritative_fifty_unit_gap_cannot_be_closed(tmp_path: Path)
         service.record_acknowledgment(
             case_id="CASE-EXACT-GAP",
             facility_id=facility_id,
-            approval=approval(version),
+            **reviewed("CASE-EXACT-GAP", "record_acknowledgment", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"exact-ack-{facility_id}",
         )
@@ -595,7 +700,7 @@ def test_exact_lot_authoritative_fifty_unit_gap_cannot_be_closed(tmp_path: Path)
     with pytest.raises(ClosureBlockedError, match="50|unaccounted"):
         service.close_case(
             case_id="CASE-EXACT-GAP",
-            approval=approval(version),
+            **reviewed("CASE-EXACT-GAP", "close_case", version, []),
             expected_case_version=version,
             idempotency_key="exact-close",
         )
@@ -611,14 +716,20 @@ def test_closure_revalidates_authority_after_caller_disposition_changes_evidence
         lot_id=SUCCESS_LOT,
         disposition="dispose_unaccounted",
         evidence_id="EV-RECEIVE",
-        approval=approval(version),
+        **reviewed(
+            "CASE-CLOSURE-AUTHORITY",
+            "record_disposition",
+            version,
+            [SUCCESS_LOT],
+            evidence_ids=["EV-RECEIVE"],
+        ),
         expected_case_version=version,
         idempotency_key="caller-disposition",
     )
     with pytest.raises(ClosureBlockedError, match="authoritative"):
         service.close_case(
             case_id="CASE-CLOSURE-AUTHORITY",
-            approval=approval(version + 1),
+            **reviewed("CASE-CLOSURE-AUTHORITY", "close_case", version + 1, []),
             expected_case_version=version + 1,
             idempotency_key="caller-close",
         )
@@ -646,7 +757,13 @@ def test_authoritative_traceability_dependency_is_injectable(tmp_path: Path) -> 
     service.create_case(
         case_id="CASE-INJECTED-AUTHORITY",
         **payload,
-        approval=approval(0),
+        **reviewed(
+            "CASE-INJECTED-AUTHORITY",
+            "create_case",
+            0,
+            payload["confirmed_lot_ids"],
+            evidence_ids=payload["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key="injected-authority",
     )
@@ -657,7 +774,13 @@ def test_authoritative_traceability_dependency_is_injectable(tmp_path: Path) -> 
         default_service.create_case(
             case_id="CASE-DEFAULT-AUTHORITY",
             **payload,
-            approval=approval(0),
+            **reviewed(
+                "CASE-DEFAULT-AUTHORITY",
+                "create_case",
+                0,
+                payload["confirmed_lot_ids"],
+                evidence_ids=payload["trace_event_ids"],
+            ),
             expected_case_version=0,
             idempotency_key="default-authority",
         )
@@ -686,7 +809,7 @@ def test_close_wins_deterministically_while_competing_task_waits_outside_transac
     def close() -> None:
         close_service.close_case(
             case_id="CASE-CLOSE-WINS",
-            approval=approval(version),
+            **reviewed("CASE-CLOSE-WINS", "close_case", version, []),
             expected_case_version=version,
             idempotency_key="close-wins-close",
         )
@@ -698,7 +821,12 @@ def test_close_wins_deterministically_while_competing_task_waits_outside_transac
             task_service.create_facility_tasks(
                 case_id="CASE-CLOSE-WINS",
                 facility_ids=["DC-SOUTH"],
-                approval=approval(version),
+                **reviewed(
+                    "CASE-CLOSE-WINS",
+                    "create_facility_tasks",
+                    version,
+                    ["DC-SOUTH"],
+                ),
                 expected_case_version=version,
                 idempotency_key="close-wins-task",
             )
@@ -754,7 +882,7 @@ def test_task_wins_deterministically_before_competing_close_can_validate(
         task_service.create_facility_tasks(
             case_id="CASE-TASK-WINS",
             facility_ids=["DC-SOUTH"],
-            approval=approval(version),
+            **reviewed("CASE-TASK-WINS", "create_facility_tasks", version, ["DC-SOUTH"]),
             expected_case_version=version,
             idempotency_key="task-wins-task",
         )
@@ -765,7 +893,7 @@ def test_task_wins_deterministically_before_competing_close_can_validate(
         try:
             close_service.close_case(
                 case_id="CASE-TASK-WINS",
-                approval=approval(version),
+                **reviewed("CASE-TASK-WINS", "close_case", version, []),
                 expected_case_version=version,
                 idempotency_key="task-wins-close",
             )

@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from recallops.models import ApprovalDecision, RecallPredicate
+from recallops.models import (
+    ApprovalBinding,
+    ApprovalDecision,
+    ProposedAction,
+    RecallPredicate,
+    proposed_action_digest,
+)
 from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
@@ -26,16 +32,6 @@ def _predicate() -> RecallPredicate:
     )
 
 
-def _approval(decision: str = "approve", version: int = 0) -> ApprovalDecision:
-    return ApprovalDecision(
-        decision=decision,
-        actor="food-safety-manager",
-        justification="evidence reviewed",
-        approved_at=datetime(2026, 8, 30, tzinfo=UTC),
-        approved_case_version=version,
-    )
-
-
 def _case_input(*, unaccounted: int = 0) -> dict:
     traceability = TraceabilityService()
     lot_id = "LOT-EXACT-170" if unaccounted else "LOT-PROBABLE-160"
@@ -55,6 +51,87 @@ def _case_input(*, unaccounted: int = 0) -> dict:
         "reconciliation": [traceability.reconcile_units(lot_id)],
         "evidence_gaps": [],
     }
+
+
+def _bound_approval(action: ProposedAction, *, decision: str = "approve") -> ApprovalDecision:
+    return ApprovalDecision(
+        decision=decision,
+        actor="food-safety-manager",
+        justification="reviewed the exact action payload",
+        approved_at=datetime(2026, 8, 30, tzinfo=UTC),
+        approved_case_version=action.expected_case_version,
+        approved_case_id=action.case_id,
+        action_ids=[action.action_id],
+        action_bindings=[
+            ApprovalBinding(
+                action_id=action.action_id,
+                action_digest=proposed_action_digest(action),
+            )
+        ],
+    )
+
+
+def _create_action(case_id: str) -> ProposedAction:
+    inputs = _case_input()
+    return ProposedAction(
+        action_id=f"{case_id}-create",
+        action_type="create_case",
+        case_id=case_id,
+        target_ids=inputs["confirmed_lot_ids"],
+        rationale="Open the simulated recall case from reviewed evidence.",
+        evidence_ids=inputs["trace_event_ids"],
+        expected_case_version=0,
+    )
+
+
+def _review(
+    action_type: str,
+    case_id: str,
+    version: int,
+    target_ids: list[str],
+    *,
+    evidence_ids: list[str] | None = None,
+    decision: str = "approve",
+) -> dict:
+    action = ProposedAction(
+        action_id=f"{case_id}-{action_type}-{version}",
+        action_type=action_type,
+        case_id=case_id,
+        target_ids=target_ids,
+        rationale=f"Reviewed {action_type} against the case evidence.",
+        evidence_ids=evidence_ids or [],
+        expected_case_version=version,
+    )
+    return {"proposed_action": action, "approval": _bound_approval(action, decision=decision)}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"case_id": "CASE-OTHER"},
+        {"action_type": "apply_inventory_hold"},
+        {"target_ids": ["LOT-EXACT-170"]},
+        {"evidence_ids": ["EV-UNREVIEWED"]},
+        {"rationale": "Changed after human review."},
+    ],
+)
+def test_operations_service_rejects_cross_case_or_mutated_reviewed_action(
+    tmp_path: Path, change: dict
+) -> None:
+    case_id = "CASE-BOUND-ACTION"
+    reviewed = _create_action(case_id)
+    changed = ProposedAction.model_validate({**reviewed.model_dump(), **change})
+    service = OperationsService(storage_path=tmp_path / f"{next(iter(change))}.sqlite3")
+
+    with pytest.raises(ApprovalRequiredError, match="approval binding|reviewed action"):
+        service.create_case(
+            case_id=case_id,
+            **_case_input(),
+            proposed_action=changed,
+            approval=_bound_approval(reviewed),
+            expected_case_version=0,
+            idempotency_key=f"create-{next(iter(change))}",
+        )
 
 
 def test_registry_lookup_and_no_result_fallback() -> None:
@@ -142,10 +219,17 @@ def test_traceability_forward_backward_and_reconciliation() -> None:
 
 def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_path: Path) -> None:
     operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    case_input = _case_input()
     created = operations.create_case(
         case_id="CASE-001",
-        **_case_input(),
-        approval=_approval(),
+        **case_input,
+        **_review(
+            "create_case",
+            "CASE-001",
+            0,
+            case_input["confirmed_lot_ids"],
+            evidence_ids=case_input["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key="create-001",
     )
@@ -153,7 +237,13 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
         operations.apply_inventory_hold(
             case_id="CASE-001",
             lot_ids=["LOT-PROBABLE-160"],
-            approval=_approval("reject", 1),
+            **_review(
+                "apply_inventory_hold",
+                "CASE-001",
+                1,
+                ["LOT-PROBABLE-160"],
+                decision="reject",
+            ),
             expected_case_version=1,
             idempotency_key="hold-rejected",
         )
@@ -161,14 +251,14 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
         operations.apply_inventory_hold(
             case_id="CASE-001",
             lot_ids=["LOT-PROBABLE-160"],
-            approval=_approval(),
+            **_review("apply_inventory_hold", "CASE-001", 0, ["LOT-PROBABLE-160"]),
             expected_case_version=0,
             idempotency_key="hold-stale",
         )
     receipt = operations.apply_inventory_hold(
         case_id="CASE-001",
         lot_ids=["LOT-PROBABLE-160"],
-        approval=_approval(version=1),
+        **_review("apply_inventory_hold", "CASE-001", 1, ["LOT-PROBABLE-160"]),
         expected_case_version=1,
         idempotency_key="hold-idempotent",
     )
@@ -176,7 +266,7 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
     replay = operations.apply_inventory_hold(
         case_id="CASE-001",
         lot_ids=["LOT-PROBABLE-160"],
-        approval=_approval(version=1),
+        **_review("apply_inventory_hold", "CASE-001", 1, ["LOT-PROBABLE-160"]),
         expected_case_version=1,
         idempotency_key="hold-idempotent",
     )
@@ -188,17 +278,24 @@ def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unres
     tmp_path: Path,
 ) -> None:
     operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    case_input = _case_input(unaccounted=1)
     operations.create_case(
         case_id="CASE-CLOSE",
-        **_case_input(unaccounted=1),
-        approval=_approval(),
+        **case_input,
+        **_review(
+            "create_case",
+            "CASE-CLOSE",
+            0,
+            case_input["confirmed_lot_ids"],
+            evidence_ids=case_input["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key="create-close",
     )
     with pytest.raises(ClosureBlockedError, match="unaccounted"):
         operations.close_case(
             case_id="CASE-CLOSE",
-            approval=_approval(version=1),
+            **_review("close_case", "CASE-CLOSE", 1, []),
             expected_case_version=1,
             idempotency_key="close-blocked",
         )
@@ -208,17 +305,24 @@ def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
     tmp_path: Path,
 ) -> None:
     operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    case_input = _case_input()
     operations.create_case(
         case_id="CASE-SAFE",
-        **_case_input(),
-        approval=_approval(),
+        **case_input,
+        **_review(
+            "create_case",
+            "CASE-SAFE",
+            0,
+            case_input["confirmed_lot_ids"],
+            evidence_ids=case_input["trace_event_ids"],
+        ),
         expected_case_version=0,
         idempotency_key="safe-create",
     )
     operations.create_facility_tasks(
         case_id="CASE-SAFE",
         facility_ids=["DC-SOUTH", "STORE-03"],
-        approval=_approval(version=1),
+        **_review("create_facility_tasks", "CASE-SAFE", 1, ["DC-SOUTH", "STORE-03"]),
         expected_case_version=1,
         idempotency_key="safe-tasks",
     )
@@ -226,13 +330,13 @@ def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
         operations.record_acknowledgment(
             case_id="CASE-SAFE",
             facility_id=facility_id,
-            approval=_approval(version=version),
+            **_review("record_acknowledgment", "CASE-SAFE", version, [facility_id]),
             expected_case_version=version,
             idempotency_key=f"safe-ack-{facility_id}",
         )
     receipt = operations.close_case(
         case_id="CASE-SAFE",
-        approval=_approval(version=4),
+        **_review("close_case", "CASE-SAFE", 4, []),
         expected_case_version=4,
         idempotency_key="safe-close",
     )
@@ -242,18 +346,26 @@ def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
 def test_operations_persists_idempotency_receipts_when_a_store_is_supplied(tmp_path: Path) -> None:
     store = tmp_path / "operations.sqlite3"
     first = OperationsService(storage_path=store)
+    case_input = _case_input()
+    review = _review(
+        "create_case",
+        "CASE-DURABLE",
+        0,
+        case_input["confirmed_lot_ids"],
+        evidence_ids=case_input["trace_event_ids"],
+    )
     receipt = first.create_case(
         case_id="CASE-DURABLE",
-        **_case_input(),
-        approval=_approval(),
+        **case_input,
+        **review,
         expected_case_version=0,
         idempotency_key="durable-create",
     )
 
     replay = OperationsService(storage_path=store).create_case(
         case_id="CASE-DURABLE",
-        **_case_input(),
-        approval=_approval(),
+        **case_input,
+        **review,
         expected_case_version=0,
         idempotency_key="durable-create",
     )

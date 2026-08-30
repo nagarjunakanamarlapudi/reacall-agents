@@ -6,11 +6,12 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from recallops.agents.policies import mask_sensitive
+from recallops.agents.policies import mask_sensitive, strict_json_value
 
 TraceBoundary = Literal["agent", "tool", "model", "middleware"]
 TraceStatus = Literal["success", "retry", "error", "blocked", "circuit_open"]
@@ -18,6 +19,8 @@ TraceStatus = Literal["success", "retry", "error", "blocked", "circuit_open"]
 
 class TraceEvent(BaseModel):
     """One observable outcome at an agent, model, tool, or policy boundary."""
+
+    model_config = ConfigDict(frozen=True)
 
     event_id: str = Field(min_length=1)
     timestamp: datetime
@@ -37,6 +40,14 @@ class TraceEvent(BaseModel):
             raise ValueError("trace timestamp must be timezone-aware")
         return value
 
+    @field_validator("attributes", mode="before")
+    @classmethod
+    def attributes_must_be_strict_json(cls, value: Any) -> dict[str, Any]:
+        normalized = strict_json_value(value)
+        if not isinstance(normalized, dict):
+            raise TypeError("trace attributes must be a JSON object")
+        return normalized
+
 
 class TraceRecorder:
     """Append-only in-memory recorder with deterministic IDs and masked attributes."""
@@ -54,10 +65,12 @@ class TraceRecorder:
         self._wall_clock = wall_clock
         self._monotonic_clock = monotonic_clock
         self._events: list[TraceEvent] = []
+        self._lock = Lock()
 
     @property
     def events(self) -> tuple[TraceEvent, ...]:
-        return tuple(self._events)
+        with self._lock:
+            return tuple(event.model_copy(deep=True) for event in self._events)
 
     def record(
         self,
@@ -70,20 +83,21 @@ class TraceRecorder:
         attributes: Mapping[str, Any] | None = None,
     ) -> TraceEvent:
         masked_attributes = mask_sensitive(dict(attributes or {}))
-        event = TraceEvent(
-            event_id=f"trace-{len(self._events) + 1:06d}",
-            timestamp=self._wall_clock(),
-            case_id=self.case_id,
-            thread_id=self.thread_id,
-            boundary=boundary,
-            operation=operation,
-            status=status,
-            duration_ms=duration_ms,
-            attempt=attempt,
-            attributes=masked_attributes,
-        )
-        self._events.append(event)
-        return event
+        with self._lock:
+            event = TraceEvent(
+                event_id=f"trace-{len(self._events) + 1:06d}",
+                timestamp=self._wall_clock(),
+                case_id=self.case_id,
+                thread_id=self.thread_id,
+                boundary=boundary,
+                operation=operation,
+                status=status,
+                duration_ms=duration_ms,
+                attempt=attempt,
+                attributes=masked_attributes,
+            )
+            self._events.append(event)
+            return event.model_copy(deep=True)
 
     @contextmanager
     def span(
@@ -119,4 +133,5 @@ class TraceRecorder:
             )
 
     def to_dicts(self) -> list[dict[str, Any]]:
-        return [event.model_dump(mode="json") for event in self._events]
+        with self._lock:
+            return [event.model_dump(mode="json") for event in self._events]

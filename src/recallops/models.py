@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PUBLIC_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
@@ -212,7 +214,9 @@ class Reconciliation(BaseModel):
 
 
 class ProposedAction(BaseModel):
-    action_id: str
+    model_config = ConfigDict(frozen=True)
+
+    action_id: str = Field(min_length=1)
     action_type: Literal[
         "create_case",
         "apply_inventory_hold",
@@ -221,20 +225,85 @@ class ProposedAction(BaseModel):
         "record_disposition",
         "close_case",
     ]
-    case_id: str
-    target_ids: list[str] = Field(default_factory=list)
+    case_id: str = Field(min_length=1)
+    target_ids: tuple[str, ...] = Field(default_factory=tuple)
     rationale: str = Field(min_length=1)
-    evidence_ids: list[str] = Field(default_factory=list)
+    evidence_ids: tuple[str, ...] = Field(default_factory=tuple)
     expected_case_version: int = Field(ge=0)
+
+    @field_validator("action_id", "case_id", "rationale")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must be nonblank")
+        return value
+
+    @field_validator("target_ids", "evidence_ids")
+    @classmethod
+    def unique_nonblank_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() for item in value):
+            raise ValueError("identifiers must be nonblank")
+        if len(value) != len(set(value)):
+            raise ValueError("identifiers must be unique")
+        return value
+
+
+def proposed_action_digest(action: ProposedAction) -> str:
+    """Return the canonical SHA-256 binding for the complete reviewed action."""
+
+    canonical = json.dumps(
+        action.model_dump(mode="json"),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+class ApprovalBinding(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    action_id: str = Field(min_length=1)
+    action_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("action_id")
+    @classmethod
+    def nonblank_action_id(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("action_id must be nonblank")
+        return value
 
 
 class ApprovalDecision(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     decision: ActionDecision
     actor: str = Field(min_length=1)
     justification: str = Field(min_length=1)
     approved_at: datetime
     approved_case_version: int = Field(ge=0)
-    action_ids: list[str] = Field(default_factory=list)
+    approved_case_id: str = Field(min_length=1)
+    action_ids: tuple[str, ...] = Field(min_length=1)
+    action_bindings: tuple[ApprovalBinding, ...] = Field(min_length=1)
+
+    @field_validator("actor", "justification", "approved_case_id")
+    @classmethod
+    def nonblank_approval_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("approval fields must be nonblank")
+        return value
+
+    @model_validator(mode="after")
+    def exact_binding_set(self) -> ApprovalDecision:
+        if len(self.action_ids) != len(set(self.action_ids)):
+            raise ValueError("action_ids must be unique")
+        binding_ids = [binding.action_id for binding in self.action_bindings]
+        if len(binding_ids) != len(set(binding_ids)):
+            raise ValueError("action_bindings must have unique action IDs")
+        if set(binding_ids) != set(self.action_ids):
+            raise ValueError("action_ids must exactly match action_bindings")
+        return self
 
 
 class AuditReceipt(BaseModel):
