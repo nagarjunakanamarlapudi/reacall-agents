@@ -41,9 +41,7 @@ def reviewed(
     actor: str = "reviewer",
 ) -> dict[str, Any]:
     action_evidence = (
-        evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids]
-        if target_ids
-        else []
+        evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids] if target_ids else []
     )
     action = ProposedAction(
         action_id=f"{case_id}-{action_type}-{version}",

@@ -495,17 +495,13 @@ def assess_traceability(
         lot_events = [event for event in typed_events if event.lot_id == lot_id]
         lot_inventory = [item for item in typed_inventory if item.lot_id == lot_id]
         quantities = {
-            component: sum(
-                event.quantity for event in lot_events if event.event_type == event_type
-            )
+            component: sum(event.quantity for event in lot_events if event.event_type == event_type)
             for component, event_type in event_components.items()
         }
         quantities["on_hand"] = sum(position.on_hand for position in lot_inventory)
         derived = Reconciliation.from_quantities(lot_id, **quantities)
         component_evidence = {
-            component: [
-                event.event_id for event in lot_events if event.event_type == event_type
-            ]
+            component: [event.event_id for event in lot_events if event.event_type == event_type]
             for component, event_type in event_components.items()
         }
         component_evidence["on_hand"] = [position.position_id for position in lot_inventory]

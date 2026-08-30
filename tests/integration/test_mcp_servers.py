@@ -203,9 +203,7 @@ async def test_all_servers_discovery_schemas_resources_trace_and_restart_replay(
     assert '"minItems": 1' in predicate_schema
     decision_schema = by_name["create_case"].args_schema["properties"]["decision"]
     assert decision_schema["enum"] == ["approve", "edit", "reject", "escalate"]
-    proposed_action_schema = by_name["create_case"].args_schema["properties"][
-        "proposed_action"
-    ]
+    proposed_action_schema = by_name["create_case"].args_schema["properties"]["proposed_action"]
     assert "evidence_by_target" in proposed_action_schema["properties"]
     assert "evidence_by_target" in proposed_action_schema["required"]
     for operation_name in {

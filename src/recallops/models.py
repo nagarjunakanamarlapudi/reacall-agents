@@ -316,9 +316,7 @@ class ProposedAction(BaseModel):
 
     @field_validator("evidence_by_target")
     @classmethod
-    def freeze_target_evidence(
-        cls, value: Mapping[str, tuple[str, ...]]
-    ) -> FrozenEvidenceMap:
+    def freeze_target_evidence(cls, value: Mapping[str, tuple[str, ...]]) -> FrozenEvidenceMap:
         normalized: dict[str, tuple[str, ...]] = {}
         for target_id, identifiers in value.items():
             if not target_id.strip():
