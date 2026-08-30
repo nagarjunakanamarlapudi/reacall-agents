@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from recallops.models import ApprovalDecision, Lot, Product, RecallPredicate, RecallRecord
+from recallops.models import (
+    ApprovalDecision,
+    Lot,
+    Product,
+    RecallPredicate,
+    RecallRecord,
+    Reconciliation,
+)
 
 
 def test_recall_record_rejects_unknown_provenance() -> None:
@@ -43,6 +50,54 @@ def test_approval_decision_rejects_malformed_decision(decision: str) -> None:
             actor="food-safety-manager",
             justification="checked evidence",
             approved_at=datetime.now(UTC),
+            approved_case_version=0,
+        )
+
+
+def test_approval_decision_requires_the_reviewed_case_version() -> None:
+    with pytest.raises(ValidationError, match="approved_case_version"):
+        ApprovalDecision(
+            decision="approve",
+            actor="food-safety-manager",
+            justification="checked evidence",
+            approved_at=datetime.now(UTC),
+        )
+
+
+def test_verified_reconciliation_requires_balanced_nonnegative_evidence() -> None:
+    with pytest.raises(ValidationError, match="equation"):
+        Reconciliation(
+            lot_id="LOT-001",
+            received=10,
+            on_hand=8,
+            quarantined=0,
+            sold=0,
+            returned=0,
+            disposed=0,
+            unaccounted=1,
+            verified=True,
+            evidence_ids=["EV-RECEIVE", "INV-001"],
+            component_evidence={
+                "received": ["EV-RECEIVE"],
+                "on_hand": ["INV-001"],
+                "quarantined": [],
+                "sold": [],
+                "returned": [],
+                "disposed": [],
+                "unaccounted": ["EV-RECEIVE", "INV-001"],
+            },
+        )
+
+    with pytest.raises(ValidationError):
+        Reconciliation(
+            lot_id="LOT-001",
+            received=10,
+            on_hand=11,
+            quarantined=0,
+            sold=0,
+            returned=0,
+            disposed=0,
+            unaccounted=-1,
         )
 
 

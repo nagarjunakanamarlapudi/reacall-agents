@@ -1,1 +1,1 @@
-{"dataset_id":"northstar-demo-20260830","files":["dataset.json"],"origin":"SYNTHETIC_RETAILER_DIGITAL_TWIN","seed":20260830,"sha256":"3b40737f1b6339d3d5085c16bad82e68cead8238bfdb9583206f7b0dc341d6fb"}
+{"checksums":{"dataset.json":"8a53fee4e6dbca8bb69c1701a8f1585e952c6d74b885a512a18e48f4c760bff3"},"dataset_id":"northstar-demo-20260830","files":["dataset.json"],"origin":"SYNTHETIC_RETAILER_DIGITAL_TWIN","seed":20260830,"sha256":"8a53fee4e6dbca8bb69c1701a8f1585e952c6d74b885a512a18e48f4c760bff3"}

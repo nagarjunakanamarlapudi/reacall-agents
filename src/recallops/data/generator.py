@@ -17,10 +17,6 @@ def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _sha256(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
-
-
 def _dataset(seed: int) -> dict[str, Any]:
     """Return fixed instructional data; the explicit seed makes the contract auditable."""
     products = [
@@ -139,106 +135,181 @@ def _dataset(seed: int) -> dict[str, Any]:
             for number in range(1, 9)
         ),
     ]
+
+    def event(
+        event_id: str,
+        lot_id: str,
+        event_type: str,
+        quantity: int,
+        *,
+        parent: str | None = None,
+        source: str | None = None,
+        destination: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "event_id": event_id,
+            "lot_id": lot_id,
+            "event_type": event_type,
+            "quantity": quantity,
+            "from_facility": source,
+            "to_facility": destination,
+            "parent_event_id": parent,
+        }
+
+    # Explicit branches preserve facility continuity. STORE outcomes always descend from
+    # a shipment/transfer that actually arrived at that store.
     events = [
-        {
-            "event_id": "EV-001",
-            "lot_id": "LOT-EXACT-170",
-            "event_type": "receiving",
-            "quantity": 1200,
-            "to_facility": "DC-NORTH",
-        },
-        {
-            "event_id": "EV-002",
-            "lot_id": "LOT-EXACT-170",
-            "event_type": "shipping",
-            "quantity": 600,
-            "from_facility": "DC-NORTH",
-            "to_facility": "STORE-01",
-        },
-        {
-            "event_id": "EV-003",
-            "lot_id": "LOT-EXACT-170",
-            "event_type": "shipping",
-            "quantity": 300,
-            "from_facility": "DC-NORTH",
-            "to_facility": "STORE-02",
-        },
-        {
-            "event_id": "EV-004",
-            "lot_id": "LOT-PROBABLE-160",
-            "event_type": "receiving",
-            "quantity": 900,
-            "to_facility": "DC-SOUTH",
-        },
-        {
-            "event_id": "EV-005",
-            "lot_id": "LOT-PROBABLE-160",
-            "event_type": "transfer",
-            "quantity": 450,
-            "from_facility": "DC-SOUTH",
-            "to_facility": "STORE-03",
-        },
-        {
-            "event_id": "EV-006",
-            "lot_id": "LOT-AMBIG-175",
-            "event_type": "shipping",
-            "quantity": 450,
-            "from_facility": "DC-NORTH",
-            "to_facility": "STORE-08",
-        },
-        {
-            "event_id": "EV-007",
-            "lot_id": "LOT-AMBIG-175",
-            "event_type": "sale",
-            "quantity": 400,
-            "from_facility": "STORE-08",
-        },
-        {
-            "event_id": "EV-008",
-            "lot_id": "LOT-EXACT-170",
-            "event_type": "quarantine",
-            "quantity": 200,
-            "to_facility": "DC-NORTH",
-        },
+        event("EV-001", "LOT-EXACT-170", "receiving", 1200, destination="DC-NORTH"),
+        event(
+            "EV-002",
+            "LOT-EXACT-170",
+            "shipping",
+            600,
+            parent="EV-001",
+            source="DC-NORTH",
+            destination="STORE-01",
+        ),
+        event(
+            "EV-003",
+            "LOT-EXACT-170",
+            "shipping",
+            300,
+            parent="EV-001",
+            source="DC-NORTH",
+            destination="STORE-02",
+        ),
+        event(
+            "EV-008",
+            "LOT-EXACT-170",
+            "quarantine",
+            200,
+            parent="EV-001",
+            source="DC-NORTH",
+            destination="DC-NORTH",
+        ),
+        event(
+            "EV-S-LOT-EXACT-170",
+            "LOT-EXACT-170",
+            "sale",
+            550,
+            parent="EV-002",
+            source="STORE-01",
+        ),
+        event(
+            "EV-R-LOT-EXACT-170",
+            "LOT-EXACT-170",
+            "return",
+            20,
+            parent="EV-002",
+            source="STORE-01",
+            destination="STORE-01",
+        ),
+        event(
+            "EV-D-LOT-EXACT-170",
+            "LOT-EXACT-170",
+            "disposal",
+            80,
+            parent="EV-002",
+            source="STORE-01",
+        ),
+        event("EV-004", "LOT-PROBABLE-160", "receiving", 900, destination="DC-SOUTH"),
+        event(
+            "EV-005",
+            "LOT-PROBABLE-160",
+            "transfer",
+            780,
+            parent="EV-004",
+            source="DC-SOUTH",
+            destination="STORE-03",
+        ),
+        event(
+            "EV-S-LOT-PROBABLE-160",
+            "LOT-PROBABLE-160",
+            "sale",
+            540,
+            parent="EV-005",
+            source="STORE-03",
+        ),
+        event(
+            "EV-R-LOT-PROBABLE-160",
+            "LOT-PROBABLE-160",
+            "return",
+            10,
+            parent="EV-005",
+            source="STORE-03",
+            destination="STORE-03",
+        ),
+        event(
+            "EV-Q-LOT-PROBABLE-160",
+            "LOT-PROBABLE-160",
+            "quarantine",
+            160,
+            parent="EV-005",
+            source="STORE-03",
+            destination="STORE-03",
+        ),
+        event(
+            "EV-D-LOT-PROBABLE-160",
+            "LOT-PROBABLE-160",
+            "disposal",
+            70,
+            parent="EV-005",
+            source="STORE-03",
+        ),
+        event(
+            "EV-R-LOT-AMBIG-175",
+            "LOT-AMBIG-175",
+            "receiving",
+            500,
+            destination="DC-NORTH",
+        ),
+        event(
+            "EV-006",
+            "LOT-AMBIG-175",
+            "shipping",
+            450,
+            parent="EV-R-LOT-AMBIG-175",
+            source="DC-NORTH",
+            destination="STORE-08",
+        ),
+        event(
+            "EV-007",
+            "LOT-AMBIG-175",
+            "sale",
+            400,
+            parent="EV-006",
+            source="STORE-08",
+        ),
     ]
-    # Reconciliation derives from these immutable event and inventory records, not lot aggregates.
-    for lot in lots:
-        if not any(
-            event["lot_id"] == lot["lot_id"] and event["event_type"] == "receiving"
-            for event in events
-        ):
-            events.append(
-                {
-                    "event_id": f"EV-R-{lot['lot_id']}",
-                    "lot_id": lot["lot_id"],
-                    "event_type": "receiving",
-                    "quantity": lot["received_units"],
-                    "to_facility": "DC-NORTH",
-                }
-            )
-        for event_type, field in (
-            ("sale", "sold"),
-            ("return", "returned"),
-            ("quarantine", "quarantined"),
-            ("disposal", "disposed"),
-        ):
-            if lot[field] and not any(
-                event["lot_id"] == lot["lot_id"] and event["event_type"] == event_type
-                for event in events
-            ):
-                events.append(
-                    {
-                        "event_id": f"EV-{event_type[:1].upper()}-{lot['lot_id']}",
-                        "lot_id": lot["lot_id"],
-                        "event_type": event_type,
-                        "quantity": lot[field],
-                        "from_facility": "STORE-01",
-                    }
-                )
-    last_event: dict[str, str] = {}
-    for event in events:
-        event["parent_event_id"] = last_event.get(event["lot_id"])
-        last_event[event["lot_id"]] = event["event_id"]
+    for lot_id, received, sold in (
+        ("LOT-REJECT-190", 450, 350),
+        ("LOT-CONTROL-170", 300, 200),
+        ("LOT-NEAR-150", 360, 300),
+    ):
+        receiving_id = f"EV-R-{lot_id}"
+        movement_id = f"EV-M-{lot_id}"
+        events.extend(
+            [
+                event(receiving_id, lot_id, "receiving", received, destination="DC-NORTH"),
+                event(
+                    movement_id,
+                    lot_id,
+                    "shipping",
+                    sold,
+                    parent=receiving_id,
+                    source="DC-NORTH",
+                    destination="STORE-01",
+                ),
+                event(
+                    f"EV-S-{lot_id}",
+                    lot_id,
+                    "sale",
+                    sold,
+                    parent=movement_id,
+                    source="STORE-01",
+                ),
+            ]
+        )
     return {
         "dataset_id": "northstar-demo-20260830",
         "seed": seed,
@@ -256,7 +327,7 @@ def _dataset(seed: int) -> dict[str, Any]:
             {
                 "position_id": f"INV-{lot['lot_id']}",
                 "lot_id": lot["lot_id"],
-                "facility_id": "DC-NORTH",
+                "facility_id": ("DC-SOUTH" if lot["lot_id"] == "LOT-PROBABLE-160" else "DC-NORTH"),
                 "on_hand": lot["on_hand"],
                 "origin": ORIGIN,
             }
@@ -283,14 +354,17 @@ def generate_demo_dataset(*, output_dir: Path = DEMO_DATA_DIR, seed: int = SEED)
     if seed != SEED:
         raise ValueError(f"only the pinned deterministic seed {SEED} is supported")
     dataset = _dataset(seed)
+    dataset_text = _canonical_json(dataset) + "\n"
+    checksum = hashlib.sha256(dataset_text.encode()).hexdigest()
     manifest = {
         "dataset_id": dataset["dataset_id"],
         "seed": seed,
-        "sha256": _sha256(dataset),
+        "sha256": checksum,
         "files": ["dataset.json"],
+        "checksums": {"dataset.json": checksum},
         "origin": ORIGIN,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "dataset.json").write_text(_canonical_json(dataset) + "\n")
+    (output_dir / "dataset.json").write_text(dataset_text)
     (output_dir / "manifest.json").write_text(_canonical_json(manifest) + "\n")
     return {**dataset, "manifest": manifest}

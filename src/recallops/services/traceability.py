@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
+from recallops.config import get_settings
 from recallops.data.loaders import load_demo_dataset
 from recallops.models import RecallPredicate, Reconciliation
 
@@ -13,8 +15,19 @@ def _upc(value: str | None) -> str:
 
 
 class TraceabilityService:
-    def __init__(self, dataset: dict[str, Any] | None = None) -> None:
-        self.dataset = dataset or load_demo_dataset()
+    def __init__(
+        self,
+        dataset: dict[str, Any] | None = None,
+        *,
+        data_dir: Path | None = None,
+        source_mode: Literal["snapshot", "live"] | None = None,
+    ) -> None:
+        settings = get_settings()
+        self.data_dir = Path(data_dir) if data_dir is not None else settings.data_dir
+        self.source_mode = source_mode or settings.source_mode
+        if self.source_mode not in {"snapshot", "live"}:
+            raise ValueError("source_mode must be 'snapshot' or 'live'")
+        self.dataset = dataset if dataset is not None else load_demo_dataset(self.data_dir)
 
     def find_candidate_products(self, predicate: RecallPredicate) -> list[dict[str, Any]]:
         matches: list[dict[str, Any]] = []
@@ -69,7 +82,20 @@ class TraceabilityService:
         return ordered
 
     def trace_backward(self, lot_id: str) -> list[dict[str, Any]]:
-        return list(reversed(self.trace_forward(lot_id)))
+        events = [event for event in self.dataset["events"] if event["lot_id"] == lot_id]
+        by_id = {event["event_id"]: event for event in events}
+        depths: dict[str, int] = {}
+
+        def parent_depth(event: dict[str, Any]) -> int:
+            event_id = event["event_id"]
+            if event_id not in depths:
+                parent_id = event.get("parent_event_id")
+                depths[event_id] = 0 if parent_id is None else parent_depth(by_id[parent_id]) + 1
+            return depths[event_id]
+
+        # Descending ancestry depth guarantees every child precedes its parent and is
+        # derived by following parent_event_id rather than reversing storage order.
+        return sorted(events, key=lambda event: (-parent_depth(event), event["occurred_at"]))
 
     def get_inventory(self, lot_id: str | None = None) -> list[dict[str, Any]]:
         inventory = self.dataset["inventory_positions"]
@@ -104,9 +130,17 @@ class TraceabilityService:
             "returned": [item["event_id"] for item in events if item["event_type"] == "return"],
             "disposed": [item["event_id"] for item in events if item["event_type"] == "disposal"],
         }
-        return reconciliation.model_copy(
-            update={
+        evidence_ids = list(
+            dict.fromkeys(
+                item for identifiers in component_evidence.values() for item in identifiers
+            )
+        )
+        component_evidence["unaccounted"] = evidence_ids
+        return Reconciliation.model_validate(
+            {
+                **reconciliation.model_dump(),
                 "component_evidence": component_evidence,
-                "evidence_ids": [item for ids in component_evidence.values() for item in ids],
+                "evidence_ids": evidence_ids,
+                "verified": True,
             }
         )

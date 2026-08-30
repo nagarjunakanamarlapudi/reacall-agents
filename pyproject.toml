@@ -5,6 +5,7 @@ description = "Evidence-first, simulated food recall operations demo"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastmcp>=2.14,<3",
+  "httpx>=0.28,<1",
   "langchain-core>=1.0,<2",
   "langchain-mcp-adapters>=0.2,<0.3",
   "pydantic>=2.12,<3",

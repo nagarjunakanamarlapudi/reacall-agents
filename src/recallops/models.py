@@ -11,6 +11,8 @@ PUBLIC_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
 Provenance = Literal["OFFICIAL_OPENFDA_SNAPSHOT", "LIVE_OPENFDA"]
 ActionDecision = Literal["approve", "edit", "reject", "escalate"]
+MatchClassification = Literal["exact", "probable", "ambiguous", "rejected"]
+Disposition = Literal["dispose_unaccounted", "quarantined", "returned"]
 
 
 def _compact(value: str) -> str:
@@ -25,6 +27,7 @@ class RecallRecord(BaseModel):
     payload: dict[str, Any]
     sha256: str | None = None
     source_url: str | None = None
+    cached: bool = True
 
 
 class RecallPredicate(BaseModel):
@@ -67,6 +70,16 @@ class Product(BaseModel):
         return _compact(value) if value else value
 
 
+class CandidateProduct(Product):
+    score: float = Field(ge=0, le=1)
+    classification: Literal["exact", "probable", "rejected"]
+
+
+class ProductMetadata(BaseModel):
+    upc: str
+    source: str
+
+
 class Lot(BaseModel):
     lot_id: str
     product_id: str
@@ -80,6 +93,16 @@ class Lot(BaseModel):
     @classmethod
     def normalize_plant(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class LotMatch(Lot):
+    classification: MatchClassification
+    on_hand: int = Field(ge=0)
+    quarantined: int = Field(ge=0)
+    sold: int = Field(ge=0)
+    returned: int = Field(ge=0)
+    disposed: int = Field(ge=0)
+    unaccounted: int = Field(ge=0)
 
 
 class TraceEvent(BaseModel):
@@ -96,6 +119,14 @@ class TraceEvent(BaseModel):
     parent_event_id: str | None = None
 
 
+class InventoryPosition(BaseModel):
+    position_id: str
+    lot_id: str
+    facility_id: str
+    on_hand: int = Field(ge=0)
+    origin: Literal["SYNTHETIC_RETAILER_DIGITAL_TWIN"]
+
+
 class Reconciliation(BaseModel):
     lot_id: str
     received: int = Field(ge=0)
@@ -104,9 +135,56 @@ class Reconciliation(BaseModel):
     sold: int = Field(ge=0)
     returned: int = Field(ge=0)
     disposed: int = Field(ge=0)
-    unaccounted: int
+    unaccounted: int = Field(ge=0)
     evidence_ids: list[str] = Field(default_factory=list)
     component_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    verified: bool = False
+
+    @model_validator(mode="after")
+    def balanced_and_evidence_backed(self) -> Reconciliation:
+        accounted = (
+            self.on_hand
+            + self.quarantined
+            + self.sold
+            + self.returned
+            + self.disposed
+            + self.unaccounted
+        )
+        if self.received != accounted:
+            raise ValueError("reconciliation equation does not balance")
+        if self.verified:
+            components = {
+                "received",
+                "on_hand",
+                "quarantined",
+                "sold",
+                "returned",
+                "disposed",
+                "unaccounted",
+            }
+            if set(self.component_evidence) != components:
+                raise ValueError("verified reconciliation requires exact component evidence")
+            quantities = {
+                "received": self.received,
+                "on_hand": self.on_hand,
+                "quarantined": self.quarantined,
+                "sold": self.sold,
+                "returned": self.returned,
+                "disposed": self.disposed,
+            }
+            for component, quantity in quantities.items():
+                if quantity and not self.component_evidence[component]:
+                    raise ValueError(f"verified reconciliation lacks {component} evidence")
+            if not self.component_evidence["unaccounted"]:
+                raise ValueError("verified reconciliation lacks residual evidence")
+            component_ids = {
+                evidence_id
+                for identifiers in self.component_evidence.values()
+                for evidence_id in identifiers
+            }
+            if component_ids != set(self.evidence_ids):
+                raise ValueError("evidence_ids must equal the component evidence union")
+        return self
 
     @classmethod
     def from_quantities(
@@ -155,6 +233,7 @@ class ApprovalDecision(BaseModel):
     actor: str = Field(min_length=1)
     justification: str = Field(min_length=1)
     approved_at: datetime
+    approved_case_version: int = Field(ge=0)
     action_ids: list[str] = Field(default_factory=list)
 
 
@@ -175,7 +254,7 @@ class RecallCaseState(BaseModel):
     case_id: str
     thread_id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    status: str = "open"
+    status: Literal["open", "closed"] = "open"
     case_version: int = Field(default=0, ge=0)
     recall_number: str
     question: str = ""
@@ -185,6 +264,9 @@ class RecallCaseState(BaseModel):
     candidate_products: list[dict[str, Any]] = Field(default_factory=list)
     candidate_lots: list[dict[str, Any]] = Field(default_factory=list)
     trace_events: list[TraceEvent] = Field(default_factory=list)
+    confirmed_lot_ids: list[str] = Field(default_factory=list)
+    trace_event_ids: list[str] = Field(default_factory=list)
+    required_facilities: list[str] = Field(default_factory=list)
     reconciliation: list[Reconciliation] = Field(default_factory=list)
     proposed_actions: list[ProposedAction] = Field(default_factory=list)
     human_decision: ApprovalDecision | None = None
