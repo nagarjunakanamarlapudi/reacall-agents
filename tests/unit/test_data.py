@@ -133,13 +133,13 @@ def test_demo_twin_has_expected_referentially_valid_shape() -> None:
             actual = {row[ID_FIELDS[collection]] for row in dataset[collection]}
         else:
             actual = set(dataset[collection])
-        assert actual == expected
+        assert expected <= actual
 
 
 def test_named_matching_controls_are_stable() -> None:
     dataset = load_demo_dataset()
     controls = {lot["lot_id"]: lot["classification"] for lot in dataset["lots"]}
-    assert controls == {
+    assert {lot_id: controls[lot_id] for lot_id in EXPECTED_IDS["lots"]} == {
         "LOT-EXACT-170": "exact",
         "LOT-PROBABLE-160": "probable",
         "LOT-AMBIG-175": "ambiguous",
@@ -152,7 +152,7 @@ def test_named_matching_controls_are_stable() -> None:
 def test_committed_manifest_has_the_current_reviewed_hash() -> None:
     manifest_path = Path("data/synthetic/northstar_demo/manifest.json")
     assert hashlib.sha256(manifest_path.read_bytes()).hexdigest() == (
-        "282baa4ea9f9c1fcb90f6cd429b06275910c72679a7fffadebe719c22dd97f19"
+        "2356b37e583031e22512ec54472bb2336c0ae8c003addc7a6e0f8f78d85690ea"
     )
 
 
@@ -161,10 +161,32 @@ def test_demo_generation_is_deterministic_and_preserves_quantity_fixture(tmp_pat
     second = generate_demo_dataset(output_dir=tmp_path / "two", seed=20260830)
 
     assert first["manifest"]["sha256"] == second["manifest"]["sha256"]
+    assert (tmp_path / "one" / "dataset.json").read_bytes() == (
+        tmp_path / "two" / "dataset.json"
+    ).read_bytes()
+    assert (tmp_path / "one" / "manifest.json").read_bytes() == (
+        tmp_path / "two" / "manifest.json"
+    ).read_bytes()
     assert first["manifest"] == {
+        "schema_name": "recallops.synthetic-retailer-digital-twin",
+        "schema_version": "1.1.0",
         "dataset_id": "northstar-demo-20260830",
+        "generated_at": "2026-08-30T00:00:00Z",
         "seed": 20260830,
         "origin": ORIGIN,
+        "source_label": "SYNTHETIC — ACADEMIC DEMO",
+        "record_counts": {
+            "products": 48,
+            "lots": 144,
+            "facilities": 18,
+            "events": 577,
+            "inventory_positions": 216,
+            "supplier_shipments": 144,
+            "facility_acknowledgements": 18,
+            "cases": 0,
+            "tasks": 0,
+            "audit_receipts": 0,
+        },
         "files": ["dataset.json"],
         "checksums": {"dataset.json": first["manifest"]["checksums"]["dataset.json"]},
         "sha256": first["manifest"]["checksums"]["dataset.json"],
@@ -266,24 +288,22 @@ def test_loader_checks_raw_file_bytes_and_rejects_unlisted_files(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("collection", "field", "value"),
+    ("collection", "field"),
     [
-        ("products", "product_id", "P-OTHER"),
-        ("lots", "lot_id", "LOT-OTHER"),
-        ("facilities", "facility_id", "FACILITY-OTHER"),
-        ("events", "event_id", "EV-OTHER"),
-        ("inventory_positions", "position_id", "INV-OTHER"),
-        ("supplier_shipments", "shipment_id", "SHIP-OTHER"),
-        ("facility_acknowledgements", "facility_id", "FACILITY-OTHER"),
+        ("products", "product_id"),
+        ("lots", "lot_id"),
+        ("facilities", "facility_id"),
+        ("events", "event_id"),
+        ("inventory_positions", "position_id"),
+        ("supplier_shipments", "shipment_id"),
+        ("facility_acknowledgements", "facility_id"),
     ],
 )
-def test_validation_rejects_wrong_exact_id_in_every_collection(
-    collection: str, field: str, value: str
-) -> None:
+def test_validation_rejects_duplicate_id_in_every_collection(collection: str, field: str) -> None:
     dataset = deepcopy(load_demo_dataset())
     dataset.pop("manifest")
-    dataset[collection][0][field] = value
-    assert any("expected" in error or "id" in error for error in validate_manifest(dataset))
+    dataset[collection][0][field] = dataset[collection][1][field]
+    assert any("duplicate" in error or "missing" in error for error in validate_manifest(dataset))
 
 
 @pytest.mark.parametrize(

@@ -72,8 +72,19 @@ def test_traceability_scores_and_classifies_products_and_lots() -> None:
     assert candidates[0]["product_id"] == "P-EXACT"
     assert candidates[0]["score"] == 1.0
     assert candidates[0]["classification"] == "exact"
-    assert {
+    classifications = {
         match["lot_id"]: match["classification"] for match in traceability.match_lots(_predicate())
+    }
+    assert {
+        lot_id: classifications[lot_id]
+        for lot_id in {
+            "LOT-EXACT-170",
+            "LOT-PROBABLE-160",
+            "LOT-AMBIG-175",
+            "LOT-REJECT-190",
+            "LOT-CONTROL-170",
+            "LOT-NEAR-150",
+        }
     } == {
         "LOT-EXACT-170": "exact",
         "LOT-PROBABLE-160": "probable",

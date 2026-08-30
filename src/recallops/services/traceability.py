@@ -29,6 +29,31 @@ class TraceabilityService:
             raise ValueError("source_mode must be 'snapshot' or 'live'")
         self.dataset = dataset if dataset is not None else load_demo_dataset(self.data_dir)
 
+    def list_products(
+        self, *, query: str | None = None, offset: int = 0, limit: int = 20
+    ) -> dict[str, Any]:
+        """Return a stable catalog page for scaled-table and filtering demos."""
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a nonnegative integer")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("limit must be an integer from 1 through 100")
+        needle = (query or "").strip().casefold()
+        rows = sorted(self.dataset["products"], key=lambda row: row["product_id"])
+        if needle:
+            rows = [
+                row
+                for row in rows
+                if needle in f"{row['product_id']} {row['name']} {row.get('upc', '')}".casefold()
+            ]
+        total = len(rows)
+        return {
+            "items": rows[offset : offset + limit],
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + limit < total,
+        }
+
     def find_candidate_products(self, predicate: RecallPredicate) -> list[dict[str, Any]]:
         matches: list[dict[str, Any]] = []
         for product in self.dataset["products"]:
