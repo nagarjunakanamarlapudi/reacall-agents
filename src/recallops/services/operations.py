@@ -145,6 +145,7 @@ class OperationsService:
         key: str,
         details: dict[str, Any],
         transform: Any | None = None,
+        validator: Any | None = None,
     ) -> AuditReceipt:
         self._approval(approval, key)
         request_hash = self._request_hash(case_id, action, expected, details, approval)
@@ -165,6 +166,8 @@ class OperationsService:
                         f"expected version {expected}, current version is {row['version']}"
                     )
                 state = RecallCaseState.model_validate_json(row["state_json"])
+                if validator:
+                    validator(conn, state)
                 if transform:
                     state = transform(state)
                 receipt = AuditReceipt(
@@ -275,6 +278,10 @@ class OperationsService:
                 conn.execute(
                     "INSERT INTO cases VALUES (?, ?, ?)", (case_id, 1, state.model_dump_json())
                 )
+                conn.execute("INSERT INTO tasks VALUES (?, ?, ?)", (case_id, "DC-NORTH", "pending"))
+                conn.execute(
+                    "INSERT INTO acknowledgements VALUES (?, ?, ?)", (case_id, "DC-NORTH", 0)
+                )
                 conn.execute(
                     "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
@@ -352,6 +359,12 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
+        def validator(conn: sqlite3.Connection, _: RecallCaseState) -> None:
+            if not conn.execute(
+                "SELECT 1 FROM tasks WHERE case_id=? AND facility_id=?", (case_id, facility_id)
+            ).fetchone():
+                raise ClosureBlockedError("acknowledgment requires an existing facility task")
+
         return self._mutate(
             case_id=case_id,
             action="record_acknowledgment",
@@ -362,6 +375,7 @@ class OperationsService:
             transform=lambda s: s.model_copy(
                 update={"acknowledgements": {**s.acknowledgements, facility_id: True}}
             ),
+            validator=validator,
         )
 
     def record_disposition(
@@ -405,22 +419,29 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
     ) -> AuditReceipt:
-        state = self.get_case(case_id)
-        if state is None:
-            raise KeyError(f"unknown case {case_id}")
-        if not state.reconciliation:
-            raise ClosureBlockedError("closure blocked: reconciliation has not been verified")
-        if any(item.unaccounted != 0 for item in state.reconciliation):
-            raise ClosureBlockedError("closure blocked: unaccounted units remain")
-        if not state.acknowledgements or any(
-            not value for value in state.acknowledgements.values()
-        ):
-            raise ClosureBlockedError("closure blocked: facility acknowledgement remains")
-        if (
-            any(item.get("classification") == "ambiguous" for item in state.candidate_lots)
-            or state.evidence_gaps
-        ):
-            raise ClosureBlockedError("closure blocked: unresolved evidence remains")
+        def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
+            if not state.reconciliation or any(
+                item.unaccounted != 0 for item in state.reconciliation
+            ):
+                raise ClosureBlockedError(
+                    "closure blocked: unaccounted reconciliation units remain"
+                )
+            if state.evidence_gaps or any(
+                item.get("classification") == "ambiguous" for item in state.candidate_lots
+            ):
+                raise ClosureBlockedError("closure blocked: unresolved evidence remains")
+            tasks = conn.execute(
+                "SELECT facility_id FROM tasks WHERE case_id=?", (case_id,)
+            ).fetchall()
+            if not tasks or any(
+                not conn.execute(
+                    "SELECT acknowledged FROM acknowledgements WHERE case_id=? AND facility_id=?",
+                    (case_id, row["facility_id"]),
+                ).fetchone()["acknowledged"]
+                for row in tasks
+            ):
+                raise ClosureBlockedError("closure blocked: facility acknowledgement remains")
+
         return self._mutate(
             case_id=case_id,
             action="close_case",
@@ -429,4 +450,5 @@ class OperationsService:
             key=idempotency_key,
             details={},
             transform=lambda s: s.model_copy(update={"status": "closed"}),
+            validator=validator,
         )

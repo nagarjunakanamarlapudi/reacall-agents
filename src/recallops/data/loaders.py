@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from recallops.config import get_settings
 from recallops.data.generator import ORIGIN, _canonical_json
 from recallops.models import RecallRecord
 from recallops.paths import DEMO_DATA_DIR, PUBLIC_DATA_DIR
@@ -17,9 +18,12 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text())
 
 
-def load_recall_snapshot(recall_number: str = "H-1230-2026") -> RecallRecord:
-    payload_path = PUBLIC_DATA_DIR / f"{recall_number}.json"
-    metadata = _read_json(PUBLIC_DATA_DIR / f"{recall_number}.metadata.json")
+def load_recall_snapshot(
+    recall_number: str = "H-1230-2026", data_dir: Path | None = None
+) -> RecallRecord:
+    public_dir = (data_dir or get_settings().data_dir) / "public" if data_dir else PUBLIC_DATA_DIR
+    payload_path = public_dir / f"{recall_number}.json"
+    metadata = _read_json(public_dir / f"{recall_number}.metadata.json")
     raw_payload = payload_path.read_bytes()
     checksum = hashlib.sha256(raw_payload).hexdigest()
     if checksum != metadata["sha256"]:
@@ -106,12 +110,24 @@ def validate_manifest(dataset: dict[str, Any]) -> list[str]:
     return errors
 
 
-def load_demo_dataset(data_dir: Path = DEMO_DATA_DIR) -> dict[str, Any]:
+def load_demo_dataset(data_dir: Path | None = None) -> dict[str, Any]:
+    data_dir = data_dir or (
+        get_settings().data_dir / "synthetic" / "northstar_demo"
+        if get_settings().data_dir != Path("data")
+        else DEMO_DATA_DIR
+    )
     dataset = _read_json(data_dir / "dataset.json")
     manifest = _read_json(data_dir / "manifest.json")
     checksum = hashlib.sha256(_canonical_json(dataset).encode()).hexdigest()
     if checksum != manifest["sha256"]:
         raise ValueError("synthetic dataset checksum mismatch")
+    if (
+        manifest.get("dataset_id") != dataset.get("dataset_id")
+        or manifest.get("seed") != 20260830
+        or manifest.get("origin") != ORIGIN
+        or manifest.get("files") != ["dataset.json"]
+    ):
+        raise ValueError("synthetic dataset manifest metadata mismatch")
     errors = validate_manifest(dataset)
     if errors:
         raise ValueError("; ".join(errors))

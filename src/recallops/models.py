@@ -105,6 +105,8 @@ class Reconciliation(BaseModel):
     returned: int = Field(ge=0)
     disposed: int = Field(ge=0)
     unaccounted: int
+    evidence_ids: list[str] = Field(default_factory=list)
+    component_evidence: dict[str, list[str]] = Field(default_factory=dict)
 
     @classmethod
     def from_quantities(

@@ -84,12 +84,29 @@ class TraceabilityService:
         def quantity(event_type: str) -> int:
             return sum(event["quantity"] for event in events if event["event_type"] == event_type)
 
-        return Reconciliation.from_quantities(
+        inventory = self.get_inventory(lot_id)
+        reconciliation = Reconciliation.from_quantities(
             lot_id,
             received=quantity("receiving"),
-            on_hand=sum(item["on_hand"] for item in self.get_inventory(lot_id)),
+            on_hand=sum(item["on_hand"] for item in inventory),
             quarantined=quantity("quarantine"),
             sold=quantity("sale"),
             returned=quantity("return"),
             disposed=quantity("disposal"),
+        )
+        component_evidence = {
+            "received": [item["event_id"] for item in events if item["event_type"] == "receiving"],
+            "on_hand": [item["position_id"] for item in inventory],
+            "quarantined": [
+                item["event_id"] for item in events if item["event_type"] == "quarantine"
+            ],
+            "sold": [item["event_id"] for item in events if item["event_type"] == "sale"],
+            "returned": [item["event_id"] for item in events if item["event_type"] == "return"],
+            "disposed": [item["event_id"] for item in events if item["event_type"] == "disposal"],
+        }
+        return reconciliation.model_copy(
+            update={
+                "component_evidence": component_evidence,
+                "evidence_ids": [item for ids in component_evidence.values() for item in ids],
+            }
         )
