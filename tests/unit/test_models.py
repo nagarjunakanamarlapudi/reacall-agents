@@ -82,6 +82,8 @@ def test_every_case_version_contract_requires_a_strict_nonnegative_integer(
         case_id="CASE-1",
         target_ids=["LOT-1"],
         rationale="Reviewed containment action.",
+        evidence_by_target={"LOT-1": ["EV-1"]},
+        evidence_ids=["EV-1"],
         expected_case_version=1,
     )
     approval = ApprovalDecision(
@@ -140,6 +142,94 @@ def test_every_case_version_contract_requires_a_strict_nonnegative_integer(
         payload[field] = invalid_version
         with pytest.raises(ValidationError, match=field):
             model.model_validate(payload)
+
+
+def test_proposed_action_canonicalizes_and_freezes_target_evidence_in_approval_digest() -> None:
+    first = ProposedAction(
+        action_id="action-evidence",
+        action_type="apply_inventory_hold",
+        case_id="CASE-1",
+        target_ids=["LOT-B", "LOT-A"],
+        rationale="Reviewed exact lot evidence.",
+        evidence_by_target={"LOT-B": ["EV-2"], "LOT-A": ["EV-1"]},
+        evidence_ids=["EV-2", "EV-1"],
+        expected_case_version=1,
+    )
+    second = ProposedAction(
+        action_id="action-evidence",
+        action_type="apply_inventory_hold",
+        case_id="CASE-1",
+        target_ids=["LOT-B", "LOT-A"],
+        rationale="Reviewed exact lot evidence.",
+        evidence_by_target={"LOT-A": ["EV-1"], "LOT-B": ["EV-2"]},
+        evidence_ids=["EV-2", "EV-1"],
+        expected_case_version=1,
+    )
+
+    assert list(first.evidence_by_target) == ["LOT-A", "LOT-B"]
+    assert first.evidence_by_target["LOT-A"] == ("EV-1",)
+    assert first.model_dump(mode="json")["evidence_by_target"] == {
+        "LOT-A": ["EV-1"],
+        "LOT-B": ["EV-2"],
+    }
+    assert proposed_action_digest(first) == proposed_action_digest(second)
+    with pytest.raises(TypeError):
+        first.evidence_by_target["LOT-A"] = ("EV-MUTATED",)
+    with pytest.raises(TypeError):
+        first.evidence_by_target["LOT-A"][0] = "EV-MUTATED"
+
+
+@pytest.mark.parametrize(
+    ("evidence_by_target", "evidence_ids", "message"),
+    [
+        ({"LOT-A": ["EV-1"]}, ["EV-1"], "cover every target"),
+        (
+            {"LOT-A": ["EV-1"], "LOT-B": ["EV-2"], "LOT-X": ["EV-X"]},
+            ["EV-1", "EV-2", "EV-X"],
+            "cover every target",
+        ),
+        ({"LOT-A": ["EV-1"], "LOT-B": []}, ["EV-1"], "unsupported target"),
+        (
+            {"LOT-A": ["EV-1"], "LOT-B": ["EV-2"]},
+            ["EV-1"],
+            "equal the target evidence union",
+        ),
+        (
+            {"LOT-A": ["EV-1", "EV-1"], "LOT-B": ["EV-2"]},
+            ["EV-1", "EV-2"],
+            "unique nonblank",
+        ),
+    ],
+)
+def test_proposed_action_rejects_detached_or_noncanonical_target_evidence(
+    evidence_by_target: dict[str, list[str]],
+    evidence_ids: list[str],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ProposedAction(
+            action_id="action-evidence",
+            action_type="apply_inventory_hold",
+            case_id="CASE-1",
+            target_ids=["LOT-A", "LOT-B"],
+            rationale="Reviewed exact lot evidence.",
+            evidence_by_target=evidence_by_target,
+            evidence_ids=evidence_ids,
+            expected_case_version=1,
+        )
+
+
+def test_proposed_action_requires_explicit_target_evidence_even_for_no_targets() -> None:
+    with pytest.raises(ValidationError, match="evidence_by_target"):
+        ProposedAction(
+            action_id="action-close",
+            action_type="close_case",
+            case_id="CASE-1",
+            target_ids=[],
+            rationale="Reviewed closure.",
+            evidence_ids=[],
+            expected_case_version=1,
+        )
 
 
 def test_verified_reconciliation_requires_balanced_nonnegative_evidence() -> None:

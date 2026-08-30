@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    field_validator,
+    model_validator,
+)
 
 PUBLIC_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
@@ -232,8 +241,46 @@ class Reconciliation(BaseModel):
         )
 
 
+class FrozenEvidenceMap(Mapping[str, tuple[str, ...]]):
+    """Small immutable mapping used in approval-bound action contracts."""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, values: Mapping[str, tuple[str, ...]]) -> None:
+        object.__setattr__(self, "_items", tuple(sorted(values.items())))
+
+    def __setattr__(self, name: str, value: object) -> None:
+        del name, value
+        raise TypeError("FrozenEvidenceMap is immutable")
+
+    def __getitem__(self, key: str) -> tuple[str, ...]:
+        for target_id, identifiers in self._items:
+            if target_id == key:
+                return identifiers
+        raise KeyError(key)
+
+    def __iter__(self) -> Iterator[str]:
+        return (target_id for target_id, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> FrozenEvidenceMap:
+        del memo
+        return self
+
+
+EvidenceByTarget = Annotated[
+    Mapping[str, tuple[str, ...]],
+    PlainSerializer(
+        lambda value: dict(value),
+        return_type=dict[str, tuple[str, ...]],
+    ),
+]
+
+
 class ProposedAction(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     action_id: str = Field(min_length=1)
     action_type: Literal[
@@ -248,6 +295,7 @@ class ProposedAction(BaseModel):
     target_ids: tuple[str, ...] = Field(default_factory=tuple)
     rationale: str = Field(min_length=1)
     evidence_ids: tuple[str, ...] = Field(default_factory=tuple)
+    evidence_by_target: EvidenceByTarget
     expected_case_version: CaseVersion
 
     @field_validator("action_id", "case_id", "rationale")
@@ -265,6 +313,37 @@ class ProposedAction(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("identifiers must be unique")
         return value
+
+    @field_validator("evidence_by_target")
+    @classmethod
+    def freeze_target_evidence(
+        cls, value: Mapping[str, tuple[str, ...]]
+    ) -> FrozenEvidenceMap:
+        normalized: dict[str, tuple[str, ...]] = {}
+        for target_id, identifiers in value.items():
+            if not target_id.strip():
+                raise ValueError("target evidence identifiers must be unique nonblank values")
+            if any(not evidence_id.strip() for evidence_id in identifiers):
+                raise ValueError("target evidence identifiers must be unique nonblank values")
+            if len(identifiers) != len(set(identifiers)):
+                raise ValueError("target evidence identifiers must be unique nonblank values")
+            normalized[target_id] = tuple(sorted(identifiers))
+        return FrozenEvidenceMap(normalized)
+
+    @model_validator(mode="after")
+    def target_evidence_is_complete(self) -> ProposedAction:
+        if set(self.evidence_by_target) != set(self.target_ids):
+            raise ValueError("evidence_by_target must cover every target exactly")
+        if any(not identifiers for identifiers in self.evidence_by_target.values()):
+            raise ValueError("evidence_by_target contains an unsupported target")
+        union = {
+            evidence_id
+            for identifiers in self.evidence_by_target.values()
+            for evidence_id in identifiers
+        }
+        if union != set(self.evidence_ids):
+            raise ValueError("evidence_ids must equal the target evidence union")
+        return self
 
 
 def proposed_action_digest(action: ProposedAction) -> str:

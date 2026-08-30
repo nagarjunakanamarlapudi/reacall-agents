@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from pydantic import ValidationError
+
 from recallops.config import get_settings
 from recallops.models import (
     ApprovalDecision,
@@ -144,6 +146,12 @@ class OperationsService:
             proposed_action.expected_case_version,
             "proposed_action.expected_case_version",
         )
+        try:
+            proposed_action = ProposedAction.model_validate(
+                proposed_action.model_dump(mode="python")
+            )
+        except ValidationError as error:
+            raise ApprovalRequiredError("reviewed action contract is invalid") from error
         if (
             approval.decision != "approve"
             or not approval.actor.strip()
@@ -164,7 +172,7 @@ class OperationsService:
             raise ApprovalRequiredError("reviewed action type does not match the operation")
         if tuple(target_ids) != proposed_action.target_ids:
             raise ApprovalRequiredError("reviewed action targets do not match the operation")
-        if evidence_ids is not None and tuple(evidence_ids) != proposed_action.evidence_ids:
+        if evidence_ids is not None and set(evidence_ids) != set(proposed_action.evidence_ids):
             raise ApprovalRequiredError("reviewed action evidence does not match the operation")
         binding = next(
             (

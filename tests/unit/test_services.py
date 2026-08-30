@@ -80,6 +80,9 @@ def _create_action(case_id: str) -> ProposedAction:
         target_ids=inputs["confirmed_lot_ids"],
         rationale="Open the simulated recall case from reviewed evidence.",
         evidence_ids=inputs["trace_event_ids"],
+        evidence_by_target={
+            lot_id: inputs["trace_event_ids"] for lot_id in inputs["confirmed_lot_ids"]
+        },
         expected_case_version=0,
     )
 
@@ -93,13 +96,15 @@ def _review(
     evidence_ids: list[str] | None = None,
     decision: str = "approve",
 ) -> dict:
+    action_evidence = evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids]
     action = ProposedAction(
         action_id=f"{case_id}-{action_type}-{version}",
         action_type=action_type,
         case_id=case_id,
         target_ids=target_ids,
         rationale=f"Reviewed {action_type} against the case evidence.",
-        evidence_ids=evidence_ids or [],
+        evidence_ids=action_evidence,
+        evidence_by_target={target_id: action_evidence for target_id in target_ids},
         expected_case_version=version,
     )
     return {"proposed_action": action, "approval": _bound_approval(action, decision=decision)}
@@ -110,8 +115,13 @@ def _review(
     [
         {"case_id": "CASE-OTHER"},
         {"action_type": "apply_inventory_hold"},
-        {"target_ids": ["LOT-EXACT-170"]},
-        {"evidence_ids": ["EV-UNREVIEWED"]},
+        {
+            "target_ids": ["LOT-EXACT-170"],
+        },
+        {
+            "evidence_ids": ["EV-UNREVIEWED"],
+            "evidence_by_target": {"LOT-PROBABLE-160": ["EV-UNREVIEWED"]},
+        },
         {"rationale": "Changed after human review."},
     ],
 )
@@ -120,6 +130,13 @@ def test_operations_service_rejects_cross_case_or_mutated_reviewed_action(
 ) -> None:
     case_id = "CASE-BOUND-ACTION"
     reviewed = _create_action(case_id)
+    if "target_ids" in change:
+        change = {
+            **change,
+            "evidence_by_target": {
+                change["target_ids"][0]: list(reviewed.evidence_ids),
+            },
+        }
     changed = ProposedAction.model_validate({**reviewed.model_dump(), **change})
     service = OperationsService(storage_path=tmp_path / f"{next(iter(change))}.sqlite3")
 
@@ -210,6 +227,61 @@ def test_operations_service_revalidates_model_copy_version_bypasses(tmp_path: Pa
             approval=copied_approval,
             expected_case_version=0,
             idempotency_key="copied-version",
+        )
+
+
+def test_operations_service_rejects_post_approval_target_evidence_reallocation(
+    tmp_path: Path,
+) -> None:
+    """Catches target allocation living outside the canonical human-reviewed action digest."""
+    case_id = "CASE-TARGET-EVIDENCE"
+    service = OperationsService(storage_path=tmp_path / "target-evidence.sqlite3")
+    case_input = _case_input()
+    create_review = _review(
+        "create_case",
+        case_id,
+        0,
+        case_input["confirmed_lot_ids"],
+        evidence_ids=case_input["trace_event_ids"],
+    )
+    service.create_case(
+        case_id=case_id,
+        **case_input,
+        **create_review,
+        expected_case_version=0,
+        idempotency_key="target-evidence-create",
+    )
+    reviewed = ProposedAction(
+        action_id="target-evidence-hold",
+        action_type="apply_inventory_hold",
+        case_id=case_id,
+        target_ids=["LOT-PROBABLE-160", "LOT-EXACT-170"],
+        rationale="Hold each lot only for its reviewed evidence.",
+        evidence_by_target={
+            "LOT-PROBABLE-160": ["EV-A"],
+            "LOT-EXACT-170": ["EV-B"],
+        },
+        evidence_ids=["EV-A", "EV-B"],
+        expected_case_version=1,
+    )
+    changed = ProposedAction.model_validate(
+        {
+            **reviewed.model_dump(mode="python"),
+            "evidence_by_target": {
+                "LOT-PROBABLE-160": ["EV-B"],
+                "LOT-EXACT-170": ["EV-A"],
+            },
+        }
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="approval binding"):
+        service.apply_inventory_hold(
+            case_id=case_id,
+            lot_ids=["LOT-PROBABLE-160", "LOT-EXACT-170"],
+            proposed_action=changed,
+            approval=_bound_approval(reviewed),
+            expected_case_version=1,
+            idempotency_key="target-evidence-rejected",
         )
 
 

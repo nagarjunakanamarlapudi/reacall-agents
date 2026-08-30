@@ -89,13 +89,15 @@ def _review(
     evidence_ids: list[str] | None = None,
     approved_version: int | None = None,
 ) -> dict:
+    action_evidence = evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids]
     action = ProposedAction(
         action_id=f"{case_id}-{action_type}-{version}",
         action_type=action_type,
         case_id=case_id,
         target_ids=target_ids,
         rationale=f"Reviewed {action_type} through MCP.",
-        evidence_ids=evidence_ids or [],
+        evidence_ids=action_evidence,
+        evidence_by_target={target_id: action_evidence for target_id in target_ids},
         expected_case_version=version,
     )
     approval = ApprovalDecision(
@@ -201,6 +203,11 @@ async def test_all_servers_discovery_schemas_resources_trace_and_restart_replay(
     assert '"minItems": 1' in predicate_schema
     decision_schema = by_name["create_case"].args_schema["properties"]["decision"]
     assert decision_schema["enum"] == ["approve", "edit", "reject", "escalate"]
+    proposed_action_schema = by_name["create_case"].args_schema["properties"][
+        "proposed_action"
+    ]
+    assert "evidence_by_target" in proposed_action_schema["properties"]
+    assert "evidence_by_target" in proposed_action_schema["required"]
     for operation_name in {
         "create_case",
         "apply_inventory_hold",
@@ -444,8 +451,20 @@ async def test_direct_and_stdio_preserve_reviewed_version_for_rejection_conflict
         ("case_id", {"case_id": "CASE-CROSS-REPLAY"}),
         ("action_id", {"action_id": "post-review-action-id"}),
         ("action_type", {"action_type": "create_facility_tasks"}),
-        ("target_ids", {"target_ids": ["LOT-EXACT-170"]}),
-        ("evidence_ids", {"evidence_ids": ["EV-POST-REVIEW"]}),
+        (
+            "target_ids",
+            {
+                "target_ids": ["LOT-EXACT-170"],
+                "evidence_by_target": {"LOT-EXACT-170": ["EVIDENCE-LOT-PROBABLE-160"]},
+            },
+        ),
+        (
+            "evidence_ids",
+            {
+                "evidence_ids": ["EV-POST-REVIEW"],
+                "evidence_by_target": {"LOT-PROBABLE-160": ["EV-POST-REVIEW"]},
+            },
+        ),
         ("rationale", {"rationale": "Changed after the human reviewed it."}),
         ("expected_case_version", {"expected_case_version": 2}),
     ],
@@ -539,3 +558,119 @@ async def test_exact_proposal_replay_is_one_receipt_but_changed_proposal_conflic
     assert [receipt.action_type for receipt in stored.write_receipts].count(
         "apply_inventory_hold"
     ) == 1
+
+
+def _target_evidence_review(case_id: str) -> dict:
+    action = ProposedAction(
+        action_id=f"{case_id}-target-evidence",
+        action_type="apply_inventory_hold",
+        case_id=case_id,
+        target_ids=["LOT-PROBABLE-160", "LOT-EXACT-170"],
+        rationale="Hold each lot only for its reviewed evidence.",
+        evidence_by_target={
+            "LOT-PROBABLE-160": ["EV-A"],
+            "LOT-EXACT-170": ["EV-B"],
+        },
+        evidence_ids=["EV-A", "EV-B"],
+        expected_case_version=1,
+    )
+    approval = ApprovalDecision(
+        decision="approve",
+        actor="integration-reviewer",
+        justification="reviewed the exact target-to-evidence allocation",
+        approved_at=datetime(2026, 8, 30, 16, 0, tzinfo=UTC),
+        approved_case_version=1,
+        approved_case_id=case_id,
+        action_ids=[action.action_id],
+        action_bindings=[
+            ApprovalBinding(
+                action_id=action.action_id,
+                action_digest=proposed_action_digest(action),
+            )
+        ],
+    )
+    changed = ProposedAction.model_validate(
+        {
+            **action.model_dump(mode="python"),
+            "evidence_by_target": {
+                "LOT-PROBABLE-160": ["EV-B"],
+                "LOT-EXACT-170": ["EV-A"],
+            },
+        }
+    )
+    return {"action": action, "approval": approval, "changed": changed}
+
+
+@pytest.mark.parametrize("gateway_kind", ["direct", "stdio"])
+@pytest.mark.asyncio
+async def test_target_evidence_mutation_after_approval_is_rejected_direct_and_stdio(
+    tmp_path: Path,
+    gateway_kind: str,
+) -> None:
+    case_id = f"CASE-TARGET-EVIDENCE-REJECT-{gateway_kind.upper()}"
+    database = tmp_path / f"target-evidence-reject-{gateway_kind}.sqlite3"
+    gateway = (
+        DirectGateway(operations=OperationsService(storage_path=database))
+        if gateway_kind == "direct"
+        else StdioMCPGateway(_connections(database))
+    )
+    await gateway.create_case(**_case_kwargs(case_id))
+    review = _target_evidence_review(case_id)
+
+    expected_error = ApprovalRequiredError if gateway_kind == "direct" else Exception
+    with pytest.raises(expected_error, match="approval binding"):
+        await gateway.apply_inventory_hold(
+            case_id=case_id,
+            lot_ids=["LOT-PROBABLE-160", "LOT-EXACT-170"],
+            proposed_action=review["changed"],
+            approval=review["approval"],
+            expected_case_version=1,
+            idempotency_key="target-evidence-rejected",
+        )
+
+
+@pytest.mark.parametrize("gateway_kind", ["direct", "stdio"])
+@pytest.mark.asyncio
+async def test_target_evidence_change_conflicts_with_exact_replay_key_direct_and_stdio(
+    tmp_path: Path,
+    gateway_kind: str,
+) -> None:
+    case_id = f"CASE-TARGET-EVIDENCE-CONFLICT-{gateway_kind.upper()}"
+    database = tmp_path / f"target-evidence-conflict-{gateway_kind}.sqlite3"
+    gateway = (
+        DirectGateway(operations=OperationsService(storage_path=database))
+        if gateway_kind == "direct"
+        else StdioMCPGateway(_connections(database))
+    )
+    await gateway.create_case(**_case_kwargs(case_id))
+    review = _target_evidence_review(case_id)
+    request = {
+        "case_id": case_id,
+        "lot_ids": ["LOT-PROBABLE-160", "LOT-EXACT-170"],
+        "proposed_action": review["action"],
+        "approval": review["approval"],
+        "expected_case_version": 1,
+        "idempotency_key": "target-evidence-replay",
+    }
+
+    first = await gateway.apply_inventory_hold(**request)
+    assert await gateway.apply_inventory_hold(**request) == first
+    changed_approval = review["approval"].model_copy(
+        update={
+            "action_bindings": (
+                ApprovalBinding(
+                    action_id=review["changed"].action_id,
+                    action_digest=proposed_action_digest(review["changed"]),
+                ),
+            )
+        }
+    )
+    expected_error = IdempotencyConflictError if gateway_kind == "direct" else Exception
+    with pytest.raises(expected_error, match="idempotency key is bound"):
+        await gateway.apply_inventory_hold(
+            **{
+                **request,
+                "proposed_action": review["changed"],
+                "approval": changed_approval,
+            }
+        )

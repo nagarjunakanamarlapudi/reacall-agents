@@ -175,14 +175,8 @@ class CommunicationDraft(BaseModel):
         return self
 
 
-class ActionTargetEvidence(BaseModel):
-    action_id: str
-    evidence_by_target: dict[str, list[str]]
-
-
 class ContainmentProposal(BaseModel):
     proposed_actions: list[ProposedAction]
-    action_evidence: list[ActionTargetEvidence] = Field(default_factory=list)
     communication_drafts: list[CommunicationDraft]
     all_cited_evidence_ids: list[str]
     executed: Literal[False] = False
@@ -195,22 +189,9 @@ class ContainmentProposal(BaseModel):
         } | {evidence_id for action in self.proposed_actions for evidence_id in action.evidence_ids}
         if not cited <= allowed:
             raise ValueError("draft cites unknown evidence")
-        evidence_by_action = {
-            item.action_id: item.evidence_by_target for item in self.action_evidence
-        }
-        if set(evidence_by_action) != {action.action_id for action in self.proposed_actions}:
-            raise ValueError("target evidence is required for every proposed action")
         for action in self.proposed_actions:
-            by_target = evidence_by_action[action.action_id]
-            if set(by_target) != set(action.target_ids):
+            if not action.evidence_by_target and action.target_ids:
                 raise ValueError(f"action {action.action_id} lacks target-specific evidence")
-            if any(not identifiers for identifiers in by_target.values()):
-                raise ValueError(f"action {action.action_id} has an unsupported target")
-            union = {
-                evidence_id for identifiers in by_target.values() for evidence_id in identifiers
-            }
-            if union != set(action.evidence_ids):
-                raise ValueError(f"action {action.action_id} evidence is not target-specific")
         return self
 
 
@@ -460,7 +441,6 @@ def assess_traceability(
     if set(event_ids) & set(inventory_ids):
         raise ValueError("event and inventory evidence identifiers collide")
     event_by_id = {event.event_id: event for event in typed_events}
-    inventory_by_id = {item.position_id: item for item in typed_inventory}
     for event in typed_events:
         if event.lot_id not in allowed_lots:
             raise ValueError(f"event {event.event_id} is outside delegated lot scope")
@@ -503,6 +483,59 @@ def assess_traceability(
             if parent_facility != child_facility:
                 raise ValueError(f"facility continuity mismatch for {event.event_id}")
 
+    event_components = {
+        "received": "receiving",
+        "quarantined": "quarantine",
+        "sold": "sale",
+        "returned": "return",
+        "disposed": "disposal",
+    }
+
+    def expected_reconciliation(lot_id: str) -> Reconciliation:
+        lot_events = [event for event in typed_events if event.lot_id == lot_id]
+        lot_inventory = [item for item in typed_inventory if item.lot_id == lot_id]
+        quantities = {
+            component: sum(
+                event.quantity for event in lot_events if event.event_type == event_type
+            )
+            for component, event_type in event_components.items()
+        }
+        quantities["on_hand"] = sum(position.on_hand for position in lot_inventory)
+        derived = Reconciliation.from_quantities(lot_id, **quantities)
+        component_evidence = {
+            component: [
+                event.event_id for event in lot_events if event.event_type == event_type
+            ]
+            for component, event_type in event_components.items()
+        }
+        component_evidence["on_hand"] = [position.position_id for position in lot_inventory]
+        # Match TraceabilityService semantics exactly: returns remain a separate
+        # disposition, and shipping/transfer movements do not change reconciliation.
+        ordered_components = (
+            "received",
+            "on_hand",
+            "quarantined",
+            "sold",
+            "returned",
+            "disposed",
+        )
+        evidence_ids = list(
+            dict.fromkeys(
+                evidence_id
+                for component in ordered_components
+                for evidence_id in component_evidence[component]
+            )
+        )
+        component_evidence["unaccounted"] = evidence_ids
+        return Reconciliation.model_validate(
+            {
+                **derived.model_dump(mode="python"),
+                "evidence_ids": evidence_ids,
+                "component_evidence": component_evidence,
+                "verified": True,
+            }
+        )
+
     reconciliation_by_lot: dict[str, Reconciliation] = {}
     for reconciliation in typed_reconciliations:
         if reconciliation.lot_id not in allowed_lots:
@@ -511,60 +544,56 @@ def assess_traceability(
             )
         if reconciliation.lot_id in reconciliation_by_lot:
             raise ValueError(f"duplicate reconciliation for {reconciliation.lot_id}")
-        known_evidence = set(event_ids) | set(inventory_ids)
-        component_evidence_ids = {
+        expected = expected_reconciliation(reconciliation.lot_id)
+        supplied_lot_evidence = {
             evidence_id
             for identifiers in reconciliation.component_evidence.values()
             for evidence_id in identifiers
-        }
-        unknown = (set(reconciliation.evidence_ids) | component_evidence_ids) - known_evidence
-        if unknown:
+        } | set(reconciliation.evidence_ids)
+        unknown_evidence = supplied_lot_evidence - (set(event_ids) | set(inventory_ids))
+        if unknown_evidence:
             raise ValueError(
-                f"{reconciliation.lot_id} has unknown reconciliation evidence: {sorted(unknown)}"
+                f"{reconciliation.lot_id} has unknown reconciliation evidence: "
+                f"{sorted(unknown_evidence)}"
             )
-        if component_evidence_ids != set(reconciliation.evidence_ids):
+        quantity_mismatches = [
+            component
+            for component in (
+                "received",
+                "on_hand",
+                "quarantined",
+                "sold",
+                "returned",
+                "disposed",
+                "unaccounted",
+            )
+            if getattr(reconciliation, component) != getattr(expected, component)
+        ]
+        if quantity_mismatches:
             raise ValueError(
-                f"{reconciliation.lot_id} reconciliation evidence differs from its components"
+                f"{reconciliation.lot_id} {', '.join(quantity_mismatches)} conflicts with typed evidence"
             )
-        expected_event_types = {
-            "received": "receiving",
-            "quarantined": "quarantine",
-            "sold": "sale",
-            "returned": "return",
-            "disposed": "disposal",
-        }
-        allowed_components = {*expected_event_types, "on_hand", "unaccounted"}
-        unknown_components = set(reconciliation.component_evidence) - allowed_components
-        if unknown_components:
+        for component in (
+            "received",
+            "on_hand",
+            "quarantined",
+            "sold",
+            "returned",
+            "disposed",
+            "unaccounted",
+        ):
+            supplied_ids = reconciliation.component_evidence.get(component)
+            expected_ids = expected.component_evidence[component]
+            if supplied_ids != expected_ids:
+                raise ValueError(
+                    f"{reconciliation.lot_id} {component} evidence must be complete and exact"
+                )
+        if reconciliation.evidence_ids != expected.evidence_ids:
             raise ValueError(
-                f"{reconciliation.lot_id} has unknown reconciliation components: "
-                f"{sorted(unknown_components)}"
+                f"{reconciliation.lot_id} reconciliation evidence must be complete and exact"
             )
-        for component, identifiers in reconciliation.component_evidence.items():
-            for evidence_id in identifiers:
-                if component == "on_hand":
-                    position = inventory_by_id.get(evidence_id)
-                    if position is None or position.lot_id != reconciliation.lot_id:
-                        raise ValueError(f"{reconciliation.lot_id} has mismatched on_hand evidence")
-                elif component in expected_event_types:
-                    event = event_by_id.get(evidence_id)
-                    if (
-                        event is None
-                        or event.lot_id != reconciliation.lot_id
-                        or event.event_type != expected_event_types[component]
-                    ):
-                        raise ValueError(
-                            f"{reconciliation.lot_id} has mismatched {component} evidence"
-                        )
-                elif component == "unaccounted":
-                    event = event_by_id.get(evidence_id)
-                    position = inventory_by_id.get(evidence_id)
-                    if (event is None or event.lot_id != reconciliation.lot_id) and (
-                        position is None or position.lot_id != reconciliation.lot_id
-                    ):
-                        raise ValueError(
-                            f"{reconciliation.lot_id} has unknown or mismatched residual evidence"
-                        )
+        if not reconciliation.verified:
+            raise ValueError(f"{reconciliation.lot_id} reconciliation evidence is unverified")
         reconciliation_by_lot[reconciliation.lot_id] = reconciliation
 
     gaps: list[str] = []
@@ -729,7 +758,6 @@ def draft_containment(
         facility_evidence[facility] = identifiers
 
     proposed_actions: list[ProposedAction] = []
-    target_evidence: list[ActionTargetEvidence] = []
     if matching.confirmed_lot_ids:
         action_id = f"{case_id}-hold-v{expected_case_version}"
         evidence_by_lot = {lot_id: lot_evidence[lot_id] for lot_id in matching.confirmed_lot_ids}
@@ -741,11 +769,9 @@ def draft_containment(
                 target_ids=matching.confirmed_lot_ids,
                 rationale="Hold only confirmed exact/probable lots pending human authorization.",
                 evidence_ids=ordered_union(evidence_by_lot),
+                evidence_by_target=evidence_by_lot,
                 expected_case_version=expected_case_version,
             )
-        )
-        target_evidence.append(
-            ActionTargetEvidence(action_id=action_id, evidence_by_target=evidence_by_lot)
         )
     if traceability.affected_facilities:
         action_id = f"{case_id}-facility-tasks-v{expected_case_version}"
@@ -757,11 +783,9 @@ def draft_containment(
                 target_ids=traceability.affected_facilities,
                 rationale="Request inventory verification and acknowledgement at traced facilities.",
                 evidence_ids=ordered_union(facility_evidence),
+                evidence_by_target=facility_evidence,
                 expected_case_version=expected_case_version,
             )
-        )
-        target_evidence.append(
-            ActionTargetEvidence(action_id=action_id, evidence_by_target=facility_evidence)
         )
 
     reviewed_lots = [*matching.confirmed_lot_ids, *matching.ambiguous_lot_ids]
@@ -802,7 +826,6 @@ def draft_containment(
     )
     return ContainmentProposal(
         proposed_actions=proposed_actions,
-        action_evidence=target_evidence,
         communication_drafts=drafts,
         all_cited_evidence_ids=cited,
         executed=False,

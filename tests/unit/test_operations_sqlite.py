@@ -40,13 +40,19 @@ def reviewed(
     evidence_ids: list[str] | None = None,
     actor: str = "reviewer",
 ) -> dict[str, Any]:
+    action_evidence = (
+        evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids]
+        if target_ids
+        else []
+    )
     action = ProposedAction(
         action_id=f"{case_id}-{action_type}-{version}",
         action_type=action_type,
         case_id=case_id,
         target_ids=target_ids,
         rationale=f"Reviewed {action_type} against authoritative evidence.",
-        evidence_ids=evidence_ids or [],
+        evidence_ids=action_evidence,
+        evidence_by_target={target_id: action_evidence for target_id in target_ids},
         expected_case_version=version,
     )
     approval = ApprovalDecision(

@@ -747,13 +747,18 @@ def _action(
     evidence_ids: list[str] | None = None,
     version: int = 4,
 ) -> ProposedAction:
+    resolved_targets = target_ids if target_ids is not None else ["LOT-1"]
+    resolved_evidence = (
+        evidence_ids if evidence_ids is not None else (["EV-1"] if resolved_targets else [])
+    )
     return ProposedAction(
         action_id=action_id,
         action_type=action_type,
         case_id=case_id,
-        target_ids=target_ids if target_ids is not None else ["LOT-1"],
+        target_ids=resolved_targets,
         rationale=rationale,
-        evidence_ids=evidence_ids if evidence_ids is not None else ["EV-1"],
+        evidence_ids=resolved_evidence,
+        evidence_by_target={target_id: resolved_evidence for target_id in resolved_targets},
         expected_case_version=version,
     )
 

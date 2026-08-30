@@ -7,7 +7,7 @@ import math
 from collections.abc import Collection, Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 from recallops.models import (
@@ -155,6 +155,12 @@ class ApprovalGuard:
             proposed_action.expected_case_version,
             "proposed_action.expected_case_version",
         )
+        try:
+            proposed_action = ProposedAction.model_validate(
+                proposed_action.model_dump(mode="python")
+            )
+        except ValidationError as error:
+            raise ApprovalScopeError("proposed action contract is invalid") from error
         if approval.decision != "approve":
             raise ApprovalDeniedError("side effects require an explicit approve decision")
         if not approval.actor.strip() or not approval.justification.strip():
