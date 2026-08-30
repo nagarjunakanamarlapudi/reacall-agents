@@ -316,7 +316,7 @@ class DocumentationContractTests(unittest.TestCase):
 
             self.assertGreaterEqual(
                 node_top - label_bottom,
-                8,
+                10,
                 f"{cluster_id} title needs visible clearance above {first_node_name}",
             )
 
