@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from recallops.models import ApprovalDecision, RecallPredicate, Reconciliation
+from recallops.models import ApprovalDecision, RecallPredicate
 from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
@@ -36,37 +36,23 @@ def _approval(decision: str = "approve", version: int = 0) -> ApprovalDecision:
     )
 
 
-def _reconciliation(*, unaccounted: int = 0) -> Reconciliation:
-    return Reconciliation(
-        lot_id="LOT-EXACT-170",
-        received=10,
-        on_hand=10 - unaccounted,
-        quarantined=0,
-        sold=0,
-        returned=0,
-        disposed=0,
-        unaccounted=unaccounted,
-        evidence_ids=["EV-RECEIVE", "INV-EXACT"],
-        component_evidence={
-            "received": ["EV-RECEIVE"],
-            "on_hand": ["INV-EXACT"],
-            "quarantined": [],
-            "sold": [],
-            "returned": [],
-            "disposed": [],
-            "unaccounted": ["EV-RECEIVE", "INV-EXACT"],
-        },
-        verified=True,
-    )
-
-
 def _case_input(*, unaccounted: int = 0) -> dict:
+    traceability = TraceabilityService()
+    lot_id = "LOT-EXACT-170" if unaccounted else "LOT-PROBABLE-160"
+    events = traceability.trace_forward(lot_id)
     return {
         "recall_number": "H-1230-2026",
-        "confirmed_lot_ids": ["LOT-EXACT-170"],
-        "trace_event_ids": ["EV-RECEIVE"],
-        "required_facilities": ["DC-NORTH"],
-        "reconciliation": [_reconciliation(unaccounted=unaccounted)],
+        "confirmed_lot_ids": [lot_id],
+        "trace_event_ids": [event["event_id"] for event in events],
+        "required_facilities": sorted(
+            {
+                facility
+                for event in events
+                for facility in (event.get("from_facility"), event.get("to_facility"))
+                if facility
+            }
+        ),
+        "reconciliation": [traceability.reconcile_units(lot_id)],
         "evidence_gaps": [],
     }
 
@@ -155,7 +141,7 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
     with pytest.raises(ApprovalRequiredError):
         operations.apply_inventory_hold(
             case_id="CASE-001",
-            lot_ids=["LOT-EXACT-170"],
+            lot_ids=["LOT-PROBABLE-160"],
             approval=_approval("reject", 1),
             expected_case_version=1,
             idempotency_key="hold-rejected",
@@ -163,14 +149,14 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
     with pytest.raises(StaleCaseVersionError):
         operations.apply_inventory_hold(
             case_id="CASE-001",
-            lot_ids=["LOT-EXACT-170"],
+            lot_ids=["LOT-PROBABLE-160"],
             approval=_approval(),
             expected_case_version=0,
             idempotency_key="hold-stale",
         )
     receipt = operations.apply_inventory_hold(
         case_id="CASE-001",
-        lot_ids=["LOT-EXACT-170"],
+        lot_ids=["LOT-PROBABLE-160"],
         approval=_approval(version=1),
         expected_case_version=1,
         idempotency_key="hold-idempotent",
@@ -178,7 +164,7 @@ def test_operations_rejects_unapproved_and_stale_writes_and_is_idempotent(tmp_pa
 
     replay = operations.apply_inventory_hold(
         case_id="CASE-001",
-        lot_ids=["LOT-EXACT-170"],
+        lot_ids=["LOT-PROBABLE-160"],
         approval=_approval(version=1),
         expected_case_version=1,
         idempotency_key="hold-idempotent",
@@ -207,38 +193,32 @@ def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unres
         )
 
 
-def test_operations_can_close_only_after_disposition_and_acknowledgement(tmp_path: Path) -> None:
+def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
+    tmp_path: Path,
+) -> None:
     operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
     operations.create_case(
         case_id="CASE-SAFE",
-        **_case_input(unaccounted=1),
+        **_case_input(),
         approval=_approval(),
         expected_case_version=0,
         idempotency_key="safe-create",
     )
-    operations.record_disposition(
-        case_id="CASE-SAFE",
-        lot_id="LOT-EXACT-170",
-        disposition="dispose_unaccounted",
-        evidence_id="EV-DISPOSE",
-        approval=_approval(version=1),
-        expected_case_version=1,
-        idempotency_key="safe-dispose",
-    )
     operations.create_facility_tasks(
         case_id="CASE-SAFE",
-        facility_ids=["DC-NORTH"],
-        approval=_approval(version=2),
-        expected_case_version=2,
+        facility_ids=["DC-SOUTH", "STORE-03"],
+        approval=_approval(version=1),
+        expected_case_version=1,
         idempotency_key="safe-tasks",
     )
-    operations.record_acknowledgment(
-        case_id="CASE-SAFE",
-        facility_id="DC-NORTH",
-        approval=_approval(version=3),
-        expected_case_version=3,
-        idempotency_key="safe-ack",
-    )
+    for version, facility_id in enumerate(("DC-SOUTH", "STORE-03"), start=2):
+        operations.record_acknowledgment(
+            case_id="CASE-SAFE",
+            facility_id=facility_id,
+            approval=_approval(version=version),
+            expected_case_version=version,
+            idempotency_key=f"safe-ack-{facility_id}",
+        )
     receipt = operations.close_case(
         case_id="CASE-SAFE",
         approval=_approval(version=4),

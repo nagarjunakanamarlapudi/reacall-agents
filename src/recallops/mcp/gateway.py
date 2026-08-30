@@ -11,10 +11,12 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from recallops.models import (
     ApprovalDecision,
     CandidateProduct,
+    Disposition,
     InventoryPosition,
     LotMatch,
     ProductMetadata,
     RecallPredicate,
+    Reconciliation,
     TraceEvent,
 )
 from recallops.services.operations import OperationsService
@@ -35,12 +37,67 @@ class Gateway(Protocol):
     async def get_inventory(self, lot_id: str | None = None) -> list[dict[str, Any]]: ...
     async def get_sales(self, lot_id: str) -> list[dict[str, Any]]: ...
     async def reconcile_units(self, lot_id: str) -> dict[str, Any]: ...
-    async def create_case(self, **kwargs: Any) -> dict[str, Any]: ...
-    async def apply_inventory_hold(self, **kwargs: Any) -> dict[str, Any]: ...
-    async def create_facility_tasks(self, **kwargs: Any) -> dict[str, Any]: ...
-    async def record_acknowledgment(self, **kwargs: Any) -> dict[str, Any]: ...
-    async def record_disposition(self, **kwargs: Any) -> dict[str, Any]: ...
-    async def close_case(self, **kwargs: Any) -> dict[str, Any]: ...
+    async def create_case(
+        self,
+        *,
+        case_id: str,
+        recall_number: str,
+        confirmed_lot_ids: list[str],
+        trace_event_ids: list[str],
+        required_facilities: list[str],
+        reconciliation: list[Reconciliation | dict[str, Any]],
+        evidence_gaps: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+        question: str = "",
+    ) -> dict[str, Any]: ...
+    async def apply_inventory_hold(
+        self,
+        *,
+        case_id: str,
+        lot_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+    async def create_facility_tasks(
+        self,
+        *,
+        case_id: str,
+        facility_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+    async def record_acknowledgment(
+        self,
+        *,
+        case_id: str,
+        facility_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+    async def record_disposition(
+        self,
+        *,
+        case_id: str,
+        lot_id: str,
+        disposition: Disposition,
+        evidence_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+    async def close_case(
+        self,
+        *,
+        case_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
 
 
 def _json(value: Any) -> Any:
@@ -113,23 +170,133 @@ class DirectGateway:
     async def reconcile_units(self, lot_id: str):
         return _json(self.traceability.reconcile_units(lot_id))
 
-    async def create_case(self, **kwargs: Any):
-        return _json(self.operations.create_case(**kwargs))
+    async def create_case(
+        self,
+        *,
+        case_id: str,
+        recall_number: str,
+        confirmed_lot_ids: list[str],
+        trace_event_ids: list[str],
+        required_facilities: list[str],
+        reconciliation: list[Reconciliation | dict[str, Any]],
+        evidence_gaps: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+        question: str = "",
+    ):
+        return _json(
+            self.operations.create_case(
+                case_id=case_id,
+                recall_number=recall_number,
+                confirmed_lot_ids=confirmed_lot_ids,
+                trace_event_ids=trace_event_ids,
+                required_facilities=required_facilities,
+                reconciliation=reconciliation,
+                evidence_gaps=evidence_gaps,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+                question=question,
+            )
+        )
 
-    async def apply_inventory_hold(self, **kwargs: Any):
-        return _json(self.operations.apply_inventory_hold(**kwargs))
+    async def apply_inventory_hold(
+        self,
+        *,
+        case_id: str,
+        lot_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return _json(
+            self.operations.apply_inventory_hold(
+                case_id=case_id,
+                lot_ids=lot_ids,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+            )
+        )
 
-    async def create_facility_tasks(self, **kwargs: Any):
-        return _json(self.operations.create_facility_tasks(**kwargs))
+    async def create_facility_tasks(
+        self,
+        *,
+        case_id: str,
+        facility_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return _json(
+            self.operations.create_facility_tasks(
+                case_id=case_id,
+                facility_ids=facility_ids,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+            )
+        )
 
-    async def record_acknowledgment(self, **kwargs: Any):
-        return _json(self.operations.record_acknowledgment(**kwargs))
+    async def record_acknowledgment(
+        self,
+        *,
+        case_id: str,
+        facility_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return _json(
+            self.operations.record_acknowledgment(
+                case_id=case_id,
+                facility_id=facility_id,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+            )
+        )
 
-    async def record_disposition(self, **kwargs: Any):
-        return _json(self.operations.record_disposition(**kwargs))
+    async def record_disposition(
+        self,
+        *,
+        case_id: str,
+        lot_id: str,
+        disposition: Disposition,
+        evidence_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return _json(
+            self.operations.record_disposition(
+                case_id=case_id,
+                lot_id=lot_id,
+                disposition=disposition,
+                evidence_id=evidence_id,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+            )
+        )
 
-    async def close_case(self, **kwargs: Any):
-        return _json(self.operations.close_case(**kwargs))
+    async def close_case(
+        self,
+        *,
+        case_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return _json(
+            self.operations.close_case(
+                case_id=case_id,
+                approval=approval,
+                expected_case_version=expected_case_version,
+                idempotency_key=idempotency_key,
+            )
+        )
 
 
 class StdioMCPGateway:
@@ -204,23 +371,139 @@ class StdioMCPGateway:
     async def reconcile_units(self, lot_id: str):
         return await self._call("traceability", "reconcile_units", {"lot_id": lot_id})
 
-    async def create_case(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("create_case", approval, kwargs)
+    async def create_case(
+        self,
+        *,
+        case_id: str,
+        recall_number: str,
+        confirmed_lot_ids: list[str],
+        trace_event_ids: list[str],
+        required_facilities: list[str],
+        reconciliation: list[Reconciliation | dict[str, Any]],
+        evidence_gaps: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+        question: str = "",
+    ):
+        return await self._write(
+            "create_case",
+            approval,
+            {
+                "case_id": case_id,
+                "recall_number": recall_number,
+                "confirmed_lot_ids": confirmed_lot_ids,
+                "trace_event_ids": trace_event_ids,
+                "required_facilities": required_facilities,
+                "reconciliation": reconciliation,
+                "evidence_gaps": evidence_gaps,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+                "question": question,
+            },
+        )
 
-    async def apply_inventory_hold(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("apply_inventory_hold", approval, kwargs)
+    async def apply_inventory_hold(
+        self,
+        *,
+        case_id: str,
+        lot_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return await self._write(
+            "apply_inventory_hold",
+            approval,
+            {
+                "case_id": case_id,
+                "lot_ids": lot_ids,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+            },
+        )
 
-    async def create_facility_tasks(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("create_facility_tasks", approval, kwargs)
+    async def create_facility_tasks(
+        self,
+        *,
+        case_id: str,
+        facility_ids: list[str],
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return await self._write(
+            "create_facility_tasks",
+            approval,
+            {
+                "case_id": case_id,
+                "facility_ids": facility_ids,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+            },
+        )
 
-    async def record_acknowledgment(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("record_acknowledgment", approval, kwargs)
+    async def record_acknowledgment(
+        self,
+        *,
+        case_id: str,
+        facility_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return await self._write(
+            "record_acknowledgment",
+            approval,
+            {
+                "case_id": case_id,
+                "facility_id": facility_id,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+            },
+        )
 
-    async def record_disposition(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("record_disposition", approval, kwargs)
+    async def record_disposition(
+        self,
+        *,
+        case_id: str,
+        lot_id: str,
+        disposition: Disposition,
+        evidence_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return await self._write(
+            "record_disposition",
+            approval,
+            {
+                "case_id": case_id,
+                "lot_id": lot_id,
+                "disposition": disposition,
+                "evidence_id": evidence_id,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+            },
+        )
 
-    async def close_case(self, *, approval: ApprovalDecision, **kwargs: Any):
-        return await self._write("close_case", approval, kwargs)
+    async def close_case(
+        self,
+        *,
+        case_id: str,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+    ):
+        return await self._write(
+            "close_case",
+            approval,
+            {
+                "case_id": case_id,
+                "expected_case_version": expected_case_version,
+                "idempotency_key": idempotency_key,
+            },
+        )
 
     async def _write(self, name: str, approval: ApprovalDecision, kwargs: dict[str, Any]):
         return await self._call(
@@ -228,10 +511,6 @@ class StdioMCPGateway:
             name,
             {
                 **_json(kwargs),
-                "decision": approval.decision,
-                "actor": approval.actor,
-                "justification": approval.justification,
-                "approved_at": approval.approved_at.isoformat(),
-                "action_ids": approval.action_ids,
+                **approval.model_dump(mode="json"),
             },
         )

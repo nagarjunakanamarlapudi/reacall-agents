@@ -1,12 +1,14 @@
 import json
 from datetime import UTC, datetime
+from inspect import Parameter, signature
 from pathlib import Path
 
 import pytest
 
 from recallops.mcp.gateway import DirectGateway, Gateway
-from recallops.models import ApprovalDecision, RecallPredicate, Reconciliation
+from recallops.models import ApprovalDecision, RecallPredicate
 from recallops.services.operations import OperationsService
+from recallops.services.traceability import TraceabilityService
 
 EXPECTED_GATEWAY_METHODS = {
     "search_recalls",
@@ -52,34 +54,16 @@ def _approval(version: int) -> ApprovalDecision:
 
 
 def _case_input() -> dict:
-    reconciliation = Reconciliation(
-        lot_id="LOT-EXACT-170",
-        received=10,
-        on_hand=9,
-        quarantined=0,
-        sold=0,
-        returned=0,
-        disposed=0,
-        unaccounted=1,
-        verified=True,
-        evidence_ids=["EV-RECEIVE", "INV-EXACT"],
-        component_evidence={
-            "received": ["EV-RECEIVE"],
-            "on_hand": ["INV-EXACT"],
-            "quarantined": [],
-            "sold": [],
-            "returned": [],
-            "disposed": [],
-            "unaccounted": ["EV-RECEIVE", "INV-EXACT"],
-        },
-    )
+    traceability = TraceabilityService()
+    lot_id = "LOT-PROBABLE-160"
+    events = traceability.trace_forward(lot_id)
     return {
         "case_id": "CASE-GATEWAY",
         "recall_number": "H-1230-2026",
-        "confirmed_lot_ids": ["LOT-EXACT-170"],
-        "trace_event_ids": ["EV-RECEIVE"],
-        "required_facilities": ["DC-NORTH"],
-        "reconciliation": [reconciliation],
+        "confirmed_lot_ids": [lot_id],
+        "trace_event_ids": [event["event_id"] for event in events],
+        "required_facilities": ["DC-SOUTH", "STORE-03"],
+        "reconciliation": [traceability.reconcile_units(lot_id)],
         "evidence_gaps": [],
         "approval": _approval(0),
         "expected_case_version": 0,
@@ -97,6 +81,18 @@ def test_gateway_protocol_declares_every_service_method() -> None:
     assert EXPECTED_GATEWAY_METHODS <= {
         name for name, member in DirectGateway.__dict__.items() if callable(member)
     }
+    for name in {
+        "create_case",
+        "apply_inventory_hold",
+        "create_facility_tasks",
+        "record_acknowledgment",
+        "record_disposition",
+        "close_case",
+    }:
+        assert all(
+            parameter.kind is not Parameter.VAR_KEYWORD
+            for parameter in signature(getattr(Gateway, name)).parameters.values()
+        )
 
 
 @pytest.mark.asyncio
@@ -123,7 +119,7 @@ async def test_every_direct_gateway_result_is_json_serializable(tmp_path: Path) 
     json.dumps(
         await gateway.apply_inventory_hold(
             case_id="CASE-GATEWAY",
-            lot_ids=["LOT-EXACT-170"],
+            lot_ids=["LOT-PROBABLE-160"],
             approval=_approval(1),
             expected_case_version=1,
             idempotency_key="gateway-hold",
@@ -132,7 +128,7 @@ async def test_every_direct_gateway_result_is_json_serializable(tmp_path: Path) 
     json.dumps(
         await gateway.create_facility_tasks(
             case_id="CASE-GATEWAY",
-            facility_ids=["DC-NORTH"],
+            facility_ids=["DC-SOUTH", "STORE-03"],
             approval=_approval(2),
             expected_case_version=2,
             idempotency_key="gateway-tasks",
@@ -141,28 +137,37 @@ async def test_every_direct_gateway_result_is_json_serializable(tmp_path: Path) 
     json.dumps(
         await gateway.record_acknowledgment(
             case_id="CASE-GATEWAY",
-            facility_id="DC-NORTH",
+            facility_id="DC-SOUTH",
             approval=_approval(3),
             expected_case_version=3,
             idempotency_key="gateway-ack",
         )
     )
     json.dumps(
-        await gateway.record_disposition(
+        await gateway.record_acknowledgment(
             case_id="CASE-GATEWAY",
-            lot_id="LOT-EXACT-170",
-            disposition="dispose_unaccounted",
-            evidence_id="EV-DISPOSE",
+            facility_id="STORE-03",
             approval=_approval(4),
             expected_case_version=4,
+            idempotency_key="gateway-ack-store",
+        )
+    )
+    json.dumps(
+        await gateway.record_disposition(
+            case_id="CASE-GATEWAY",
+            lot_id="LOT-PROBABLE-160",
+            disposition="quarantined",
+            evidence_id="EV-Q-LOT-PROBABLE-160",
+            approval=_approval(5),
+            expected_case_version=5,
             idempotency_key="gateway-disposition",
         )
     )
     json.dumps(
         await gateway.close_case(
             case_id="CASE-GATEWAY",
-            approval=_approval(5),
-            expected_case_version=5,
+            approval=_approval(6),
+            expected_case_version=6,
             idempotency_key="gateway-close",
         )
     )

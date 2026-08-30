@@ -19,6 +19,7 @@ from recallops.models import (
     RecallCaseState,
     Reconciliation,
 )
+from recallops.services.traceability import TraceabilityService
 
 
 class ApprovalRequiredError(PermissionError):
@@ -52,10 +53,20 @@ class OperationsService:
         self,
         storage_path: Path | None = None,
         failure_injector: Callable[[str], None] | None = None,
+        before_cas_hook: Callable[[str], None] | None = None,
+        traceability: TraceabilityService | None = None,
     ) -> None:
-        self.storage_path = storage_path or get_settings().operations_db_path
-        self.source_mode = get_settings().source_mode
+        settings = get_settings()
+        self.storage_path = storage_path or settings.operations_db_path
+        self.source_mode = settings.source_mode
         self._failure_injector = failure_injector
+        # Test-only synchronization seam; production callers leave this unset.
+        # It runs after mutation invariants while BEGIN IMMEDIATE is still active.
+        self._before_cas_hook = before_cas_hook
+        self.traceability = traceability or TraceabilityService(
+            data_dir=settings.data_dir,
+            source_mode=settings.source_mode,
+        )
         try:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
             with self._connection() as connection:
@@ -105,7 +116,12 @@ class OperationsService:
         if self._failure_injector:
             self._failure_injector(stage)
 
-    def _approval(self, approval: ApprovalDecision, key: str, expected: int) -> None:
+    @staticmethod
+    def _validate_idempotency_key(key: str) -> None:
+        if not key or not key.strip():
+            raise IdempotencyConflictError("idempotency key must be nonblank")
+
+    def _approval(self, approval: ApprovalDecision, expected: int) -> None:
         if (
             approval.decision != "approve"
             or not approval.actor.strip()
@@ -116,8 +132,57 @@ class OperationsService:
             raise ApprovalRequiredError(
                 "approval must be bound to the current expected case version"
             )
-        if not key or not key.strip():
-            raise IdempotencyConflictError("idempotency key must be nonblank")
+
+    def _validate_authoritative_evidence(
+        self,
+        *,
+        confirmed_lot_ids: list[str],
+        trace_event_ids: list[str],
+        required_facilities: list[str],
+        reconciliation: list[Reconciliation],
+    ) -> None:
+        known_lot_ids = {item["lot_id"] for item in self.traceability.dataset["lots"]}
+        unknown_lot_ids = set(confirmed_lot_ids) - known_lot_ids
+        if unknown_lot_ids:
+            raise ValueError(
+                f"authoritative evidence has no such lot(s): {sorted(unknown_lot_ids)}"
+            )
+
+        authoritative_event_ids: set[str] = set()
+        authoritative_facilities: set[str] = set()
+        authoritative_reconciliation: dict[str, Reconciliation] = {}
+        for lot_id in confirmed_lot_ids:
+            events = self.traceability.trace_forward(lot_id)
+            authoritative_event_ids.update(event["event_id"] for event in events)
+            authoritative_facilities.update(
+                facility
+                for event in events
+                for facility in (event.get("from_facility"), event.get("to_facility"))
+                if facility
+            )
+            authoritative_reconciliation[lot_id] = self.traceability.reconcile_units(lot_id)
+
+        supplied_event_ids = set(trace_event_ids)
+        if supplied_event_ids != authoritative_event_ids:
+            missing = sorted(authoritative_event_ids - supplied_event_ids)
+            unrelated = sorted(supplied_event_ids - authoritative_event_ids)
+            raise ValueError(
+                f"authoritative trace evidence mismatch (missing={missing}, unrelated={unrelated})"
+            )
+        if set(required_facilities) != authoritative_facilities:
+            raise ValueError(
+                "authoritative required facilities mismatch "
+                f"(expected={sorted(authoritative_facilities)})"
+            )
+
+        supplied_reconciliation = {item.lot_id: item for item in reconciliation}
+        for lot_id, authoritative in authoritative_reconciliation.items():
+            supplied = supplied_reconciliation.get(lot_id)
+            if supplied != authoritative:
+                raise ValueError(
+                    "authoritative reconciliation mismatch for "
+                    f"{lot_id}: quantities and component evidence must match the dataset"
+                )
 
     def _request_hash(
         self,
@@ -185,13 +250,14 @@ class OperationsService:
         transform: Any | None = None,
         validator: Any | None = None,
     ) -> AuditReceipt:
-        self._approval(approval, key, expected)
+        self._validate_idempotency_key(key)
         request_hash = self._request_hash(case_id, action, expected, details, approval)
         try:
             with self._transaction() as conn:
                 replay = self._replay_or_conflict(conn, key, request_hash)
                 if replay:
                     return replay
+                self._approval(approval, expected)
                 row = conn.execute(
                     "SELECT version, state_json FROM cases WHERE case_id=?", (case_id,)
                 ).fetchone()
@@ -206,6 +272,8 @@ class OperationsService:
                     raise ClosureBlockedError("operation blocked: case is already closed")
                 if validator:
                     validator(conn, state)
+                if self._before_cas_hook:
+                    self._before_cas_hook(action)
                 if transform:
                     state = transform(state)
                 receipt = AuditReceipt(
@@ -290,7 +358,7 @@ class OperationsService:
         idempotency_key: str,
         question: str = "",
     ) -> AuditReceipt:
-        self._approval(approval, idempotency_key, expected_case_version)
+        self._validate_idempotency_key(idempotency_key)
         required_nonempty = {
             "confirmed_lot_ids": confirmed_lot_ids,
             "trace_event_ids": trace_event_ids,
@@ -308,7 +376,9 @@ class OperationsService:
             if any(not value.strip() for value in values) or len(values) != len(set(values)):
                 raise ValueError(f"{field_name} must contain unique nonblank identifiers")
         reconciliations = [Reconciliation.model_validate(item) for item in reconciliation]
-        if {item.lot_id for item in reconciliations} != set(confirmed_lot_ids):
+        if len(reconciliations) != len(confirmed_lot_ids) or {
+            item.lot_id for item in reconciliations
+        } != set(confirmed_lot_ids):
             raise ValueError("reconciliation must cover exactly the confirmed_lot_ids")
         details = {
             "recall_number": recall_number,
@@ -327,8 +397,15 @@ class OperationsService:
                 replay = self._replay_or_conflict(conn, idempotency_key, request_hash)
                 if replay:
                     return replay
+                self._approval(approval, expected_case_version)
                 if expected_case_version != 0:
                     raise StaleCaseVersionError("new cases require expected version 0")
+                self._validate_authoritative_evidence(
+                    confirmed_lot_ids=confirmed_lot_ids,
+                    trace_event_ids=trace_event_ids,
+                    required_facilities=required_facilities,
+                    reconciliation=reconciliations,
+                )
                 state = RecallCaseState(
                     case_id=case_id,
                     thread_id=case_id,
@@ -372,7 +449,12 @@ class OperationsService:
                 )
                 self._inject_failure("after_receipt_insert")
                 return receipt
-        except (ApprovalRequiredError, IdempotencyConflictError, StaleCaseVersionError):
+        except (
+            ApprovalRequiredError,
+            IdempotencyConflictError,
+            StaleCaseVersionError,
+            ValueError,
+        ):
             raise
         except (OSError, sqlite3.IntegrityError) as error:
             raise OperationStoreError(f"case creation failed: {error}") from error
@@ -414,15 +496,20 @@ class OperationsService:
         def transform(state: RecallCaseState) -> RecallCaseState:
             return state.model_copy(
                 update={
-                    "required_facilities": list(
-                        dict.fromkeys([*state.required_facilities, *facility_ids])
-                    ),
                     "acknowledgements": {
                         **state.acknowledgements,
                         **{facility: False for facility in facility_ids},
                     },
                 }
             )
+
+        def validator(_: sqlite3.Connection, state: RecallCaseState) -> None:
+            unrelated = set(facility_ids) - set(state.required_facilities)
+            if unrelated:
+                raise ClosureBlockedError(
+                    "facility tasks must target authoritative required facilities: "
+                    f"{sorted(unrelated)}"
+                )
 
         return self._mutate(
             case_id=case_id,
@@ -432,6 +519,7 @@ class OperationsService:
             key=idempotency_key,
             details={"facility_ids": facility_ids},
             transform=transform,
+            validator=validator,
         )
 
     def record_acknowledgment(
@@ -539,9 +627,19 @@ class OperationsService:
                 raise ClosureBlockedError(
                     "closure blocked: reconciliation does not cover confirmed lots"
                 )
+            try:
+                self._validate_authoritative_evidence(
+                    confirmed_lot_ids=state.confirmed_lot_ids,
+                    trace_event_ids=state.trace_event_ids,
+                    required_facilities=state.required_facilities,
+                    reconciliation=state.reconciliation,
+                )
+            except ValueError as error:
+                raise ClosureBlockedError(f"closure blocked: {error}") from error
             if any(item.unaccounted != 0 for item in state.reconciliation):
+                remaining = sum(item.unaccounted for item in state.reconciliation)
                 raise ClosureBlockedError(
-                    "closure blocked: unaccounted reconciliation units remain"
+                    f"closure blocked: {remaining} unaccounted reconciliation units remain"
                 )
             if any(
                 not item.verified or not item.evidence_ids or not item.component_evidence
