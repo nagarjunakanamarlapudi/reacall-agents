@@ -27,9 +27,11 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
+from langchain_core.callbacks import AsyncCallbackManager
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
+from langchain_core.tools.base import _format_output
 from pydantic import BaseModel, ConfigDict
 
 from recallops.agents.prompts import (
@@ -400,26 +402,71 @@ class _SealedReadTool(BaseTool, metaclass=_SealedToolMeta):
         if name == "__dict__":
             state = super().__getattribute__("__dict__")
             return MappingProxyType(state)
-        # Keep execution entry points on sealed class code even if a caller uses
-        # low-level access to write shadow attributes into Pydantic's storage.
+        # Keep the complete invocation path on sealed class code even if a caller
+        # writes shadow attributes into Pydantic's otherwise mutable storage.
         if name == "ainvoke":
-            return BaseTool.ainvoke.__get__(self, type(self))
+            return _SealedReadTool.ainvoke.__get__(self, type(self))
         if name == "invoke":
-            return BaseTool.invoke.__get__(self, type(self))
+            return _SealedReadTool.invoke.__get__(self, type(self))
         if name == "arun":
-            return BaseTool.arun.__get__(self, type(self))
+            return _SealedReadTool.arun.__get__(self, type(self))
         if name == "run":
-            return BaseTool.run.__get__(self, type(self))
+            return _SealedReadTool.run.__get__(self, type(self))
         if name == "_arun":
             return _SealedReadTool._arun.__get__(self, type(self))
         if name == "_run":
             return _SealedReadTool._run.__get__(self, type(self))
+        if name == "_filter_injected_args":
+            return BaseTool._filter_injected_args.__get__(self, type(self))
+        if name == "_to_args_and_kwargs":
+            return BaseTool._to_args_and_kwargs.__get__(self, type(self))
+        if name == "_parse_input":
+            return BaseTool._parse_input.__get__(self, type(self))
+        if name == "get_input_schema":
+            return BaseTool.get_input_schema.__get__(self, type(self))
         return super().__getattribute__(name)
 
     @property
     def coroutine(self) -> Any:
         """Expose inspectable metadata without retaining a bound method."""
         return _sealed_tool_capability(self).__call__
+
+    def invoke(
+        self,
+        input: Any,
+        config: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        del input, config, kwargs
+        raise RuntimeError("RecallOps sealed read tools require asynchronous invocation")
+
+    async def ainvoke(
+        self,
+        input: Any,
+        config: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        del config, kwargs
+        return await _invoke_sealed_read_tool(self, input, tool_call_id=None)
+
+    def run(
+        self,
+        tool_input: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        del tool_input, args, kwargs
+        raise RuntimeError("RecallOps sealed read tools require asynchronous invocation")
+
+    async def arun(
+        self,
+        tool_input: Any,
+        *args: Any,
+        tool_call_id: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        del args, kwargs
+        return await _invoke_sealed_read_tool(self, tool_input, tool_call_id=tool_call_id)
 
     def _run(self, **payload: Any) -> Any:
         del payload
@@ -1142,6 +1189,99 @@ def _sealed_tool_capability(tool: BaseTool) -> _SealedReadCapability:
     ):
         raise ValueError("trusted RecallOps read tool metadata is invalid")
     return capability
+
+
+def _validated_sealed_tool_input(
+    tool: BaseTool,
+    tool_input: Any,
+    *,
+    tool_call_id: str | None,
+) -> tuple[_SealedReadCapability, dict[str, Any], str | None, str]:
+    """Validate one invocation without consulting mutable tool-instance state."""
+    capability = _sealed_tool_capability(tool)
+    _config, _expected_digest, tool_name = _sealed_capability_authority(capability)
+    resolved_tool_call_id = tool_call_id
+    payload: Any = tool_input
+    if type(tool_input) is dict:
+        if any(type(key) is not str for key in tool_input):
+            raise ValueError("trusted RecallOps tool input keys must be exact strings")
+        marker = tool_input.get("type")
+        if marker is not None and type(marker) is not str:
+            raise ValueError("trusted RecallOps tool-call type must be an exact string")
+        if marker == "tool_call":
+            if set(tool_input) != {"name", "args", "id", "type"}:
+                raise ValueError("trusted RecallOps tool call has an invalid schema")
+            name = tool_input["name"]
+            arguments = tool_input["args"]
+            call_id = tool_input["id"]
+            if (
+                type(name) is not str
+                or name != tool_name
+                or type(arguments) is not dict
+                or type(call_id) is not str
+                or not call_id
+                or any(type(key) is not str for key in arguments)
+            ):
+                raise ValueError("trusted RecallOps tool call has invalid typed fields")
+            payload = dict(arguments)
+            resolved_tool_call_id = call_id
+    if resolved_tool_call_id is not None and type(resolved_tool_call_id) is not str:
+        raise ValueError("trusted RecallOps tool-call id must be an exact string")
+
+    schema = _capability_args_schema(tool_name)
+    if type(payload) is str:
+        fields = tuple(schema.model_fields)
+        if len(fields) != 1:
+            raise ValueError("trusted RecallOps string input requires one schema field")
+        payload = {fields[0]: payload}
+    if type(payload) is not dict or any(type(key) is not str for key in payload):
+        raise ValueError("trusted RecallOps tool input must be a plain object")
+    validated = schema.model_validate(payload, strict=True)
+    validated_payload = {
+        field_name: getattr(validated, field_name) for field_name in schema.model_fields
+    }
+    for value in validated_payload.values():
+        if type(value) not in {str, type(None), RecallPredicate}:
+            raise ValueError("trusted RecallOps tool input contains an invalid value type")
+    return capability, validated_payload, resolved_tool_call_id, tool_name
+
+
+async def _invoke_sealed_read_tool(
+    tool: BaseTool,
+    tool_input: Any,
+    *,
+    tool_call_id: str | None,
+) -> Any:
+    """Invoke a sealed read capability with only a fresh inert callback manager."""
+    capability, payload, resolved_tool_call_id, tool_name = _validated_sealed_tool_input(
+        tool,
+        tool_input,
+        tool_call_id=tool_call_id,
+    )
+    callback_manager = AsyncCallbackManager(handlers=[])
+    run_manager = await callback_manager.on_tool_start(
+        {
+            "name": tool_name,
+            "description": _capability_description(tool_name),
+        },
+        "sealed RecallOps read invocation",
+        inputs=None,
+        tool_call_id=resolved_tool_call_id,
+    )
+    try:
+        content = await capability(**payload)
+    except (Exception, KeyboardInterrupt) as error:
+        await run_manager.on_tool_error(error, tool_call_id=resolved_tool_call_id)
+        raise
+    output = _format_output(
+        content,
+        None,
+        resolved_tool_call_id,
+        tool_name,
+        "success",
+    )
+    await run_manager.on_tool_end(output, name=tool_name)
+    return output
 
 
 def _sealed_tool(

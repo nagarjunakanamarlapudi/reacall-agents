@@ -1185,6 +1185,180 @@ async def test_compiled_read_tools_use_sealed_stateless_capabilities(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "helper_name",
+    ["_filter_injected_args", "_to_args_and_kwargs", "_parse_input"],
+)
+@pytest.mark.parametrize("injection_mode", ["object-setattr", "raw-dict"])
+async def test_compiled_read_tool_never_dispatches_validation_helpers_from_instance_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    helper_name: str,
+    injection_mode: str,
+) -> None:
+    """Catches BaseTool helper lookup executing a shadowed per-instance callable."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / f"{helper_name}-{injection_mode}.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    hook_calls: list[str] = []
+
+    def injected_filter(tool_input: dict[str, Any]) -> dict[str, Any]:
+        hook_calls.append("_filter_injected_args")
+        return tool_input
+
+    def injected_to_args(
+        tool_input: dict[str, Any], tool_call_id: str | None
+    ) -> tuple[tuple[()], dict[str, str]]:
+        del tool_input, tool_call_id
+        hook_calls.append("_to_args_and_kwargs")
+        return (), {"recall_number": "H-1230-2026"}
+
+    def injected_parse(tool_input: dict[str, Any], tool_call_id: str | None) -> dict[str, Any]:
+        del tool_call_id
+        hook_calls.append("_parse_input")
+        return tool_input
+
+    injected = {
+        "_filter_injected_args": injected_filter,
+        "_to_args_and_kwargs": injected_to_args,
+        "_parse_input": injected_parse,
+    }[helper_name]
+    if injection_mode == "object-setattr":
+        object.__setattr__(get_recall, helper_name, injected)
+    else:
+        object.__getattribute__(get_recall, "__dict__")[helper_name] = injected
+
+    recall = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+
+    assert recall["recall_number"] == "H-1230-2026"
+    assert hook_calls == []
+
+
+@pytest.mark.asyncio
+async def test_compiled_read_tool_ignores_caller_callbacks_on_all_invocation_entrypoints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches executable callback config entering the sealed read capability path."""
+    from langchain_core.callbacks import BaseCallbackHandler
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / "callbacks.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    callback_calls: list[str] = []
+
+    class ExecutableCallback(BaseCallbackHandler):
+        def on_tool_start(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            callback_calls.append("start")
+
+    callback = ExecutableCallback()
+    payload = {"recall_number": "H-1230-2026"}
+
+    first = await get_recall.ainvoke(payload, config={"callbacks": [callback]})
+    second = await get_recall.arun(payload, callbacks=[callback])
+    with pytest.raises(RuntimeError, match="asynchronous invocation"):
+        get_recall.invoke(payload, config={"callbacks": [callback]})
+    with pytest.raises(RuntimeError, match="asynchronous invocation"):
+        get_recall.run(payload, callbacks=[callback])
+
+    assert first == second
+    assert first["recall_number"] == "H-1230-2026"
+    assert callback_calls == []
+
+
+@pytest.mark.asyncio
+async def test_compiled_deep_agent_tool_node_uses_only_the_sealed_invocation_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches ToolNode reaching a shadowed BaseTool helper instead of sealed code."""
+    import json
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage
+    from langgraph.runtime import Runtime
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / "tool-node.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    tool_node = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound
+    )
+    get_recall = tool_node._tools_by_name["get_recall"]
+    hook_calls: list[str] = []
+
+    def injected_to_args(
+        tool_input: dict[str, Any], tool_call_id: str | None
+    ) -> tuple[tuple[()], dict[str, str]]:
+        del tool_input, tool_call_id
+        hook_calls.append("_to_args_and_kwargs")
+        return (), {"recall_number": "H-1230-2026"}
+
+    object.__getattribute__(get_recall, "__dict__")["_to_args_and_kwargs"] = injected_to_args
+    result = await tool_node.afunc(
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "get_recall",
+                            "args": {"recall_number": "H-1230-2026"},
+                            "id": "sealed-get-recall",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        },
+        {},
+        Runtime(),
+    )
+    returned = json.loads(result["messages"][0].content)
+
+    assert returned["recall_number"] == "H-1230-2026"
+    assert result["messages"][0].tool_call_id == "sealed-get-recall"
+    assert hook_calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["direct", "stdio"])
 async def test_sealed_capability_rejects_paired_config_digest_replacement_before_construction(
     monkeypatch: pytest.MonkeyPatch,
