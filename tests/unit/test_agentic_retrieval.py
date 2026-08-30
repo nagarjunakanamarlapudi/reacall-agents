@@ -487,6 +487,78 @@ async def test_valid_domain_relationship_language_cannot_hide_unsupported_concep
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "unsupported"),
+    [
+        (
+            "How does a nuclear reactor affect FDA recall closure?",
+            {"nuclear", "reactor"},
+        ),
+        ("How do recalled lots use alien antigravity?", {"alien", "antigravity"}),
+        (
+            "What is the FDA recall warp-drive telepathy protocol?",
+            {"warp", "drive", "telepathy", "protocol"},
+        ),
+        (
+            "Can photosynthesis guide FDA recall classification?",
+            {"photosynthesis"},
+        ),
+        ("How does volcanic sonar relate to recalled lots?", {"volcanic", "sonar"}),
+    ],
+)
+async def test_unseen_material_concepts_require_actual_evidence_support(
+    question: str,
+    unsupported: set[str],
+) -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+
+    assert result.coverage_satisfied is False
+    gaps = " ".join(result.evidence_gaps).casefold()
+    assert all(f"unsupported concept: {token}" in gaps for token in unsupported)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "supported_terms", "expected_citation"),
+    [
+        (
+            "What statutory authority can FDA use for a recall?",
+            {"statutory", "authority"},
+            "FDA-RECALL-PROCESS",
+        ),
+        (
+            "How does GS1 EPCIS give visibility into product movements?",
+            {"gs1", "epcis", "visibility"},
+            "GS1-EPCIS-CONCEPTS",
+        ),
+        (
+            "How can a trading partner use EPCIS visibility?",
+            {"trading", "partner", "epcis", "visibility"},
+            "GS1-EPCIS-CONCEPTS",
+        ),
+        (
+            "What quarantine evidence exists for LOT-EXACT-170?",
+            {"quarantine"},
+            "NORTHSTAR-EVENTS-EV-008",
+        ),
+    ],
+)
+async def test_uncommon_material_terms_are_covered_when_retrieved_evidence_supports_them(
+    question: str,
+    supported_terms: set[str],
+    expected_citation: str,
+) -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+
+    assert result.coverage_satisfied is True, result.evidence_gaps
+    assert expected_citation in {item.citation_id for item in result.citations}
+    assert not any(
+        f"unsupported concept: {term}" in " ".join(result.evidence_gaps).casefold()
+        for term in supported_terms
+    )
+
+
+@pytest.mark.asyncio
 async def test_mixed_hazard_batch_facility_question_requires_both_source_families() -> None:
     result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(
         "What FDA health-risk class applies to batch LOT-BG-042-03, and which facilities received it?"

@@ -51,17 +51,32 @@ IDENTIFIER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 CONCEPT_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-QUERY_RELATION_WORDS = frozenset(
+# Audited function/relationship language is intentionally explicit. These words
+# shape a question but do not assert a subject that retrieved evidence must prove.
+AUDITED_GENERIC_QUERY_WORDS = frozenset(
     {
         "a",
+        "about",
+        "across",
+        "affect",
         "after",
         "all",
+        "also",
         "an",
         "and",
+        "any",
         "applies",
         "apply",
-        "about",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "before",
+        "being",
+        "between",
         "business",
+        "by",
         "can",
         "could",
         "decide",
@@ -69,51 +84,77 @@ QUERY_RELATION_WORDS = frozenset(
         "did",
         "do",
         "does",
+        "each",
         "evidence",
+        "exists",
         "explain",
+        "fit",
+        "food",
         "for",
         "followed",
         "from",
+        "give",
+        "guide",
+        "had",
+        "has",
         "have",
-        "how",
         "happens",
+        "how",
+        "if",
         "in",
         "inspect",
+        "into",
         "is",
         "it",
         "item",
+        "its",
         "know",
-        "mean",
+        "lets",
         "may",
+        "mean",
+        "might",
         "of",
         "on",
         "or",
-        "possible",
+        "our",
         "policy",
+        "possible",
         "question",
+        "relate",
         "require",
         "requirements",
         "retailer",
+        "s",
+        "show",
+        "shows",
         "should",
+        "than",
+        "that",
         "the",
         "their",
         "them",
+        "then",
+        "there",
         "these",
         "this",
-        "to",
         "through",
-        "that",
+        "to",
         "under",
+        "use",
+        "uses",
+        "using",
+        "was",
         "we",
+        "were",
         "what",
         "when",
         "where",
         "which",
         "who",
         "why",
+        "will",
         "with",
-        "between",
-        "food",
+        "would",
     }
 )
 
@@ -286,17 +327,6 @@ OPERATIONAL_ROUTE_CONCEPTS = frozenset(
 )
 OFFICIAL_SUPPORT_CONCEPTS = REGULATORY_ROUTE_CONCEPTS - {"cte", "kde"}
 SYNTHETIC_SUPPORT_CONCEPTS = OPERATIONAL_ROUTE_CONCEPTS - {"receiving", "shipping"}
-OUT_OF_DOMAIN_CONCEPTS = frozenset(
-    {
-        "astrology",
-        "blockchain",
-        "cryptocurrency",
-        "propulsion",
-        "quantum",
-        "submarine",
-        "teleportation",
-    }
-)
 
 
 def _domain_concepts(text: str) -> tuple[set[str], set[str]]:
@@ -306,6 +336,36 @@ def _domain_concepts(text: str) -> tuple[set[str], set[str]]:
     consumed = {token for token in raw_tokens if token in CONCEPT_ALIASES}
     concepts = {CONCEPT_ALIASES[token] for token in consumed}
     return concepts, consumed
+
+
+def _grounding_form(token: str) -> str:
+    """Apply a deliberately small, deterministic English singularization."""
+
+    if len(token) > 4 and token.endswith("ies"):
+        return f"{token[:-3]}y"
+    if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        return token[:-1]
+    return token
+
+
+def _evidence_grounding_tokens(
+    evidence: tuple[HybridSearchResult, ...],
+) -> set[str]:
+    """Tokenize only the documents actually returned to the critic."""
+
+    tokens: set[str] = set()
+    for item in evidence:
+        document_json = json.dumps(
+            item.document.model_dump(mode="json"),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        tokens.update(
+            _grounding_form(token)
+            for token in CONCEPT_TOKEN_PATTERN.findall(document_json.casefold())
+        )
+    return tokens
 
 
 class RetrievalBudgets(BaseModel):
@@ -941,11 +1001,11 @@ class AgenticRetriever:
                     f"Requested concept {CONCEPT_LABELS[concept]!r} is not covered by "
                     "retrieved evidence."
                 )
-        unclassified_tokens = question_tokens - consumed - QUERY_RELATION_WORDS
-        for token in sorted(unclassified_tokens & OUT_OF_DOMAIN_CONCEPTS):
-            gaps.append(
-                f"Requested out-of-domain concept {token!r} is not covered by retrieved evidence."
-            )
+        evidence_tokens = _evidence_grounding_tokens(evidence)
+        material_tokens = question_tokens - consumed - AUDITED_GENERIC_QUERY_WORDS
+        for token in sorted(material_tokens):
+            if _grounding_form(token) not in evidence_tokens:
+                gaps.append(f"Unsupported concept: {token} is absent from retrieved evidence.")
         for item in evidence:
             claims = item.document.metadata.get("claims", {})
             if not isinstance(claims, Mapping):
