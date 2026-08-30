@@ -8,9 +8,12 @@ flowchart TB
   SEL --> TM["Traceability MCP<br/>match_lots • trace_forward • reconcile_units"]:::read
   RR --> OBS["Structured observation<br/>provenance • citations • errors"]
   TM --> OBS
-  AG -. "cannot invoke directly" .-> OM["Recall Operations MCP"]:::write
-  GR["Approved graph node after resume"] --> AP["Approval required<br/>actor • justification • expected version • idempotency key"]:::gate
+  AG -. "unauthorized direct-write attempt" .-> BLOCKED["BLOCKED<br/>Agents cannot call Operations MCP"]:::block
+  BLOCKED --> DENY["Fail closed"]:::block
+  GR["Approved graph execution node"] --> AP["Approval required<br/>actor • justification • expected version • idempotency key"]:::gate
   AP --> OM["Recall Operations MCP<br/>simulated writes only"]:::write
-  OM --> RC["Durable audit receipt"]
-  BAD["Unapproved, stale, duplicate, or unlabelled request"]:::block --> DENY["Fail closed"]:::block
+  OM --> NEW["New approved request<br/>Durable audit receipt"]
+  OM --> REPLAY["Same idempotency key replay<br/>Original receipt returned"]:::write
+  OM --> DUP["Conflicting duplicate<br/>Fail closed"]:::block
+  BAD["Unapproved, stale, or unlabelled request"]:::block --> DENY
   AP --> BAD

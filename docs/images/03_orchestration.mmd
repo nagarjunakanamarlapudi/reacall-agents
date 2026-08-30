@@ -3,8 +3,13 @@ flowchart TB
   classDef agent fill:#ede9fe,stroke:#7c3aed,color:#111827
   classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
   classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
-  I["Intake"]:::statefill --> P["Plan"]:::statefill --> SG["StateGraph<br/>fan-out and typed updates"]:::statefill
-  SG --> DA["Optional Deep Agent supervisor<br/>bounded task planning and delegation"]:::agent
+  I["Intake"]:::statefill --> P["Plan"]:::statefill --> SG["StateGraph<br/>routes and typed updates"]:::statefill
+  SG --> DS["Deterministic default planner<br/>credential-free bounded task plan"]:::statefill
+  SG --> DA["Optional live Deep Agent supervisor<br/>bounded task planning and delegation"]:::agent
+  DS --> RI["Regulatory Intake"]:::agent
+  DS --> PM["Product & Lot Matching"]:::agent
+  DS --> TR["Traceability"]:::agent
+  DS --> CO["Containment draft"]:::agent
   DA --> RI["Regulatory Intake"]:::agent
   DA --> PM["Product & Lot Matching"]:::agent
   DA --> TR["Traceability"]:::agent

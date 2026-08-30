@@ -4,8 +4,11 @@ Run with: python3 -m unittest discover -s tests/docs -p 'test_*.py'
 """
 
 from pathlib import Path
+import json
 import re
+import subprocess
 import unittest
+from xml.etree import ElementTree
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,8 +30,10 @@ REQUIRED_DOCUMENTS = (
     "docs/SUBMISSION_DOCUMENT.md",
     "docs/AI_CODING_LOG.md",
     "docs/CURRICULUM_COVERAGE.md",
+    "docs/demo_contract.json",
     "docs/images/README.md",
     "scripts/render_diagrams.sh",
+    "scripts/mermaid-config.json",
 )
 
 DIAGRAM_LABELS = {
@@ -44,6 +49,7 @@ DIAGRAM_LABELS = {
     ),
     "03_orchestration": (
         "Deep Agent supervisor",
+        "Deterministic default planner",
         "Verification / Critic",
         "StateGraph",
     ),
@@ -52,6 +58,9 @@ DIAGRAM_LABELS = {
         "Traceability MCP",
         "Recall Operations MCP",
         "Approval required",
+        "BLOCKED",
+        "Same idempotency key replay",
+        "Conflicting duplicate",
     ),
     "05_middleware_lifecycle": (
         "Case context",
@@ -65,8 +74,8 @@ DIAGRAM_LABELS = {
     ),
     "07_demo_story": (
         "H-1230-2026",
-        "Human review",
-        "Open case",
+        "Human Review",
+        "Open — closure blocked",
     ),
 }
 
@@ -84,9 +93,30 @@ class DocumentationContractTests(unittest.TestCase):
 
     def test_diagrams_preserve_scope_critical_labels(self) -> None:
         for name, labels in DIAGRAM_LABELS.items():
-            text = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
+            source = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
+            svg = (IMAGES / f"{name}.svg").read_text(encoding="utf-8")
+            root = ElementTree.fromstring(svg)
+            self.assertTrue(root.tag.endswith("svg"), f"{name}.svg is not an SVG root")
             for label in labels:
-                self.assertIn(label, text, f"{name}.mmd must include {label!r}")
+                self.assertIn(label, source, f"{name}.mmd must include {label!r}")
+                self.assertIn(label, svg, f"{name}.svg must preserve {label!r}")
+
+    def test_mcp_diagram_has_only_one_approved_operations_path(self) -> None:
+        diagram = (IMAGES / "04_mcp_tool_safety.mmd").read_text(encoding="utf-8")
+        self.assertIn('AG -. "unauthorized direct-write attempt" .-> BLOCKED', diagram)
+        self.assertNotRegex(diagram, r"AG\s*[-.] .*OM")
+        self.assertIn('GR["Approved graph execution node"] --> AP', diagram)
+        self.assertIn('AP --> OM["Recall Operations MCP', diagram)
+        self.assertIn("Same idempotency key replay", diagram)
+        self.assertIn("Conflicting duplicate", diagram)
+
+    def test_orchestration_shows_deterministic_and_live_branches(self) -> None:
+        diagram = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
+        self.assertIn("Deterministic default planner", diagram)
+        self.assertIn("Optional live Deep Agent supervisor", diagram)
+        self.assertIn("DS --> RI", diagram)
+        self.assertIn("DA --> RI", diagram)
+        self.assertIn("Verification / Critic<br/>outside supervisor context", diagram)
 
     def test_docs_do_not_contain_placeholder_language(self) -> None:
         files = [ROOT / name for name in REQUIRED_DOCUMENTS if name.endswith(".md")]
@@ -109,6 +139,51 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(required, demo, f"demo walkthrough must include {required!r}")
 
+    def test_demo_documents_are_derived_from_one_machine_readable_contract(self) -> None:
+        contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            contract["runtime_integration_status"],
+            "approved contract pending Task 11 runtime integration",
+        )
+        document_paths = (
+            DOCS / "DEMO_WALKTHROUGH.md",
+            DOCS / "SUBMISSION_DOCUMENT.md",
+            IMAGES / "07_demo_story.mmd",
+        )
+        document_text = "\n".join(path.read_text(encoding="utf-8") for path in document_paths)
+        for value in (
+            contract["cli"]["demo_command"],
+            contract["inputs"]["recall_number"],
+            contract["inputs"]["actor"],
+            *contract["decisions"],
+            *contract["streamlit"]["views"],
+            *contract["streamlit"]["buttons"],
+            *contract["streamlit"]["field_labels"],
+            *contract["expected_statuses"],
+            *contract["inputs"].values(),
+        ):
+            self.assertIn(value, document_text, f"documented contract value missing: {value!r}")
+
+        allowed_times = set(contract["timeline"].keys())
+        for stamp in re.findall(r"\b\d{2}:\d{2}\b", document_text):
+            self.assertIn(stamp, allowed_times, f"undocumented demo timestamp: {stamp}")
+
+    def test_renderer_is_pinned_and_double_render_is_stable(self) -> None:
+        renderer = (ROOT / "scripts/render_diagrams.sh").read_text(encoding="utf-8")
+        self.assertIn('NODE_EXPECTED_MAJOR="24"', renderer)
+        self.assertIn('MERMAID_CLI_VERSION="11.12.0"', renderer)
+        self.assertIn("mermaid-config.json", renderer)
+        result = subprocess.run(
+            ["./scripts/render_diagrams.sh", "--verify"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Stable double-render verified", result.stdout)
+        self.assertIn("Committed SVGs match fresh render", result.stdout)
+
     def test_submission_handout_and_ai_log_are_honest_and_presenter_ready(self) -> None:
         handout = (DOCS / "SUBMISSION_DOCUMENT.md").read_text(encoding="utf-8")
         for required in (
@@ -118,7 +193,7 @@ class DocumentationContractTests(unittest.TestCase):
             "Iterations tried",
             "Learnings and observations",
             "00:00",
-            "04:30",
+            "04:20",
         ):
             self.assertIn(required, handout)
 
@@ -126,6 +201,7 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("Codex", coding_log)
         self.assertIn("Claude Code", coding_log)
         self.assertIn("Grok", coding_log)
+        self.assertIn("author-reported pending Task 11 verification", coding_log)
 
     def test_curriculum_coverage_maps_every_week_three_topic(self) -> None:
         coverage = (DOCS / "CURRICULUM_COVERAGE.md").read_text(encoding="utf-8")

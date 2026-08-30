@@ -1,6 +1,6 @@
 # RecallOps Diagram Set
 
-All diagrams are Mermaid sources rendered to deterministic SVG through `scripts/render_diagrams.sh`. The renderer pins `@mermaid-js/mermaid-cli@11.12.0`; sources and SVGs are committed together so a reviewer can inspect either.
+All diagrams are Mermaid sources rendered to SVG through `scripts/render_diagrams.sh`. The renderer requires Node 24.x, pins `@mermaid-js/mermaid-cli@11.12.0`, and uses `scripts/mermaid-config.json` for theme/fonts. Its `--verify` mode proves byte-identical double renders in the recorded environment; that is the reproducibility level claimed here.
 
 | File | Purpose |
 |---|---|

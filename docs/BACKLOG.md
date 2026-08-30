@@ -1,5 +1,7 @@
 # Backlog and Explicit Non-Goals
 
+**Final-verification note:** the current pinned Mermaid renderer emits a transitive Puppeteer deprecation warning. It is non-blocking for the rendered SVG review, and Task 11 should retain it with the command evidence or revisit the dependency during hardening.
+
 ## Future work after the academic demo
 
 | Area | Candidate expansion | Boundary to preserve |

@@ -1,5 +1,7 @@
 # Data Sources and Provenance
 
+**Status:** approved data/provenance contract pending Task 11 runtime integration and checksum capture.
+
 ![Data provenance boundary](images/01_data_provenance.svg)
 
 ## Source register

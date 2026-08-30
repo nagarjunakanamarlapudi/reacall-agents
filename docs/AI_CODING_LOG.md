@@ -2,7 +2,7 @@
 
 ## Purpose and accuracy boundary
 
-This log records the AI-assisted workflow for the RecallOps documentation pass. It distinguishes a coordination plan from tools actually invoked. It does not claim that a CLI, model, or reviewer was used when it was not.
+This log records the AI-assisted workflow for the RecallOps documentation pass. It distinguishes a coordination plan from tools actually invoked. All activity statements are **author-reported pending Task 11 verification**; it does not claim that a CLI, model, or reviewer was used when it was not.
 
 ## Coordinated workflow
 
@@ -30,4 +30,4 @@ The final two lines are only complete after the commands have actually been run 
 
 ## Review discipline
 
-AI assistance was used to draft and organize content under explicit constraints. A human reviewer should still compare final docs with the integrated code, confirm actual CLI/UI strings, inspect SVG labels/arrows, and record final verification output. The documentation intentionally avoids test counts, successful-run claims, or production capability claims until evidence exists.
+AI assistance was used to draft and organize content under explicit constraints. A human reviewer should still compare final docs with the integrated code, confirm actual CLI/UI strings, inspect SVG labels/arrows, and record final verification output. The documentation intentionally avoids test counts, successful-run claims, or production capability claims until evidence exists. The transitive Puppeteer deprecation warning emitted by the pinned renderer is retained for the final verification record.

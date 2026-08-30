@@ -1,0 +1,11 @@
+{
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Arial, Helvetica, sans-serif",
+    "fontSize": "16px",
+    "primaryTextColor": "#111827",
+    "lineColor": "#374151"
+  },
+  "flowchart": {"htmlLabels": true, "useMaxWidth": true, "curve": "basis"},
+  "securityLevel": "strict"
+}

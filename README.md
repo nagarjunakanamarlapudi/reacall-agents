@@ -2,6 +2,8 @@
 
 RecallOps is an evidence-first academic command center for investigating food recalls. It turns one authoritative notice into a reviewable operational case: identify the recall predicate, match products and lots, trace units, reconcile quantities, draft containment, pause for human authorization, simulate approved actions, monitor acknowledgements, and prevent unsafe closure.
 
+**Documentation status:** approved product contract pending Task 11 runtime integration and captured verification evidence.
+
 The flagship case uses **official openFDA H-1230-2026** alongside a clearly separated **SYNTHETIC — ACADEMIC DEMO** digital twin for fictional Northstar Grocers. A real public recall does not imply that Northstar, its facilities, or its records were involved.
 
 ![RecallOps system architecture](docs/images/02_system_architecture.svg)

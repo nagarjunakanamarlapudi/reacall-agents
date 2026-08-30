@@ -1,5 +1,7 @@
 # Architecture
 
+**Status:** approved architecture contract pending Task 11 runtime integration.
+
 ![Overall system architecture](images/02_system_architecture.svg)
 
 RecallOps has three deliberately separated planes.

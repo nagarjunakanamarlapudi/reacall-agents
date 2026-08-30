@@ -1,5 +1,7 @@
 # MCP and Tool Safety
 
+**Status:** approved MCP/tool-safety contract pending Task 11 runtime integration and protocol smoke evidence.
+
 ![MCP/tool safety boundary](images/04_mcp_tool_safety.svg)
 
 MCP is the vertical boundary between reasoning and information/actions. LangGraph coordinates agents; MCP does not create agent-to-agent communication, and RecallOps uses no A2A protocol.

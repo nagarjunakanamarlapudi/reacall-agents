@@ -20,15 +20,23 @@ The essential provenance statement is: openFDA is the public source that defines
 
 ## Vibe-coding prompts and briefs
 
-The work was guided by a precise product brief rather than an open-ended request. The central brief was:
+The following are verbatim project instructions, quoted from the approved design/specification and Task 10 brief. They are user-authored project text, not synthesized prompts.
 
-> Build an evidence-first recall command center around official openFDA H-1230-2026 and a clearly labelled SYNTHETIC — ACADEMIC DEMO Northstar digital twin. Use an explicit LangGraph lifecycle, fixed specialists with an optional Deep Agent supervisor, three MCP servers, middleware, durable HITL, approval-gated simulated writes, reconciliation, monitoring, and closure blocking. Do not use A2A or direct agent writes.
+> An explicit outer `StateGraph` owns the operational lifecycle: `intake → plan → specialist fan-out → reconcile → verify → human review → execute approved writes → monitor → close or escalate`
+>
+> The graph is the authority for state, branch decisions, retry bounds, interrupt/resume, and side effects. Each node returns typed state updates. A SQLite checkpointer preserves case state by `thread_id` so review can resume after process restart.
 
-Documentation-specific brief used for this handout set:
+> ### Task 10: Product documentation and reproducible diagrams
+>
+> **Files:** `README.md`, `PROPOSAL.md`, `docs/{ARCHITECTURE,DATA_SOURCES,MCP_AND_TOOLS,MIDDLEWARE_AND_HITL,OPERATIONS,EVALUATION,DEMO_WALKTHROUGH,SUBMISSION_CHECKLIST,BACKLOG}.md`, `docs/images/*.mmd`, `docs/images/*.svg`, `scripts/render_diagrams.sh`, `tests/docs/test_documentation.py`
+>
+> **Produces:** Source-boundary, system architecture, orchestration, MCP/tool safety, middleware lifecycle, HITL lifecycle, and demo-story diagrams plus exact narration and copy-paste prompts.
+>
+> - [ ] Test that every promised artifact exists, diagrams contain scope-critical labels, docs contain no placeholder language, and demo commands/inputs match the CLI/UI.
+> - [ ] Write Mermaid sources, render SVG with pinned Mermaid CLI, and visually inspect every SVG.
+> - [ ] Write docs from implemented behavior, including honest limitations and evaluator Q&A; run tests and commit.
 
-> Create product documentation, reproducible Mermaid diagrams and rendered SVGs that show data provenance, architecture, orchestration, MCP/tool safety, middleware, HITL/closure, and a presenter story. Keep the official/synthetic boundary exact, avoid claims that parallel implementation has already verified, and include copy/paste review inputs plus a final-integration confirmation note.
-
-The prompts deliberately stated non-goals: no real retail operations, notifications, customer PII, production authorization, or claimed live verification without captured evidence. That made the output useful for a submission while preserving an honest safety boundary.
+**Tool/model and iteration attribution:** this documentation pass used Codex in the desktop task environment; Mermaid CLI `11.12.0` generated the SVGs. Claude Code and the Grok CLI were not invoked by this documentation agent. The initial source/label contract, direct render, visual-layout review, and double-render stability check are the recorded iterations; runtime integration remains an approved contract pending Task 11.
 
 ## Iterations tried
 
@@ -46,16 +54,15 @@ The prompts deliberately stated non-goals: no real retail operations, notificati
 - Human review is most persuasive when the review packet contains the reconciliation equation, source citations, gaps, and the exact action proposed.
 - Closure is a better safety demonstration than a successful write: refusing to close with ambiguity, missing acknowledgement, or missing units explains the system’s operational discipline.
 
-## Video walkthrough: 4 minutes 55 seconds
+## Video walkthrough: 4 minutes 20 seconds
 
 | Time | Presenter narration | Screen/action |
 |---|---|---|
-| 00:00–00:35 | “I am opening official openFDA recall H-1230-2026. Northstar Grocers is fictional training data, not a participant in this public recall.” | Start the pinned case and show source badges. |
-| 00:35–01:00 | “The public notice defines scope. The synthetic twin lets us safely exercise the operational workflow.” | Point to official/synthetic provenance boundary. |
-| 01:00–01:50 | “LangGraph plans and routes the investigation. Specialists return evidence; the independent critic verifies it. There is no A2A and agents cannot write records.” | Investigation: plan, outputs, sources, tool trace. |
-| 01:50–02:35 | “This equation makes every unit visible. An unaccounted unit is a closure blocker, not a number we hide.” | Reconciliation: lot/facility quantity view. |
-| 02:35–03:50 | “The ambiguous lot pauses for the Food-safety manager. The reviewer can approve, edit, reject, or escalate; approval is scoped to the action and case version.” | Human Review: use the supplied `approve` input. |
-| 03:50–04:20 | “Only the approved graph node makes a simulated write, returning a receipt tied to an idempotency key.” | Show audit receipt and graph/tool timeline. |
-| 04:20–04:55 | “The case remains open if acknowledgement, match certainty, or reconciliation is incomplete. Closure is a separate human gate.” | Show blocked closure and evaluation/audit panel. |
+| 00:00 | “I am opening official openFDA recall H-1230-2026. Northstar Grocers is fictional training data, not a participant in this public recall.” | Command Center: **Open case** with **Recall number** `H-1230-2026`. |
+| 00:35 | “LangGraph runs bounded investigation work; specialists return evidence and the critic verifies it. There is no A2A and agents cannot write records.” | Investigation: **Run investigation**, plan, outputs, sources, tool trace. |
+| 01:20 | “This equation makes every unit visible. An unaccounted unit is a closure blocker.” | Reconciliation: lot/facility quantity view and gaps. |
+| 02:00 | “The ambiguous lot pauses for the Food-safety manager.” | Human Review: **Review required**; **Decision** `approve`, **Actor** `Food-safety manager`, and the contract **Justification**. |
+| 03:10 | “Only the approved graph node makes a simulated write.” | **Approve**, **Simulate approved actions**, receipt, and **Simulated action recorded**. |
+| 04:20 | “Closure is separate and stays blocked while risk remains.” | Audit & Evaluation: **Request closure** and **Open — closure blocked**. |
 
-At **04:30**, pause on the closure blockers so the evaluator can see why a safe system refuses to complete a case. The total is under five minutes. Exact command flags and widget text require final integration confirmation before recording.
+The total is four minutes twenty seconds. [`demo_contract.json`](demo_contract.json) is the approved contract pending Task 11 runtime integration; the final integration test must compare it with runtime CLI/UI behavior before recording.

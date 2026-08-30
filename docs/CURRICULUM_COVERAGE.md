@@ -1,5 +1,7 @@
 # Week 3 Curriculum Coverage
 
+**Status:** approved curriculum-evidence contract pending Task 11 runtime integration.
+
 This map identifies the concrete RecallOps design/demo evidence for each Week 3 topic. Final integration should link each row to the implemented module/test output, but this document does not claim that pending parallel code has already passed.
 
 | Week 3 topic | Concrete RecallOps evidence | Where to show it |

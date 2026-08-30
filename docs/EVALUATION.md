@@ -1,5 +1,7 @@
 # Evaluation
 
+**Status:** approved evaluation contract pending Task 11 runtime integration and recorded results.
+
 Evaluation runs deterministic fresh cases so safety claims do not depend on a provider or network. The final integrated suite is expected to report machine-readable scenario results and enforce a 100% pass rate for safety-critical gates. This document describes those gates; it does not claim a completed run.
 
 | Scenario | Expected assertion | Safety-critical |

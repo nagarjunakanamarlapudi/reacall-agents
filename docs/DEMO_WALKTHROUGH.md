@@ -2,7 +2,7 @@
 
 ![Demo story](images/07_demo_story.svg)
 
-This is a presenter script for the approved design. **Final integration confirmation is required** for the exact CLI flags, Streamlit widget labels, and rendered receipt text because implementation is integrating in parallel. The recall number, review vocabulary, provenance statements, and safety narrative are fixed.
+This is an **approved contract pending Task 11 runtime integration**. [`demo_contract.json`](demo_contract.json) is the single source for its command, fields, controls, status labels, inputs, and timestamps. **Final integration confirmation is required** before recording.
 
 ## Preflight
 
@@ -17,51 +17,16 @@ Expected audience-facing source boundary: **official openFDA H-1230-2026** is th
 
 ## Narration and inputs
 
-1. **Open case — 35 seconds.**
+| Time | Narration | Contracted screen/action |
+|---|---|---|
+| 00:00 | “I am opening official openFDA recall H-1230-2026. Northstar Grocers is fictional training data, not a party to this public recall.” | In **Command Center**, enter **Recall number** `H-1230-2026` and select **Open case**. |
+| 00:35 | “The graph plans bounded work for intake, matching, traceability, containment, and independent verification. There is no A2A and agents do not directly write records.” | In **Investigation**, select **Run investigation** and show evidence/tool trace. |
+| 01:20 | “The quantity equation makes every unit visible. Any unaccounted unit remains a closure blocker.” | In **Reconciliation**, show explicit gaps. |
+| 02:00 | “This ambiguous lot pauses at a durable interrupt. The Food-safety manager can approve, edit, reject, or escalate.” | In **Human Review**, show status **Review required**. The contract controls are **Approve**, **Edit**, **Reject**, and **Escalate**. Enter **Decision** `approve`, **Actor** `Food-safety manager`, and **Justification** `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.` |
+| 03:10 | “Approval is scoped to the action and case version. Only the approved graph node makes a simulated write.” | Select **Approve**, then **Simulate approved actions**; show status **Simulated action recorded** and the receipt. |
+| 04:20 | “Monitoring still protects closure: a missing acknowledgement, ambiguity, or reconciliation gap keeps the case open.” | In **Audit & Evaluation**, select **Request closure** and show **Open — closure blocked**. For the safe alternate decision, enter `escalate` with `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` |
 
-   Narrate: “I am opening the pinned official openFDA recall H-1230-2026. The notice defines the recall predicate. Northstar Grocers is fictional training data, not a party to this public recall.”
-
-   Copy/paste input: `H-1230-2026`
-
-2. **Investigate — 50 seconds.**
-
-   Narrate: “The graph has planned bounded work for intake, matching, traceability, containment, and independent verification. The specialists return evidence; the graph owns state and routing. There is no A2A and agents do not directly write records.”
-
-   UI detail requiring final integration confirmation: open **Investigation** and show the recall predicate, exact/probable/ambiguous/rejected match rationale, source badges, and tool trace.
-
-3. **Reconcile — 45 seconds.**
-
-   Narrate: “RecallOps shows the quantity equation rather than hiding missing units: received equals on-hand plus quarantined plus sold plus returned plus disposed plus unaccounted. Any unaccounted unit remains a closure blocker.”
-
-   UI detail requiring final integration confirmation: open **Reconciliation** and select the affected lot/facility view.
-
-4. **Human review — 75 seconds.**
-
-   Narrate: “This ambiguous lot pauses at a durable LangGraph interrupt. I am the Food-safety manager; I can approve, edit, reject, or escalate. Approval is for this scoped action and case version, not an unrestricted capability.”
-
-   Copy/paste review values:
-
-   ```text
-   decision: approve
-   actor: Food-safety manager
-   justification: Authorize simulated containment for confirmed scope; retain ambiguous lot for review.
-   ```
-
-   UI detail requiring final integration confirmation: open **Human Review**, submit the values, and show that the action receipt contains the approval linkage and idempotency information.
-
-5. **Monitor and closure — 55 seconds.**
-
-   Narrate: “Only after the approved resume can the simulated operations tool execute. The case remains open if a facility has not acknowledged, a match is ambiguous, or quantities are unresolved. Closure is a separate human gate.”
-
-   Copy/paste review values for a safe blocking demonstration:
-
-   ```text
-   decision: escalate
-   actor: Food-safety manager
-   justification: Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.
-   ```
-
-   UI detail requiring final integration confirmation: open **Audit & Evaluation** and show the node/tool timeline, source mode, decision, and receipt; then show the blocked closure reason.
+The agreed sequence ends at 04:20. Runtime UI strings and outcome values must be checked against `demo_contract.json` by Task 11 integration tests.
 
 ## Evaluator questions
 

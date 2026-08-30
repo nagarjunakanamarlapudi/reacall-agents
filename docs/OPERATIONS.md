@@ -1,5 +1,7 @@
 # Operations Runbook
 
+**Status:** approved operations contract pending Task 11 runtime integration. Commands and outcomes below are contract values until captured verification confirms them.
+
 This runbook documents the intended final command surface. Run each command only after the integrated repository exposes it, and capture exact output in the final verification report.
 
 ## Local setup and checks

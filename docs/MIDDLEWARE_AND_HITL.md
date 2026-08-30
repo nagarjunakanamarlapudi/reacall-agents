@@ -1,5 +1,7 @@
 # Middleware and Human Review
 
+**Status:** approved middleware/HITL contract pending Task 11 runtime integration.
+
 ![Middleware lifecycle](images/05_middleware_lifecycle.svg)
 
 Middleware is observable behavior at boundaries, not a slide-only feature. It injects case/source context, requires a bounded plan, routes deterministic or live models, validates structured outputs, summarizes large evidence while retaining citations, limits calls, masks customer-like fields, and records node/tool outcomes.

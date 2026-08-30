@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0",
+  "runtime_integration_status": "approved contract pending Task 11 runtime integration",
+  "cli": {
+    "data_validation_command": "uv run recallops data-validate",
+    "demo_command": "uv run recallops demo --recall-number H-1230-2026"
+  },
+  "streamlit": {
+    "views": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation"],
+    "buttons": ["Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure"],
+    "field_labels": ["Recall number", "Decision", "Actor", "Justification"]
+  },
+  "inputs": {
+    "recall_number": "H-1230-2026",
+    "actor": "Food-safety manager",
+    "approve_justification": "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.",
+    "escalate_justification": "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."
+  },
+  "decisions": ["approve", "edit", "reject", "escalate"],
+  "expected_statuses": ["Review required", "Simulated action recorded", "Open — closure blocked"],
+  "timeline": {
+    "00:00": "Open case and state the official/synthetic boundary",
+    "00:35": "Run investigation and show bounded graph/specialists",
+    "01:20": "Show reconciliation and explicit gaps",
+    "02:00": "Review the ambiguous lot as Food-safety manager",
+    "03:10": "Approve a scoped simulated action and show its receipt",
+    "04:20": "Show monitoring, Open — closure blocked, and the separate closure gate"
+  }
+}
