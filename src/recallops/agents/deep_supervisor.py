@@ -269,13 +269,21 @@ class _SealedReadCapability(metaclass=_SealedCapabilityMeta):
 
     async def _read(self, payload: dict[str, Any]) -> Any:
         config, expected_digest, tool_name = _sealed_capability_authority(self)
-        return await _invoke_trusted_read(config, expected_digest, tool_name, payload)
+        validated_payload = _validated_read_payload(tool_name, payload)
+        return await _invoke_trusted_read(
+            config,
+            expected_digest,
+            tool_name,
+            validated_payload,
+        )
 
 
 class _SearchRecallsCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, query: str) -> Any:
+        if type(query) is not str:
+            raise ValueError("search_recalls query must be an exact string")
         return await self._read({"query": query})
 
 
@@ -283,6 +291,8 @@ class _GetRecallCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, recall_number: str) -> Any:
+        if type(recall_number) is not str:
+            raise ValueError("get_recall recall_number must be an exact string")
         return await self._read({"recall_number": recall_number})
 
 
@@ -290,6 +300,8 @@ class _GetProductMetadataCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, upc: str) -> Any:
+        if type(upc) is not str:
+            raise ValueError("get_product_metadata upc must be an exact string")
         return await self._read({"upc": upc})
 
 
@@ -297,6 +309,8 @@ class _FindCandidateProductsCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, predicate: RecallPredicate) -> Any:
+        if type(predicate) is not RecallPredicate:
+            raise ValueError("find_candidate_products predicate must be an exact RecallPredicate")
         return await self._read({"predicate": predicate})
 
 
@@ -304,6 +318,8 @@ class _MatchLotsCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, predicate: RecallPredicate) -> Any:
+        if type(predicate) is not RecallPredicate:
+            raise ValueError("match_lots predicate must be an exact RecallPredicate")
         return await self._read({"predicate": predicate})
 
 
@@ -311,6 +327,8 @@ class _TraceForwardCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, lot_id: str) -> Any:
+        if type(lot_id) is not str:
+            raise ValueError("trace_forward lot_id must be an exact string")
         return await self._read({"lot_id": lot_id})
 
 
@@ -318,6 +336,8 @@ class _TraceBackwardCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, lot_id: str) -> Any:
+        if type(lot_id) is not str:
+            raise ValueError("trace_backward lot_id must be an exact string")
         return await self._read({"lot_id": lot_id})
 
 
@@ -325,6 +345,8 @@ class _GetInventoryCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, lot_id: str | None = None) -> Any:
+        if type(lot_id) not in {str, type(None)}:
+            raise ValueError("get_inventory lot_id must be an exact string or None")
         return await self._read({"lot_id": lot_id})
 
 
@@ -332,6 +354,8 @@ class _GetSalesCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, lot_id: str) -> Any:
+        if type(lot_id) is not str:
+            raise ValueError("get_sales lot_id must be an exact string")
         return await self._read({"lot_id": lot_id})
 
 
@@ -339,6 +363,8 @@ class _ReconcileUnitsCapability(_SealedReadCapability):
     __slots__ = ()
 
     async def __call__(self, lot_id: str) -> Any:
+        if type(lot_id) is not str:
+            raise ValueError("reconcile_units lot_id must be an exact string")
         return await self._read({"lot_id": lot_id})
 
 
@@ -428,8 +454,22 @@ class _SealedReadTool(BaseTool, metaclass=_SealedToolMeta):
 
     @property
     def coroutine(self) -> Any:
-        """Expose inspectable metadata without retaining a bound method."""
-        return _sealed_tool_capability(self).__call__
+        """Expose only the class-bound validated async invocation surface."""
+        return _SealedReadTool._validated_coroutine.__get__(self, type(self))
+
+    async def _validated_coroutine(self, *args: Any, **payload: Any) -> Any:
+        if len(args) > 1 or (args and payload):
+            raise ValueError("sealed RecallOps coroutine accepts one positional or keyword input")
+        if args:
+            capability = _sealed_tool_capability(self)
+            _config, _expected_digest, tool_name = _sealed_capability_authority(capability)
+            fields = tuple(_capability_args_schema(tool_name).model_fields)
+            if len(fields) != 1:
+                raise ValueError("sealed RecallOps coroutine requires one input field")
+            tool_input = {fields[0]: args[0]}
+        else:
+            tool_input = payload
+        return await _invoke_sealed_read_tool(self, tool_input, tool_call_id=None)
 
     def invoke(
         self,
@@ -473,8 +513,7 @@ class _SealedReadTool(BaseTool, metaclass=_SealedToolMeta):
         raise RuntimeError("RecallOps sealed read tools require asynchronous invocation")
 
     async def _arun(self, **payload: Any) -> Any:
-        capability = _sealed_tool_capability(self)
-        return await capability(**payload)
+        return await _invoke_sealed_read_tool(self, payload, tool_call_id=None)
 
 
 def specialist_catalog() -> list[SpecialistDefinition]:
@@ -1103,6 +1142,84 @@ def _capability_args_schema(tool_name: str) -> type[BaseModel]:
     raise ValueError("trusted RecallOps read capability is invalid")
 
 
+_RECALL_PREDICATE_FIELDS = frozenset(
+    {
+        "product_terms",
+        "upcs",
+        "plant_codes",
+        "julian_start",
+        "julian_end",
+        "geography",
+        "hazard",
+    }
+)
+
+
+def _detached_recall_predicate(value: Any) -> RecallPredicate:
+    """Return an exact, revalidated copy without invoking caller model hooks."""
+    if type(value) is RecallPredicate:
+        state = vars(value)
+        if not _has_exact_keys(state, _RECALL_PREDICATE_FIELDS) or not _is_plain_json(state):
+            raise ValueError("trusted RecallOps predicate must contain exact plain JSON state")
+        plain = json.loads(
+            json.dumps(
+                state,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    elif type(value) is dict:
+        if not _has_exact_keys(value, _RECALL_PREDICATE_FIELDS) or not _is_plain_json(value):
+            raise ValueError("trusted RecallOps predicate must be an exact plain object")
+        plain = json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    else:
+        raise ValueError("trusted RecallOps predicate must be an exact RecallPredicate")
+    predicate = RecallPredicate.model_validate(plain, strict=True)
+    if type(predicate) is not RecallPredicate:
+        raise ValueError("trusted RecallOps predicate validation returned an invalid type")
+    return predicate
+
+
+def _validated_read_payload(tool_name: str, payload: Any) -> dict[str, Any]:
+    """Strictly validate one tool payload before services, clients, or comparisons."""
+    if type(tool_name) is not str or tool_name not in _TRUSTED_READ_TOOL_NAMES:
+        raise ValueError("trusted RecallOps read capability is invalid")
+    if type(payload) is not dict or any(type(key) is not str for key in payload):
+        raise ValueError("trusted RecallOps tool input must be an exact plain object")
+    schema = _capability_args_schema(tool_name)
+    fields = frozenset(schema.model_fields)
+    if not set(payload) <= fields:
+        raise ValueError("trusted RecallOps tool input contains unexpected fields")
+    normalized: dict[str, Any] = {}
+    for field_name, value in payload.items():
+        if field_name == "predicate":
+            normalized[field_name] = _detached_recall_predicate(value)
+        elif field_name == "lot_id" and tool_name == "get_inventory" and value is None:
+            normalized[field_name] = None
+        elif type(value) is str:
+            normalized[field_name] = value
+        else:
+            raise ValueError(
+                f"trusted RecallOps {field_name} input must be an exact string"
+            )
+    validated = schema.model_validate(normalized, strict=True)
+    validated_payload = {
+        field_name: getattr(validated, field_name) for field_name in schema.model_fields
+    }
+    for value in validated_payload.values():
+        if type(value) not in {str, type(None), RecallPredicate}:
+            raise ValueError("trusted RecallOps tool input contains an invalid value type")
+    return validated_payload
+
+
 def _capability_description(tool_name: str) -> str:
     if tool_name == "search_recalls":
         return "Search official recall registry evidence."
@@ -1234,15 +1351,7 @@ def _validated_sealed_tool_input(
         if len(fields) != 1:
             raise ValueError("trusted RecallOps string input requires one schema field")
         payload = {fields[0]: payload}
-    if type(payload) is not dict or any(type(key) is not str for key in payload):
-        raise ValueError("trusted RecallOps tool input must be a plain object")
-    validated = schema.model_validate(payload, strict=True)
-    validated_payload = {
-        field_name: getattr(validated, field_name) for field_name in schema.model_fields
-    }
-    for value in validated_payload.values():
-        if type(value) not in {str, type(None), RecallPredicate}:
-            raise ValueError("trusted RecallOps tool input contains an invalid value type")
+    validated_payload = _validated_read_payload(tool_name, payload)
     return capability, validated_payload, resolved_tool_call_id, tool_name
 
 
@@ -1290,7 +1399,15 @@ def _sealed_tool(
     config, expected_digest, tool_name = _sealed_capability_authority(capability)
     call_method = type(capability).__call__
     read_method = _SealedReadCapability._read
-    tool_methods = (_SealedReadTool._run, _SealedReadTool._arun)
+    tool_methods = (
+        _SealedReadTool.invoke,
+        _SealedReadTool.ainvoke,
+        _SealedReadTool.run,
+        _SealedReadTool.arun,
+        _SealedReadTool._validated_coroutine,
+        _SealedReadTool._run,
+        _SealedReadTool._arun,
+    )
     if (
         call_method.__closure__ is not None
         or read_method.__closure__ is not None
@@ -1301,6 +1418,11 @@ def _sealed_tool(
         *(call_method.__defaults__ or ()),
         *(read_method.__defaults__ or ()),
         *(value for method in tool_methods for value in (method.__defaults__ or ())),
+        *(
+            value
+            for method in tool_methods
+            for value in (method.__kwdefaults__ or {}).values()
+        ),
     )
     if any(
         isinstance(value, _ReadConfig)
@@ -1351,7 +1473,7 @@ def _trusted_read_tools(
         identities = {
             name: (
                 f"direct:reconstructed:sealed:config-sha256="
-                f"{_sealed_capability_authority(tools[name].coroutine.__self__)[1]}:"
+                f"{_sealed_capability_authority(_sealed_tool_capability(tools[name]))[1]}:"
                 f"{'RecallRegistryService' if name in _REGISTRY_READ_TOOL_NAMES else 'TraceabilityService'}.{name}"
             )
             for name in tools
@@ -1361,7 +1483,7 @@ def _trusted_read_tools(
             name: (
                 f"stdio:reconstructed:sealed:"
                 f"{'registry' if name in _REGISTRY_READ_TOOL_NAMES else 'traceability'}:"
-                f"config-sha256={_sealed_capability_authority(tools[name].coroutine.__self__)[1]}:{name}"
+                f"config-sha256={_sealed_capability_authority(_sealed_tool_capability(tools[name]))[1]}:{name}"
             )
             for name in tools
         }

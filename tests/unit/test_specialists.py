@@ -1068,7 +1068,8 @@ def test_compiled_read_coroutines_capture_only_deeply_immutable_configuration(
                 *(coroutine.__func__.__kwdefaults__ or {}).values(),
             ):
                 assert_deeply_immutable(value)
-            capability = coroutine.__self__
+            assert coroutine.__self__ is tool
+            capability = vars(type(tool))["_capability"]
             class_state = vars(type(capability))
             config = class_state["_config"]
             expected_digest = class_state["_expected_digest"]
@@ -1360,6 +1361,156 @@ async def test_compiled_deep_agent_tool_node_uses_only_the_sealed_invocation_pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["direct", "stdio"])
+@pytest.mark.parametrize("hostile_kind", ["string", "predicate"])
+async def test_public_coroutine_and_direct_arun_reject_subclasses_before_hooks_or_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+    hostile_kind: str,
+) -> None:
+    """Catches raw coroutine/_arun bypassing the sealed exact-type input pipeline."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.agents.specialists import investigate_recall
+    from recallops.data.loaders import load_recall_snapshot
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.models import RecallPredicate
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+    from recallops.services.traceability import TraceabilityService
+
+    storage_path = (tmp_path / f"raw-{transport}-{hostile_kind}.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway: Any = (
+        DirectGateway(operations=OperationsService(storage_path=storage_path))
+        if transport == "direct"
+        else StdioMCPGateway()
+    )
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+    compiled = module._compiled_subagent_graphs(supervisor.graph)
+    hook_calls: list[str] = []
+    constructed: list[str] = []
+
+    class ExecutableString(str):
+        def __eq__(self, other: object) -> bool:
+            del other
+            hook_calls.append("string-eq")
+            return False
+
+        def __str__(self) -> str:
+            hook_calls.append("string-str")
+            return super().__str__()
+
+        def casefold(self) -> str:
+            hook_calls.append("string-casefold")
+            return super().casefold()
+
+        def strip(self, chars: str | None = None) -> str:
+            hook_calls.append("string-strip")
+            return super().strip(chars)
+
+    class ExecutablePredicate(RecallPredicate):
+        def __getattribute__(self, name: str) -> Any:
+            if not name.startswith("__pydantic"):
+                hook_calls.append(f"predicate-get:{name}")
+            return super().__getattribute__(name)
+
+        def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            hook_calls.append("predicate-model-dump")
+            return super().model_dump(*args, **kwargs)
+
+    if hostile_kind == "string":
+        tool = compiled["recall-intelligence"].nodes["tools"].bound._tools_by_name[
+            "get_recall"
+        ]
+        field_name = "recall_number"
+        hostile: Any = ExecutableString("H-1230-2026")
+    else:
+        tool = compiled["product-lot-matching"].nodes["tools"].bound._tools_by_name[
+            "find_candidate_products"
+        ]
+        field_name = "predicate"
+        hostile = ExecutablePredicate.model_validate(
+            investigate_recall(load_recall_snapshot()).predicate.model_dump(mode="json")
+        )
+    hook_calls.clear()
+
+    original_registry_init = RecallRegistryService.__init__
+    original_traceability_init = TraceabilityService.__init__
+    original_stdio_init = StdioMCPGateway.__init__
+
+    def track_registry(self: RecallRegistryService, *args: Any, **kwargs: Any) -> None:
+        constructed.append("registry")
+        original_registry_init(self, *args, **kwargs)
+
+    def track_traceability(self: TraceabilityService, *args: Any, **kwargs: Any) -> None:
+        constructed.append("traceability")
+        original_traceability_init(self, *args, **kwargs)
+
+    def track_stdio(self: StdioMCPGateway, *args: Any, **kwargs: Any) -> None:
+        constructed.append("stdio")
+        original_stdio_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", track_registry)
+    monkeypatch.setattr(TraceabilityService, "__init__", track_traceability)
+    monkeypatch.setattr(StdioMCPGateway, "__init__", track_stdio)
+
+    with pytest.raises((TypeError, ValueError), match="exact"):
+        await tool.coroutine(hostile)
+    with pytest.raises((TypeError, ValueError), match="exact"):
+        await tool._arun(**{field_name: hostile})
+    capability = vars(type(tool))["_capability"]
+    with pytest.raises((TypeError, ValueError), match="exact"):
+        await capability(hostile)
+
+    assert hook_calls == []
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+async def test_public_coroutine_and_direct_arun_preserve_valid_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+) -> None:
+    """The hardened public async surfaces retain the normal compiled tool result."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / f"valid-raw-{transport}.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway: Any = (
+        DirectGateway(operations=OperationsService(storage_path=storage_path))
+        if transport == "direct"
+        else StdioMCPGateway()
+    )
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+
+    coroutine_result = await get_recall.coroutine("H-1230-2026")
+    arun_result = await get_recall._arun(recall_number="H-1230-2026")
+
+    assert coroutine_result == arun_result
+    assert coroutine_result["recall_number"] == "H-1230-2026"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
 async def test_sealed_capability_rejects_paired_config_digest_replacement_before_construction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -1391,7 +1542,8 @@ async def test_sealed_capability_rejects_paired_config_digest_replacement_before
     )
     coroutine = get_recall.coroutine
     assert coroutine is not None
-    capability = coroutine.__self__
+    assert coroutine.__self__ is get_recall
+    capability = vars(type(get_recall))["_capability"]
     capability_type = type(capability)
     config = vars(capability_type)["_config"]
     replacement = config._replace(
@@ -1453,7 +1605,8 @@ async def test_compiled_read_rejects_tampered_immutable_config_digest(
     coroutine = get_recall.coroutine
     assert coroutine is not None
     assert coroutine.__func__.__closure__ is None
-    capability_type = type(coroutine.__self__)
+    assert coroutine.__self__ is get_recall
+    capability_type = type(vars(type(get_recall))["_capability"])
     config = vars(capability_type)["_config"]
     constructed: list[RecallRegistryService] = []
     original_init = RecallRegistryService.__init__
@@ -1516,7 +1669,8 @@ async def test_compiled_read_rejects_self_consistent_post_build_config_replaceme
     coroutine = get_recall.coroutine
     assert coroutine is not None
     assert coroutine.__func__.__closure__ is None
-    capability_type = type(coroutine.__self__)
+    assert coroutine.__self__ is get_recall
+    capability_type = type(vars(type(get_recall))["_capability"])
     config = vars(capability_type)["_config"]
     if replacement == "source_mode":
         replacement_config = config._replace(source_mode="live", digest="")
@@ -1590,7 +1744,8 @@ async def test_compiled_read_uses_separate_build_time_digest_authority(
     )
     coroutine = get_recall.coroutine
     assert coroutine is not None
-    capability_type = type(coroutine.__self__)
+    assert coroutine.__self__ is get_recall
+    capability_type = type(vars(type(get_recall))["_capability"])
     class_state = vars(capability_type)
     config = class_state["_config"]
     expected_digest = class_state["_expected_digest"]
@@ -1897,7 +2052,9 @@ async def test_reconstructed_stdio_is_isolated_from_later_process_cwd(
     )
     coroutine = get_recall.coroutine
     assert coroutine is not None
-    read_config = vars(type(coroutine.__self__))["_config"]
+    assert coroutine.__self__ is get_recall
+    capability = vars(type(get_recall))["_capability"]
+    read_config = vars(type(capability))["_config"]
     environment = dict(read_config.environment)
     assert read_config.python_executable == Path(sys.executable)
     assert read_config.cwd == PROJECT_ROOT
