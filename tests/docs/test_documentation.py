@@ -20,6 +20,7 @@ REQUIRED_DOCUMENTS = (
     "package-lock.json",
     "README.md",
     "PROPOSAL.md",
+    "docs/BUSINESS_DOMAIN.md",
     "docs/ARCHITECTURE.md",
     "docs/DATA_SOURCES.md",
     "docs/MCP_AND_TOOLS.md",
@@ -79,6 +80,28 @@ DIAGRAM_LABELS = {
         "Human Review",
         "Open — closure blocked",
     ),
+    "08_business_recall_lifecycle": (
+        "FDA / regulator",
+        "Recall coordinator",
+        "Supplier",
+        "DC / store",
+        "Food-safety manager",
+        "Consumers",
+        "Internal closure blocked",
+        "FDA termination is separate",
+    ),
+    "09_domain_evidence_model": (
+        "Recall predicate",
+        "Product match",
+        "Lot match",
+        "Lineage event",
+        "Inventory position",
+        "Facility",
+        "Proposed action",
+        "Approval",
+        "Operation receipt",
+        "Internal closure decision",
+    ),
 }
 
 
@@ -135,6 +158,50 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("DS --> RI", diagram)
         self.assertIn("DA --> RI", diagram)
         self.assertIn("Verification / Critic<br/>outside supervisor context", diagram)
+
+    def test_business_orientation_is_linked_from_every_submission_entrypoint(self) -> None:
+        expected_targets = {
+            ROOT / "README.md": (
+                "docs/BUSINESS_DOMAIN.md",
+                "docs/images/08_business_recall_lifecycle.svg",
+                "docs/images/09_domain_evidence_model.svg",
+            ),
+            ROOT / "PROPOSAL.md": (
+                "docs/BUSINESS_DOMAIN.md",
+                "docs/images/08_business_recall_lifecycle.svg",
+                "docs/images/09_domain_evidence_model.svg",
+            ),
+            DOCS / "ARCHITECTURE.md": (
+                "BUSINESS_DOMAIN.md",
+                "images/08_business_recall_lifecycle.svg",
+                "images/09_domain_evidence_model.svg",
+            ),
+            DOCS / "DATA_SOURCES.md": (
+                "BUSINESS_DOMAIN.md",
+                "images/08_business_recall_lifecycle.svg",
+                "images/09_domain_evidence_model.svg",
+            ),
+            DOCS / "SUBMISSION_DOCUMENT.md": (
+                "BUSINESS_DOMAIN.md",
+                "images/08_business_recall_lifecycle.svg",
+                "images/09_domain_evidence_model.svg",
+            ),
+            DOCS / "DEMO_WALKTHROUGH.md": (
+                "BUSINESS_DOMAIN.md",
+                "images/08_business_recall_lifecycle.svg",
+                "images/09_domain_evidence_model.svg",
+            ),
+        }
+        for source, targets in expected_targets.items():
+            content = source.read_text(encoding="utf-8")
+            for target in targets:
+                self.assertIn(f"]({target})", content, f"{source.name} must link {target}")
+                self.assertTrue((source.parent / target).resolve().is_file())
+
+    def test_business_diagrams_do_not_mix_in_implementation_architecture(self) -> None:
+        for name in ("08_business_recall_lifecycle", "09_domain_evidence_model"):
+            diagram = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
+            self.assertNotRegex(diagram, r"(?i)langgraph|deep agent|\bmcp\b")
 
     def test_docs_do_not_contain_placeholder_language(self) -> None:
         files = [ROOT / name for name in REQUIRED_DOCUMENTS if name.endswith(".md")]

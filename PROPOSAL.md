@@ -3,6 +3,8 @@
 **Submission:** GenAI Academy, Mastering Agentic AI — Week 3  
 **Product:** evidence-first food-recall response decision support
 
+**Reviewer orientation:** read the [food-recall business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg) before the AI design. They separate FDA termination from fictional retailer case closure and assign every risk-bearing decision to a human.
+
 ## Executive summary
 
 Food recalls demand fast but accountable action. A coordinator must translate a notice into a precise predicate, locate the affected inventory, account for every unit, organize containment, and retain an explanation for each action. RecallOps demonstrates that workflow without pretending to operate a real retailer.

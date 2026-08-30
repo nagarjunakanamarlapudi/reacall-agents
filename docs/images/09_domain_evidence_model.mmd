@@ -1,0 +1,53 @@
+flowchart TB
+  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
+  classDef review fill:#fef3c7,stroke:#ca8a04,color:#111827
+  classDef approved fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef blocked fill:#fee2e2,stroke:#dc2626,color:#111827
+
+  subgraph SCOPE["1 — Define and match scope"]
+    direction LR
+    PUBLIC["Public recall record<br/>official openFDA evidence"]:::official
+    PRED["Recall predicate<br/>product • codes • plant • date<br/>geography • hazard"]:::official
+    PRODUCT["Product match<br/>exact • probable • rejected"]:::synthetic
+    LOT["Lot match<br/>exact • probable • ambiguous • rejected"]:::synthetic
+    PUBLIC -->|supports| PRED
+    PRED -->|scores| PRODUCT
+    PRODUCT -->|contains| LOT
+  end
+
+  subgraph TRACE["2 — Trace chain of custody and quantity"]
+    direction LR
+    SHIP["Supplier shipment<br/>lot + source document"]:::synthetic
+    EVENT["Lineage event<br/>receipt • ship • transfer<br/>sale • return"]:::synthetic
+    INV["Inventory position<br/>facility + lot + on-hand"]:::synthetic
+    FAC["Facility<br/>DC / store + acknowledgement"]:::synthetic
+    REC["Reconciliation evidence<br/>received = dispositions<br/>+ unaccounted"]:::review
+    SHIP -->|starts chain| EVENT
+    EVENT -->|updates / explains| INV
+    EVENT -->|touches| FAC
+    INV -->|quantifies| REC
+    EVENT -->|quantifies| REC
+    FAC -->|coverage| REC
+  end
+
+  subgraph GOVERN["3 — Govern action and closure"]
+    direction LR
+    ACTION["Proposed action<br/>exact scope + case version"]:::review
+    APPROVAL["Approval<br/>actor + decision + justification"]:::review
+    RECEIPT["Operation receipt<br/>simulated effect + idempotency evidence"]:::approved
+    CLOSURE{"Internal closure decision<br/>all evidence gates pass?"}:::review
+    ACTION -->|must bind exactly| APPROVAL
+    APPROVAL -->|authorizes simulation| RECEIPT
+    RECEIPT -->|proves recorded effect| CLOSURE
+  end
+
+  OPEN["Keep case open<br/>resolve or escalate gap"]:::blocked
+  CLOSED["Fictional retailer case closed<br/>FDA termination remains separate"]:::approved
+
+  LOT -->|queries| SHIP
+  LOT -->|justifies| ACTION
+  REC -->|constrains| ACTION
+  REC -->|quantity + facility gates| CLOSURE
+  CLOSURE -->|no| OPEN
+  CLOSURE -->|yes + human authorization| CLOSED

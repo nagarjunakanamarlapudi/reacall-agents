@@ -6,6 +6,8 @@ RecallOps is an evidence-first academic command center for investigating food re
 
 The flagship case uses **official openFDA H-1230-2026** alongside a clearly separated **SYNTHETIC — ACADEMIC DEMO** digital twin for fictional Northstar Grocers. A real public recall does not imply that Northstar, its facilities, or its records were involved.
 
+**Start with the [business-domain guide](docs/BUSINESS_DOMAIN.md)**, [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg) for the real operating problem, ownership, traceability and reconciliation controls, and human authority boundary. Then use the system architecture below to see how the implementation supports that operating model.
+
 ![RecallOps system architecture](docs/images/02_system_architecture.svg)
 
 ## What the project demonstrates
@@ -34,6 +36,7 @@ For locked diagram generation, use Node `24.15.0` and npm `11.12.1`, run `npm ci
 
 ## Read next
 
+- [Business domain](docs/BUSINESS_DOMAIN.md) — problem, terminology, ownership, lifecycle, evidence, and safe closure.
 - [Proposal](PROPOSAL.md) — problem, scope, users, and decision boundaries.
 - [Architecture](docs/ARCHITECTURE.md) — control, reasoning, and action planes.
 - [Data sources](docs/DATA_SOURCES.md) — authoritative and synthetic provenance.

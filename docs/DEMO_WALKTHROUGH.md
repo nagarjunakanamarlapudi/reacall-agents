@@ -4,6 +4,10 @@
 
 This is an **approved contract pending Task 11 runtime integration**. [`demo_contract.json`](demo_contract.json) is the single source for its command, fields, controls, status labels, inputs, and timestamps. **Final integration confirmation is required** before recording.
 
+## Audience orientation before the timed walkthrough
+
+Before starting the contracted 4-minute-20-second sequence, use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) to explain the real problem. Emphasize that the public record defines scope, Northstar evidence is fictional, human authorization controls simulated actions, and internal case closure is not FDA recall termination. This orientation is outside the timed contract below and adds no new demo inputs or screen labels.
+
 ## Preflight
 
 Copy/paste after final integration confirmation:

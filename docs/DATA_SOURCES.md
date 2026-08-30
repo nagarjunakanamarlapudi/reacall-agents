@@ -2,16 +2,18 @@
 
 **Status:** implemented, deterministic data/provenance contract; end-to-end runtime verification remains in Task 11.
 
+Read the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) first for why the public recall predicate and fictional retailer evidence must remain separate throughout matching, tracing, containment, and closure.
+
 ![Data provenance boundary](images/01_data_provenance.svg)
 
 ## Source register
 
 | Source | Role | Provenance label | Critical-path status |
 |---|---|---|---|
-| openFDA Food Enforcement API | Recall notice lookup | `OFFICIAL — openFDA` | Live lookup plus frozen fallback |
+| [openFDA Food Enforcement API](https://open.fda.gov/apis/food/enforcement/) | Recall notice lookup | `OFFICIAL — openFDA` | Live lookup plus frozen fallback |
 | Frozen `H-1230-2026` snapshot | Reproducible flagship case | `OFFICIAL — openFDA snapshot` | Required offline fallback |
-| FDA traceability guidance | Policy context | `OFFICIAL — FDA guidance` | Reference resource |
-| GS1 EPCIS 2.0 | Event semantics | `OFFICIAL — GS1 reference` | Reference resource |
+| [FDA Food Traceability Rule](https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-requirements-additional-traceability-records-certain-foods) and [traceability lot-code guidance](https://www.fda.gov/food/food-safety-modernization-act-fsma/traceability-lot-code) | Policy context | `OFFICIAL — FDA guidance` | Reference resource; no compliance claim |
+| [GS1 EPCIS 2.0.1](https://ref.gs1.org/standards/epcis/2.0.1/) | Event semantics | `OFFICIAL — GS1 reference` | Reference resource; events are EPCIS-like, not certified conformance |
 | USDA FoodData Central | Optional product enrichment | `OFFICIAL — USDA` | Optional only |
 | Northstar Grocers data | Product, lot, event, inventory, task, receipt fixtures | `SYNTHETIC_RETAILER_DIGITAL_TWIN`; UI: `SYNTHETIC — ACADEMIC DEMO` | Required demo data |
 | USDA FSIS recall API | Possible future adapter | `FUTURE — excluded from flagship` | Not a dependency |
@@ -46,6 +48,10 @@ The manifest declares the schema, version, seed, source label, exact collection 
 
 For parent-linked event quantities, every shipment or transfer must be positive and no child event may claim more units than its direct parent. Sibling quantities are intentionally not summed against the parent because returns, quarantines, and disposals may describe business states that overlap an earlier sale or movement; lot-level reconciliation remains the authoritative aggregate equation.
 
+The generated manifest—not prose—is the authority for synthetic portfolio counts, seed, and checksums. This keeps documentation honest when deterministic background data is expanded while preserving the stable anchor scenarios.
+
 ## Data minimization
 
 The academic twin excludes real customer PII. Customer-like fields are masked before model context and traces. Real ERP, WMS, POS, supplier, or store systems are not accessed.
+
+This source design is an academic simulation, not legal advice, food-safety advice, or a determination that the Food Traceability Rule applies to a particular food or business.

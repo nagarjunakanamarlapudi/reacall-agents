@@ -2,6 +2,8 @@
 
 **Status:** approved architecture contract pending Task 11 runtime integration.
 
+**Business before software:** the [business-domain guide](BUSINESS_DOMAIN.md) defines the public-notice-to-retailer lifecycle, ownership, evidence model, reconciliation equation, and closure boundary that this architecture implements. Its [business lifecycle](images/08_business_recall_lifecycle.svg) and [domain evidence model](images/09_domain_evidence_model.svg) intentionally contain no implementation components.
+
 ![Overall system architecture](images/02_system_architecture.svg)
 
 RecallOps has three deliberately separated planes.

@@ -1,5 +1,7 @@
 # RecallOps Command Center — Submission Handout
 
+**Audience orientation:** begin with the [business-domain guide](BUSINESS_DOMAIN.md), then show the [business recall lifecycle](images/08_business_recall_lifecycle.svg) and [domain evidence model](images/09_domain_evidence_model.svg). They explain the real operational problem, ownership, evidence, and internal-closure boundary before the agentic implementation.
+
 ## Project overview
 
 RecallOps is an evidence-first academic food-recall response command center. It converts a public recall notice into an auditable case: extract the scope, match internal products/lots, trace units and facilities, reconcile quantity, propose containment, pause for human authorization, simulate approved actions, and block closure while risk remains.

@@ -11,10 +11,12 @@ All diagrams are Mermaid sources rendered to SVG through `scripts/render_diagram
 | `05_middleware_lifecycle` | Shows policy hooks around agent, model, tool, and graph boundaries. |
 | `06_hitl_closure` | Shows durable interrupts, resume, approved writes, monitoring, and closure blocks. |
 | `07_demo_story` | Gives the presenter’s concise end-to-end sequence. |
+| `08_business_recall_lifecycle` | Shows the regulator-to-retailer business lifecycle, human decisions, facility evidence, consumers, and the distinct closure boundaries. |
+| `09_domain_evidence_model` | Connects public recall scope to fictional product, lot, lineage, inventory, facility, action, approval, receipt, and closure evidence. |
 
 ## Visual truth rules
 
-- Blue means official public data or control flow; orange denotes synthetic academic data; purple denotes reasoning; green denotes verified/approved flow; red denotes block/fail-closed behavior.
+- Blue means official public data or control flow; orange denotes synthetic academic data; purple denotes reasoning; yellow denotes human review or evidence gates; green denotes verified/approved flow; red denotes block/fail-closed behavior.
 - `official openFDA H-1230-2026` and `SYNTHETIC — ACADEMIC DEMO` must remain exact labels in provenance diagrams.
 - No diagram depicts A2A or a direct agent-to-database/action write.
 - Diagrams describe the approved design; operational verification belongs to the final integrated run.

@@ -1,0 +1,33 @@
+sequenceDiagram
+  autonumber
+  participant FDA as FDA / regulator
+  participant RC as Recall coordinator
+  participant SUP as Supplier
+  participant OPS as DC / store
+  participant FSM as Food-safety manager
+  participant CON as Consumers
+
+  FDA->>RC: Public notice / enforcement record
+  Note over FDA,RC: Official scope evidence — retailer response starts here
+  opt Public communication is applicable
+    FDA-->>CON: Official recall information
+    Note over FDA,CON: FDA or the recalling firm may issue a public warning under the real strategy
+  end
+  RC->>RC: Verify product, code, plant, date, geography, hazard
+  RC->>SUP: Request lot and shipment evidence
+  SUP-->>RC: Lot/source documents or an explicit evidence gap
+  RC->>OPS: Trace receipt, transfers, inventory, sales, returns
+  OPS-->>RC: Event IDs, quantities, facilities, acknowledgements
+  RC->>FSM: Review predicate, matches, equation, gaps, proposed containment
+
+  alt Ambiguity, unaccounted units, or missing acknowledgement
+    FSM-->>RC: Edit, reject, or escalate
+    Note over RC,FSM: Internal closure blocked
+  else Evidence gates pass
+    FSM-->>RC: Authorize exact simulated action and separate closure review
+    RC->>OPS: Record simulated action and monitor facility response
+    OPS-->>RC: Receipt, disposition evidence, acknowledgement
+  end
+
+  Note over FDA,CON: RecallOps contacts neither regulators nor consumers
+  Note over FDA,FSM: FDA termination is separate from retailer internal closure
