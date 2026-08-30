@@ -1424,15 +1424,15 @@ async def test_public_coroutine_and_direct_arun_reject_subclasses_before_hooks_o
             return super().model_dump(*args, **kwargs)
 
     if hostile_kind == "string":
-        tool = compiled["recall-intelligence"].nodes["tools"].bound._tools_by_name[
-            "get_recall"
-        ]
+        tool = compiled["recall-intelligence"].nodes["tools"].bound._tools_by_name["get_recall"]
         field_name = "recall_number"
         hostile: Any = ExecutableString("H-1230-2026")
     else:
-        tool = compiled["product-lot-matching"].nodes["tools"].bound._tools_by_name[
-            "find_candidate_products"
-        ]
+        tool = (
+            compiled["product-lot-matching"]
+            .nodes["tools"]
+            .bound._tools_by_name["find_candidate_products"]
+        )
         field_name = "predicate"
         hostile = ExecutablePredicate.model_validate(
             investigate_recall(load_recall_snapshot()).predicate.model_dump(mode="json")

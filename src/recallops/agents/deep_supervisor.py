@@ -1207,9 +1207,7 @@ def _validated_read_payload(tool_name: str, payload: Any) -> dict[str, Any]:
         elif type(value) is str:
             normalized[field_name] = value
         else:
-            raise ValueError(
-                f"trusted RecallOps {field_name} input must be an exact string"
-            )
+            raise ValueError(f"trusted RecallOps {field_name} input must be an exact string")
     validated = schema.model_validate(normalized, strict=True)
     validated_payload = {
         field_name: getattr(validated, field_name) for field_name in schema.model_fields
@@ -1418,11 +1416,7 @@ def _sealed_tool(
         *(call_method.__defaults__ or ()),
         *(read_method.__defaults__ or ()),
         *(value for method in tool_methods for value in (method.__defaults__ or ())),
-        *(
-            value
-            for method in tool_methods
-            for value in (method.__kwdefaults__ or {}).values()
-        ),
+        *(value for method in tool_methods for value in (method.__kwdefaults__ or {}).values()),
     )
     if any(
         isinstance(value, _ReadConfig)
