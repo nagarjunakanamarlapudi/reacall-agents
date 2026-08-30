@@ -11,12 +11,24 @@ from numbers import Real
 from threading import Lock
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from recallops.agents.policies import mask_sensitive, strict_json_value
 
 TraceBoundary = Literal["agent", "tool", "model", "middleware"]
 TraceStatus = Literal["success", "retry", "error", "blocked", "circuit_open"]
+
+
+def _required_identifier(name: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a nonblank string")
+    return value.strip()
+
+
+def _optional_identifier(name: str, value: Any) -> str | None:
+    if value is None:
+        return None
+    return _required_identifier(name, value)
 
 
 class TraceEvent(BaseModel):
@@ -37,10 +49,15 @@ class TraceEvent(BaseModel):
 
     @field_validator("event_id", "operation", mode="before")
     @classmethod
-    def identifiers_must_be_trimmed_and_nonblank(cls, value: Any) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("trace identifiers must be nonblank strings")
-        return value.strip()
+    def identifiers_must_be_trimmed_and_nonblank(cls, value: Any, info: ValidationInfo) -> str:
+        return _required_identifier(info.field_name, value)
+
+    @field_validator("case_id", "thread_id", mode="before")
+    @classmethod
+    def optional_identifiers_must_be_trimmed_and_nonblank(
+        cls, value: Any, info: ValidationInfo
+    ) -> str | None:
+        return _optional_identifier(info.field_name, value)
 
     @field_validator("duration_ms", mode="before")
     @classmethod
@@ -88,8 +105,8 @@ class TraceRecorder:
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.case_id = case_id
-        self.thread_id = thread_id
+        self.case_id = _optional_identifier("case_id", case_id)
+        self.thread_id = _optional_identifier("thread_id", thread_id)
         self._wall_clock = wall_clock
         self._monotonic_clock = monotonic_clock
         self._events: list[TraceEvent] = []

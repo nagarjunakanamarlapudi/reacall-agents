@@ -198,7 +198,7 @@ class CircuitBreaker:
                 self.record_success()
                 return resolved
 
-            return cast(R, _DeferredCoroutine(invoke_async_operation))
+            return cast(R, invoke_async_operation())
 
         self.before_call()
         try:

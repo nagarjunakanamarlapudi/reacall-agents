@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -412,6 +413,143 @@ def test_circuit_call_close_before_first_await_does_not_strand_half_open_probe()
     assert breaker.state == "open"
     pending.close()
 
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+@pytest.mark.parametrize("adapter", ["circuit", "retry"])
+@pytest.mark.parametrize("operation_shape", ["known_async", "dynamic_awaitable"])
+def test_unstarted_coroutine_continuation_close_closes_underlying_coroutine(
+    adapter: str,
+    operation_shape: str,
+) -> None:
+    """Catches cleanup that releases a breaker lease but leaks the wrapped coroutine."""
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+    body_calls = 0
+    underlying: list[object] = []
+
+    async def coroutine_body() -> str:
+        nonlocal body_calls
+        body_calls += 1
+        return "unused"
+
+    if operation_shape == "known_async":
+        operation = coroutine_body
+    else:
+
+        def operation() -> object:
+            coroutine = coroutine_body()
+            underlying.append(coroutine)
+            return coroutine
+
+    if adapter == "circuit":
+        continuation = breaker.call(operation)
+    else:
+        continuation = with_retry(operation, breaker=breaker)()
+    coroutine = continuation if operation_shape == "known_async" else underlying[0]
+
+    continuation.close()
+
+    assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+    assert body_calls == 0
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", ["circuit", "retry"])
+@pytest.mark.parametrize("operation_shape", ["known_async", "dynamic_awaitable"])
+async def test_unstarted_coroutine_continuation_cancel_closes_underlying_coroutine(
+    adapter: str,
+    operation_shape: str,
+) -> None:
+    """Catches pre-start task cancellation leaving a wrapped coroutine unclosed."""
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+    body_calls = 0
+    underlying: list[object] = []
+
+    async def coroutine_body() -> str:
+        nonlocal body_calls
+        body_calls += 1
+        return "unused"
+
+    if operation_shape == "known_async":
+        operation = coroutine_body
+    else:
+
+        def operation() -> object:
+            coroutine = coroutine_body()
+            underlying.append(coroutine)
+            return coroutine
+
+    if adapter == "circuit":
+        continuation = breaker.call(operation)
+    else:
+        continuation = with_retry(operation, breaker=breaker)()
+    coroutine = continuation if operation_shape == "known_async" else underlying[0]
+    task = asyncio.create_task(continuation)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert task.cancelled()
+    assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+    assert body_calls == 0
+    assert breaker.call(lambda: "recovered") == "recovered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter", ["circuit", "retry"])
+@pytest.mark.parametrize("cleanup", ["close", "cancel"])
+async def test_unstarted_future_continuation_cancels_underlying_future(
+    adapter: str,
+    cleanup: str,
+) -> None:
+    """Catches dynamic-awaitable cleanup that leaves an underlying Future pending."""
+    now = [10.0]
+    breaker = CircuitBreaker(
+        failure_threshold=1,
+        reset_timeout_seconds=5,
+        clock=lambda: now[0],
+    )
+    with pytest.raises(TransientCallError):
+        breaker.call(lambda: (_ for _ in ()).throw(TransientCallError("open")))
+    now[0] += 5
+    future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+    def returns_future() -> asyncio.Future[str]:
+        return future
+
+    if adapter == "circuit":
+        continuation = breaker.call(returns_future)
+    else:
+        continuation = with_retry(returns_future, breaker=breaker)()
+
+    if cleanup == "close":
+        continuation.close()
+    else:
+        task = asyncio.create_task(continuation)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+    assert future.cancelled()
     assert breaker.call(lambda: "recovered") == "recovered"
 
 
@@ -1291,6 +1429,8 @@ def test_trace_event_trims_identifiers_and_is_strict_json_serializable() -> None
     event = TraceEvent(
         event_id="  trace-1  ",
         timestamp=datetime(2026, 8, 30, tzinfo=UTC),
+        case_id="  case-1  ",
+        thread_id="  thread-1  ",
         boundary="tool",
         operation="  search_recalls  ",
         status="success",
@@ -1299,6 +1439,8 @@ def test_trace_event_trims_identifiers_and_is_strict_json_serializable() -> None
     )
 
     assert event.event_id == "trace-1"
+    assert event.case_id == "case-1"
+    assert event.thread_id == "thread-1"
     assert event.operation == "search_recalls"
     assert json.dumps(event.model_dump(mode="json"), allow_nan=False)
 
@@ -1307,6 +1449,66 @@ def test_trace_event_trims_identifiers_and_is_strict_json_serializable() -> None
         payload[field] = "   "
         with pytest.raises(ValidationError, match=field):
             TraceEvent.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["case_id", "thread_id"])
+@pytest.mark.parametrize("value", ["", "   ", "\t\n", 7])
+def test_trace_event_rejects_invalid_optional_context_identifiers(
+    field: str,
+    value: object,
+) -> None:
+    """Catches optional context identifiers accepting blank or non-string values."""
+    payload = {
+        "event_id": "trace-1",
+        "timestamp": datetime(2026, 8, 30, tzinfo=UTC),
+        "boundary": "tool",
+        "operation": "search_recalls",
+        "status": "success",
+        "duration_ms": 0,
+        field: value,
+    }
+
+    with pytest.raises(ValidationError, match=field):
+        TraceEvent.model_validate(payload)
+
+
+def test_trace_recorder_normalizes_context_identifiers_at_construction() -> None:
+    """Catches recorder metadata diverging from the TraceEvent identifier contract."""
+    recorder = TraceRecorder(case_id="  case-1  ", thread_id="  thread-1  ")
+
+    event = recorder.record(
+        boundary="tool",
+        operation="  lookup  ",
+        status="success",
+        duration_ms=0,
+    )
+
+    assert recorder.case_id == "case-1"
+    assert recorder.thread_id == "thread-1"
+    assert event.case_id == "case-1"
+    assert event.thread_id == "thread-1"
+    assert event.operation == "lookup"
+
+    with pytest.raises(ValidationError, match="operation"):
+        recorder.record(
+            boundary="tool",
+            operation="   ",
+            status="success",
+            duration_ms=0,
+        )
+
+
+@pytest.mark.parametrize("field", ["case_id", "thread_id"])
+@pytest.mark.parametrize("value", ["", "   ", "\t\n", 7])
+def test_trace_recorder_rejects_invalid_context_identifiers_at_construction(
+    field: str,
+    value: object,
+) -> None:
+    """Catches invalid recorder context surviving until a later record call."""
+    kwargs = {field: value}
+
+    with pytest.raises(ValueError, match=field):
+        TraceRecorder(**kwargs)
 
 
 def test_trace_recorder_canonicalizes_mapping_and_set_attributes() -> None:
