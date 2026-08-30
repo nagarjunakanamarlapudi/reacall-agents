@@ -235,6 +235,10 @@ def _dataset(seed: int) -> dict[str, Any]:
                         "from_facility": "STORE-01",
                     }
                 )
+    last_event: dict[str, str] = {}
+    for event in events:
+        event["parent_event_id"] = last_event.get(event["lot_id"])
+        last_event[event["lot_id"]] = event["event_id"]
     return {
         "dataset_id": "northstar-demo-20260830",
         "seed": seed,

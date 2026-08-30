@@ -1,4 +1,5 @@
 import sys
+from uuid import uuid4
 
 import pytest
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -23,15 +24,16 @@ async def test_operations_stdio_server_discovers_and_invokes_approved_simulated_
     client = MultiServerMCPClient({"operations": _connection("recallops.mcp.operations_server")})
     tools = await client.get_tools()
     tool = next(item for item in tools if item.name == "create_case")
+    request_id = uuid4().hex
     response = await tool.ainvoke(
         {
-            "case_id": "CASE-STDIO-001",
+            "case_id": f"CASE-STDIO-{request_id}",
             "recall_number": "H-1230-2026",
             "decision": "approve",
             "actor": "food-safety-manager",
             "justification": "integration test approval",
             "expected_case_version": 0,
-            "idempotency_key": "stdio-create-001",
+            "idempotency_key": f"stdio-create-{request_id}",
         }
     )
 

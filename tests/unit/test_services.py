@@ -31,7 +31,7 @@ def _approval(decision: str = "approve") -> ApprovalDecision:
         decision=decision,
         actor="food-safety-manager",
         justification="evidence reviewed",
-        approved_at=datetime.now(UTC),
+        approved_at=datetime(2026, 8, 30, tzinfo=UTC),
     )
 
 

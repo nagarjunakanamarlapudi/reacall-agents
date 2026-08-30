@@ -24,10 +24,11 @@ def approval() -> ApprovalDecision:
 def test_sqlite_idempotency_binds_the_full_request_and_survives_restart(tmp_path: Path) -> None:
     database = tmp_path / "operations.sqlite3"
     first = OperationsService(storage_path=database)
+    approved = approval()
     receipt = first.create_case(
         case_id="CASE-SQL",
         recall_number="H-1230-2026",
-        approval=approval(),
+        approval=approved,
         expected_case_version=0,
         idempotency_key="request-1",
     )
@@ -36,7 +37,7 @@ def test_sqlite_idempotency_binds_the_full_request_and_survives_restart(tmp_path
         .create_case(
             case_id="CASE-SQL",
             recall_number="H-1230-2026",
-            approval=approval(),
+            approval=approved,
             expected_case_version=0,
             idempotency_key="request-1",
         )
@@ -81,3 +82,58 @@ def test_sqlite_compare_and_swap_allows_only_one_concurrent_expected_version(
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = set(pool.map(hold, ["hold-a", "hold-b"]))
     assert outcomes == {"won", "stale"}
+
+
+def test_idempotency_binds_approval_identity_and_close_replays(tmp_path: Path) -> None:
+    database = tmp_path / "operations.sqlite3"
+    service = OperationsService(storage_path=database)
+    approved = approval()
+    service.create_case(
+        case_id="CASE-REPLAY",
+        recall_number="H-1230-2026",
+        approval=approved,
+        expected_case_version=0,
+        idempotency_key="create",
+    )
+    with pytest.raises(IdempotencyConflictError):
+        service.create_case(
+            case_id="CASE-REPLAY",
+            recall_number="H-1230-2026",
+            approval=ApprovalDecision(
+                decision="approve",
+                actor="other",
+                justification="evidence",
+                approved_at=datetime.now(UTC),
+            ),
+            expected_case_version=0,
+            idempotency_key="create",
+        )
+    service.record_disposition(
+        case_id="CASE-REPLAY",
+        lot_id="LOT-EXACT-170",
+        disposition="dispose_unaccounted",
+        approval=approved,
+        expected_case_version=1,
+        idempotency_key="dispose",
+    )
+    service.record_acknowledgment(
+        case_id="CASE-REPLAY",
+        facility_id="DC-NORTH",
+        approval=approved,
+        expected_case_version=2,
+        idempotency_key="ack",
+    )
+    first = service.close_case(
+        case_id="CASE-REPLAY", approval=approved, expected_case_version=3, idempotency_key="close"
+    )
+    assert (
+        OperationsService(storage_path=database)
+        .close_case(
+            case_id="CASE-REPLAY",
+            approval=approved,
+            expected_case_version=3,
+            idempotency_key="close",
+        )
+        .receipt_id
+        == first.receipt_id
+    )

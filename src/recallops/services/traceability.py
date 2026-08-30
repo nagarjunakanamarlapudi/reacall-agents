@@ -53,12 +53,23 @@ class TraceabilityService:
         return matched
 
     def trace_forward(self, lot_id: str) -> list[dict[str, Any]]:
-        return [event for event in self.dataset["events"] if event["lot_id"] == lot_id]
+        events = [event for event in self.dataset["events"] if event["lot_id"] == lot_id]
+        by_parent: dict[str | None, list[dict[str, Any]]] = {}
+        for event in events:
+            by_parent.setdefault(event.get("parent_event_id"), []).append(event)
+        ordered: list[dict[str, Any]] = []
+
+        def walk(event: dict[str, Any]) -> None:
+            ordered.append(event)
+            for child in by_parent.get(event["event_id"], []):
+                walk(child)
+
+        for root in by_parent.get(None, []):
+            walk(root)
+        return ordered
 
     def trace_backward(self, lot_id: str) -> list[dict[str, Any]]:
-        return sorted(
-            self.trace_forward(lot_id), key=lambda event: event["occurred_at"], reverse=True
-        )
+        return list(reversed(self.trace_forward(lot_id)))
 
     def get_inventory(self, lot_id: str | None = None) -> list[dict[str, Any]]:
         inventory = self.dataset["inventory_positions"]

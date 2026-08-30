@@ -93,6 +93,7 @@ class TraceEvent(BaseModel):
     to_facility: str | None = None
     occurred_at: datetime
     origin: Literal["SYNTHETIC_RETAILER_DIGITAL_TWIN"]
+    parent_event_id: str | None = None
 
 
 class Reconciliation(BaseModel):

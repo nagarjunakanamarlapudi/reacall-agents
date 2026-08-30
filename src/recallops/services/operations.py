@@ -7,7 +7,6 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -90,11 +89,22 @@ class OperationsService:
             raise IdempotencyConflictError("idempotency key must be nonblank")
 
     def _request_hash(
-        self, case_id: str, action: str, expected: int, details: dict[str, Any]
+        self,
+        case_id: str,
+        action: str,
+        expected: int,
+        details: dict[str, Any],
+        approval: ApprovalDecision,
     ) -> str:
         return hashlib.sha256(
             _canonical(
-                {"case_id": case_id, "action": action, "expected": expected, "details": details}
+                {
+                    "case_id": case_id,
+                    "action": action,
+                    "expected": expected,
+                    "details": details,
+                    "approval": approval.model_dump(mode="json"),
+                }
             ).encode()
         ).hexdigest()
 
@@ -137,7 +147,7 @@ class OperationsService:
         transform: Any | None = None,
     ) -> AuditReceipt:
         self._approval(approval, key)
-        request_hash = self._request_hash(case_id, action, expected, details)
+        request_hash = self._request_hash(case_id, action, expected, details, approval)
         try:
             with self._connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -226,7 +236,9 @@ class OperationsService:
     ) -> AuditReceipt:
         self._approval(approval, idempotency_key)
         details = {"recall_number": recall_number, "question": question}
-        request_hash = self._request_hash(case_id, "create_case", expected_case_version, details)
+        request_hash = self._request_hash(
+            case_id, "create_case", expected_case_version, details, approval
+        )
         try:
             with self._connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -415,6 +427,6 @@ class OperationsService:
             approval=approval,
             expected=expected_case_version,
             key=idempotency_key,
-            details={"closed_at": datetime.now(UTC).isoformat()},
+            details={},
             transform=lambda s: s.model_copy(update={"status": "closed"}),
         )
