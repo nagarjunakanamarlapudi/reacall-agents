@@ -7,7 +7,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import ValidationError
 
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
-from recallops.retrieval.agentic import AgenticRetriever
+from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
 from recallops.retrieval.models import HybridSearchResponse
 
 
@@ -84,10 +84,17 @@ async def test_direct_and_real_stdio_hybrid_search_have_exact_result_parity(
 
 
 @pytest.mark.asyncio
-async def test_agentic_retriever_consumes_the_common_direct_gateway_contract() -> None:
-    retriever = AgenticRetriever(DirectGateway())
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+async def test_agentic_retriever_uses_only_closed_provider_free_connections(
+    transport: str,
+) -> None:
+    gateway = (
+        ClosedRetrievalGateway.direct() if transport == "direct" else ClosedRetrievalGateway.stdio()
+    )
+    retriever = AgenticRetriever(gateway)
     result = await retriever.retrieve("What does FDA Class I mean for LOT-BG-042-03?")
 
+    assert gateway.connection_ids == ("regulatory_search", "operational_search")
     assert result.coverage_satisfied is True
     assert {item.tool_name for item in result.tool_trace} == {
         "search_regulatory_evidence",

@@ -10,8 +10,26 @@ from pathlib import Path
 from typing import Any
 
 from recallops.config import get_settings
+from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
 from recallops.paths import DATA_DIR
 from recallops.retrieval.models import KnowledgeDocument, KnowledgeManifest
+
+TRUSTED_POLICY_CORPUS_SHA256 = "e698fc4e113724b7e6819d8d70ea411d54cb777e32126a4218c417dac4798453"
+TRUSTED_OPENFDA_SNAPSHOT_SHA256 = "086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9"
+TRUSTED_OPENFDA_METADATA_SHA256 = "3199cdb467c81bfd1c83228a4ee61d8ca6f93103209ed2c415c8fb0a2e657034"
+TRUSTED_SYNTHETIC_DATASET_SHA256 = (
+    "6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9"
+)
+TRUSTED_SYNTHETIC_MANIFEST_SHA256 = (
+    "2356b37e583031e22512ec54472bb2336c0ae8c003addc7a6e0f8f78d85690ea"
+)
+TRUSTED_RAW_SOURCE_SHA256 = {
+    "policy_corpus.json": TRUSTED_POLICY_CORPUS_SHA256,
+    "public/H-1230-2026.json": TRUSTED_OPENFDA_SNAPSHOT_SHA256,
+    "public/H-1230-2026.metadata.json": TRUSTED_OPENFDA_METADATA_SHA256,
+    "synthetic/northstar_demo/dataset.json": TRUSTED_SYNTHETIC_DATASET_SHA256,
+    "synthetic/northstar_demo/manifest.json": TRUSTED_SYNTHETIC_MANIFEST_SHA256,
+}
 
 SYNTHETIC_COLLECTIONS = {
     "products": ("product", "product_id"),
@@ -114,8 +132,12 @@ def _openfda_documents(data_dir: Path) -> list[KnowledgeDocument]:
     return documents
 
 
-def _synthetic_documents(data_dir: Path) -> list[KnowledgeDocument]:
-    dataset = json.loads(
+def _synthetic_documents(
+    data_dir: Path,
+    *,
+    validated_dataset: dict[str, Any] | None = None,
+) -> list[KnowledgeDocument]:
+    dataset = validated_dataset or json.loads(
         (data_dir / "synthetic" / "northstar_demo" / "dataset.json").read_text(encoding="utf-8")
     )
     documents: list[KnowledgeDocument] = []
@@ -151,17 +173,50 @@ def _synthetic_documents(data_dir: Path) -> list[KnowledgeDocument]:
     return documents
 
 
-def _build_documents(data_dir: Path, knowledge_dir: Path) -> tuple[KnowledgeDocument, ...]:
+def _build_documents(
+    data_dir: Path,
+    knowledge_dir: Path,
+    *,
+    validated_dataset: dict[str, Any] | None = None,
+) -> tuple[KnowledgeDocument, ...]:
     documents = (
         _openfda_documents(data_dir)
         + _load_policy_documents(knowledge_dir / "policy_corpus.json")
-        + _synthetic_documents(data_dir)
+        + _synthetic_documents(data_dir, validated_dataset=validated_dataset)
     )
     ordered = tuple(sorted(documents, key=lambda item: item.citation_id))
     citation_ids = [item.citation_id for item in ordered]
     if len(citation_ids) != len(set(citation_ids)):
         raise ValueError("knowledge corpus contains duplicate citation IDs")
     return ordered
+
+
+def _validate_trusted_sources(data_dir: Path, knowledge_dir: Path) -> dict[str, Any]:
+    paths = {
+        "policy_corpus.json": knowledge_dir / "policy_corpus.json",
+        "public/H-1230-2026.json": data_dir / "public" / "H-1230-2026.json",
+        "public/H-1230-2026.metadata.json": (data_dir / "public" / "H-1230-2026.metadata.json"),
+        "synthetic/northstar_demo/dataset.json": (
+            data_dir / "synthetic" / "northstar_demo" / "dataset.json"
+        ),
+        "synthetic/northstar_demo/manifest.json": (
+            data_dir / "synthetic" / "northstar_demo" / "manifest.json"
+        ),
+    }
+    for name, expected in TRUSTED_RAW_SOURCE_SHA256.items():
+        actual = _sha256_bytes(paths[name].read_bytes())
+        if actual != expected:
+            raise ValueError(f"{name} failed its independent trust anchor")
+    # Run the existing domain validators only after the independently reviewed
+    # raw bytes are authenticated.
+    load_recall_snapshot(data_dir=data_dir)
+    return load_demo_dataset(data_dir)
+
+
+def _validate_manifest_anchors(manifest: KnowledgeManifest) -> None:
+    for name, expected in TRUSTED_RAW_SOURCE_SHA256.items():
+        if manifest.source_checksums.get(name) != expected:
+            raise ValueError(f"knowledge manifest differs from independent trust anchor: {name}")
 
 
 def _computed_manifest(
@@ -202,9 +257,15 @@ def build_knowledge_artifacts(
     resolved_knowledge = (
         Path(knowledge_dir) if knowledge_dir is not None else resolved_data / "knowledge"
     )
+    validated_dataset = _validate_trusted_sources(resolved_data, resolved_knowledge)
     policy_bytes = (resolved_knowledge / "policy_corpus.json").read_bytes()
-    documents = _build_documents(resolved_data, resolved_knowledge)
+    documents = _build_documents(
+        resolved_data,
+        resolved_knowledge,
+        validated_dataset=validated_dataset,
+    )
     manifest = _computed_manifest(documents, resolved_data, resolved_knowledge)
+    _validate_manifest_anchors(manifest)
     return {
         "policy_corpus.json": policy_bytes,
         "manifest.json": _canonical_bytes(manifest.model_dump(mode="json")),
@@ -238,11 +299,17 @@ class KnowledgeCorpus:
         resolved_knowledge = (
             Path(knowledge_dir) if knowledge_dir is not None else resolved_data / "knowledge"
         )
-        documents = _build_documents(resolved_data, resolved_knowledge)
+        validated_dataset = _validate_trusted_sources(resolved_data, resolved_knowledge)
+        documents = _build_documents(
+            resolved_data,
+            resolved_knowledge,
+            validated_dataset=validated_dataset,
+        )
         computed = _computed_manifest(documents, resolved_data, resolved_knowledge)
         committed = KnowledgeManifest.model_validate_json(
             (resolved_knowledge / "manifest.json").read_text(encoding="utf-8")
         )
+        _validate_manifest_anchors(committed)
         if committed != computed:
             raise ValueError("knowledge manifest does not match corpus inputs")
         return cls(documents, committed, data_dir=resolved_data)

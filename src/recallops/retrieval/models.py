@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictInt,
     field_validator,
     model_validator,
 )
+
+
+def _strict_finite_float(value: Any) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError("score must be a strict finite float")
+    return value
+
+
+StrictFiniteFloat = Annotated[float, BeforeValidator(_strict_finite_float)]
 
 SourceClass = Literal["official", "synthetic"]
 SourceFilter = Literal["official", "synthetic", "all"]
@@ -117,8 +128,8 @@ class ComponentHit(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     citation_id: str
-    score: float
-    term_contributions: dict[str, float] = Field(default_factory=dict)
+    score: StrictFiniteFloat
+    term_contributions: dict[str, StrictFiniteFloat] = Field(default_factory=dict)
 
 
 class FusionRecord(BaseModel):
@@ -126,10 +137,10 @@ class FusionRecord(BaseModel):
 
     citation_id: str
     sparse_rank: int | None = Field(default=None, ge=1)
-    sparse_score: float | None = None
+    sparse_score: StrictFiniteFloat | None = None
     dense_rank: int | None = Field(default=None, ge=1)
-    dense_score: float | None = None
-    rrf_score: float = Field(ge=0)
+    dense_score: StrictFiniteFloat | None = None
+    rrf_score: StrictFiniteFloat = Field(ge=0)
 
 
 class HybridSearchResult(BaseModel):
@@ -137,12 +148,12 @@ class HybridSearchResult(BaseModel):
 
     document: KnowledgeDocument
     sparse_rank: int | None = Field(default=None, ge=1)
-    sparse_score: float | None = None
+    sparse_score: StrictFiniteFloat | None = None
     dense_rank: int | None = Field(default=None, ge=1)
-    dense_score: float | None = None
-    rrf_score: float = Field(ge=0)
-    rerank_score: float
-    matched_terms: dict[str, float] = Field(default_factory=dict)
+    dense_score: StrictFiniteFloat | None = None
+    rrf_score: StrictFiniteFloat = Field(ge=0)
+    rerank_score: StrictFiniteFloat
+    matched_terms: dict[str, StrictFiniteFloat] = Field(default_factory=dict)
     explanation: tuple[str, ...]
 
 

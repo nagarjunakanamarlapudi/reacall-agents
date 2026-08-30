@@ -1,16 +1,32 @@
 import hashlib
 import json
+import math
+import shutil
+from collections import Counter
+from pathlib import Path
 from time import perf_counter
 
 import pytest
 from pydantic import ValidationError
 
 from recallops.retrieval.corpus import (
+    TRUSTED_OPENFDA_METADATA_SHA256,
+    TRUSTED_OPENFDA_SNAPSHOT_SHA256,
+    TRUSTED_POLICY_CORPUS_SHA256,
+    TRUSTED_SYNTHETIC_DATASET_SHA256,
+    TRUSTED_SYNTHETIC_MANIFEST_SHA256,
     KnowledgeCorpus,
+    KnowledgeManifest,
+    _build_documents,
     build_knowledge_artifacts,
 )
 from recallops.retrieval.hybrid import HybridIndex, reciprocal_rank_fusion
-from recallops.retrieval.models import HybridSearchRequest
+from recallops.retrieval.models import (
+    ComponentHit,
+    FusionRecord,
+    HybridSearchRequest,
+    HybridSearchResult,
+)
 
 
 def _sha256(text: str) -> str:
@@ -70,6 +86,131 @@ def test_knowledge_artifact_builder_is_byte_deterministic_and_matches_committed_
         == (corpus.data_dir / "knowledge" / "policy_corpus.json").read_bytes()
     )
     assert first["manifest.json"] == (corpus.data_dir / "knowledge" / "manifest.json").read_bytes()
+
+
+def _write_self_consistent_attacker_manifest(data_dir: Path) -> None:
+    """Model an attacker who can recompute every self-declared checksum."""
+
+    knowledge_dir = data_dir / "knowledge"
+    documents = _build_documents(data_dir, knowledge_dir)
+    source_paths = {
+        "policy_corpus.json": knowledge_dir / "policy_corpus.json",
+        "public/H-1230-2026.json": data_dir / "public" / "H-1230-2026.json",
+        "public/H-1230-2026.metadata.json": data_dir / "public" / "H-1230-2026.metadata.json",
+        "synthetic/northstar_demo/dataset.json": data_dir
+        / "synthetic"
+        / "northstar_demo"
+        / "dataset.json",
+        "synthetic/northstar_demo/manifest.json": data_dir
+        / "synthetic"
+        / "northstar_demo"
+        / "manifest.json",
+    }
+    corpus_bytes = (
+        json.dumps(
+            [item.model_dump(mode="json") for item in documents],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        + "\n"
+    ).encode()
+    manifest = KnowledgeManifest(
+        schema_name="recallops.hybrid-knowledge-corpus",
+        schema_version="1.0.0",
+        generated_at="2026-08-30T00:00:00Z",
+        document_count=len(documents),
+        source_counts=dict(sorted(Counter(item.source_class for item in documents).items())),
+        record_type_counts=dict(sorted(Counter(item.record_type for item in documents).items())),
+        source_checksums={
+            name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for name, path in sorted(source_paths.items())
+        },
+        corpus_sha256=hashlib.sha256(corpus_bytes).hexdigest(),
+    )
+    (knowledge_dir / "manifest.json").write_text(
+        json.dumps(
+            manifest.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["policy", "openfda", "openfda_metadata", "synthetic", "synthetic_manifest"],
+)
+def test_independent_trust_anchors_reject_self_consistent_raw_source_tampering(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    """Break caught: attacker-controlled source and manifests authenticate each other."""
+
+    data_dir = tmp_path / "data"
+    shutil.copytree(Path("data"), data_dir)
+    if target == "policy":
+        path = data_dir / "knowledge" / "policy_corpus.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload[0]["text"] += " Attacker-authored policy statement."
+        payload[0]["content_hash"] = hashlib.sha256(payload[0]["text"].encode()).hexdigest()
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    elif target == "openfda":
+        path = data_dir / "public" / "H-1230-2026.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["results"][0]["reason_for_recall"] = "Attacker-authored hazard."
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        metadata_path = data_dir / "public" / "H-1230-2026.metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    elif target == "openfda_metadata":
+        path = data_dir / "public" / "H-1230-2026.metadata.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["source_url"] = "https://attacker.invalid/fake-regulatory-source"
+        path.write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
+    elif target == "synthetic":
+        path = data_dir / "synthetic" / "northstar_demo" / "dataset.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["products"][0]["name"] = "Attacker-authored product"
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        manifest_path = data_dir / "synthetic" / "northstar_demo" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        manifest["checksums"]["dataset.json"] = digest
+        manifest["sha256"] = digest
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    else:
+        path = data_dir / "synthetic" / "northstar_demo" / "manifest.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
+    _write_self_consistent_attacker_manifest(data_dir)
+
+    with pytest.raises(ValueError, match="independent trust anchor"):
+        KnowledgeCorpus.load(data_dir=data_dir)
+
+
+def test_committed_manifest_source_hashes_equal_independent_reviewed_anchors(
+    corpus: KnowledgeCorpus,
+) -> None:
+    assert corpus.manifest.source_checksums["policy_corpus.json"] == (TRUSTED_POLICY_CORPUS_SHA256)
+    assert corpus.manifest.source_checksums["public/H-1230-2026.json"] == (
+        TRUSTED_OPENFDA_SNAPSHOT_SHA256
+    )
+    assert corpus.manifest.source_checksums["public/H-1230-2026.metadata.json"] == (
+        TRUSTED_OPENFDA_METADATA_SHA256
+    )
+    assert (
+        corpus.manifest.source_checksums["synthetic/northstar_demo/dataset.json"]
+        == TRUSTED_SYNTHETIC_DATASET_SHA256
+    )
+    assert (
+        corpus.manifest.source_checksums["synthetic/northstar_demo/manifest.json"]
+        == TRUSTED_SYNTHETIC_MANIFEST_SHA256
+    )
 
 
 @pytest.mark.parametrize(
@@ -147,6 +288,61 @@ def test_rrf_preserves_both_component_ranks_scores_and_stable_ties() -> None:
     }
     assert fused[1].sparse_rank == 2
     assert fused[1].dense_rank == 1
+
+
+@pytest.mark.parametrize("bad_score", [True, 1, "1.0", math.nan, math.inf, -math.inf])
+def test_public_retrieval_scores_reject_non_float_or_nonfinite_values(
+    corpus: KnowledgeCorpus,
+    bad_score: object,
+) -> None:
+    """Break caught: coercible or non-JSON scores reach ordering and serialization."""
+
+    constructors = (
+        lambda: ComponentHit(citation_id="A", score=bad_score),
+        lambda: ComponentHit(citation_id="A", score=1.0, term_contributions={"recall": bad_score}),
+        lambda: FusionRecord(citation_id="A", rrf_score=bad_score),
+        lambda: FusionRecord(citation_id="A", sparse_score=bad_score, rrf_score=0.1),
+        lambda: FusionRecord(citation_id="A", dense_score=bad_score, rrf_score=0.1),
+        lambda: HybridSearchResult(
+            document=corpus.documents[0],
+            sparse_score=bad_score,
+            rrf_score=0.1,
+            rerank_score=0.2,
+            explanation=("test",),
+        ),
+        lambda: HybridSearchResult(
+            document=corpus.documents[0],
+            dense_score=bad_score,
+            rrf_score=0.1,
+            rerank_score=0.2,
+            explanation=("test",),
+        ),
+        lambda: HybridSearchResult(
+            document=corpus.documents[0],
+            rrf_score=bad_score,
+            rerank_score=0.2,
+            explanation=("test",),
+        ),
+        lambda: HybridSearchResult(
+            document=corpus.documents[0],
+            rrf_score=0.1,
+            rerank_score=bad_score,
+            explanation=("test",),
+        ),
+        lambda: HybridSearchResult(
+            document=corpus.documents[0],
+            rrf_score=0.1,
+            rerank_score=0.2,
+            matched_terms={"recall": bad_score},
+            explanation=("test",),
+        ),
+    )
+    for constructor in constructors:
+        with pytest.raises(ValidationError):
+            constructor()
+
+    with pytest.raises((TypeError, ValueError), match="finite float"):
+        reciprocal_rank_fusion(sparse=[("A", bad_score)], dense=[])
 
 
 def test_reranker_promotes_intended_source_without_hiding_origin(index: HybridIndex) -> None:

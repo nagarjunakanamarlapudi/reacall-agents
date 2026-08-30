@@ -103,6 +103,12 @@ def reciprocal_rank_fusion(
 ) -> tuple[FusionRecord, ...]:
     if isinstance(rank_constant, bool) or not isinstance(rank_constant, int) or rank_constant <= 0:
         raise ValueError("rank_constant must be a positive integer")
+    for component_name, ranked in (("sparse", sparse), ("dense", dense)):
+        for citation_id, score in ranked:
+            if type(score) is not float or not math.isfinite(score):
+                raise ValueError(
+                    f"{component_name} score for {citation_id!r} must be a strict finite float"
+                )
     rows: dict[str, dict[str, float | int | None]] = defaultdict(
         lambda: {
             "sparse_rank": None,
