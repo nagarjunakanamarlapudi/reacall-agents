@@ -25,6 +25,7 @@ from recallops.services.traceability import TraceabilityService
 
 EXPECTED_TOOLS = {
     "search_recalls",
+    "search_regulatory_evidence",
     "get_recall",
     "get_product_metadata",
     "find_candidate_products",
@@ -34,6 +35,7 @@ EXPECTED_TOOLS = {
     "get_inventory",
     "get_sales",
     "reconcile_units",
+    "search_operational_evidence",
     "create_case",
     "apply_inventory_hold",
     "create_facility_tasks",
@@ -270,6 +272,10 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
 
     read_calls = [
         ("search_recalls", {"query": "Salmonella"}),
+        (
+            "search_regulatory_evidence",
+            {"query": "Class I recall", "top_k": 4, "record_types": ()},
+        ),
         ("get_recall", {"recall_number": "H-1230-2026"}),
         ("get_product_metadata", {"upc": "011110609038"}),
         ("find_candidate_products", {"predicate": _predicate()}),
@@ -279,6 +285,10 @@ async def test_direct_and_stdio_gateways_have_identical_method_matrix_shapes(
         ("get_inventory", {"lot_id": "LOT-EXACT-170"}),
         ("get_sales", {"lot_id": "LOT-EXACT-170"}),
         ("reconcile_units", {"lot_id": "LOT-EXACT-170"}),
+        (
+            "search_operational_evidence",
+            {"query": "LOT-BG-042-03", "top_k": 4, "record_types": ()},
+        ),
     ]
     write_calls = [
         ("create_case", _case_kwargs()),

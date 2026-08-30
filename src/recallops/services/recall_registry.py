@@ -11,6 +11,8 @@ import httpx
 from recallops.config import get_settings
 from recallops.data.loaders import load_recall_snapshot
 from recallops.models import RecallRecord
+from recallops.retrieval.hybrid import HybridIndex, load_local_hybrid_index
+from recallops.retrieval.models import HybridSearchRequest, HybridSearchResponse
 
 OPENFDA_ENFORCEMENT_URL = "https://api.fda.gov/food/enforcement.json"
 
@@ -23,6 +25,7 @@ class RecallRegistryService:
         source_mode: Literal["snapshot", "live"] | None = None,
         http_transport: httpx.BaseTransport | None = None,
         timeout_seconds: float = 2.0,
+        retrieval_index: HybridIndex | None = None,
     ) -> None:
         settings = get_settings()
         self.data_dir = Path(data_dir) if data_dir is not None else settings.data_dir
@@ -33,6 +36,13 @@ class RecallRegistryService:
             raise ValueError("timeout_seconds must be within (0, 5]")
         self.http_transport = http_transport
         self.timeout_seconds = timeout_seconds
+        self._retrieval_index = retrieval_index
+
+    @property
+    def retrieval_index(self) -> HybridIndex:
+        if self._retrieval_index is None:
+            self._retrieval_index = load_local_hybrid_index(str(self.data_dir))
+        return self._retrieval_index
 
     def _snapshot(self, recall_number: str, *, fallback: bool = False) -> RecallRecord:
         record = load_recall_snapshot(recall_number, data_dir=self.data_dir)
@@ -112,3 +122,21 @@ class RecallRegistryService:
         if normalized in haystack:
             return {"upc": normalized, "source": "openFDA recall product description"}
         return None
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        record_types: tuple[str, ...] = (),
+    ) -> HybridSearchResponse:
+        """Search only frozen official recall and policy evidence."""
+
+        request = HybridSearchRequest(
+            query=query,
+            top_k=top_k,
+            source_filter="official",
+            intent="regulatory",
+            record_types=record_types,
+        )
+        return self.retrieval_index.search(request)

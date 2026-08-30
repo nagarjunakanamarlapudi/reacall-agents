@@ -1,0 +1,87 @@
+[
+  {
+    "audience_label": "OFFICIAL — FDA reference (paraphrased)",
+    "citation_id": "FDA-RECALL-CLASSIFICATION",
+    "content_hash": "23efd18e96aebe9adf9fdd833afef4b1068f6702c541ccfb77515c414ea900d6",
+    "metadata": {
+      "paraphrased": true,
+      "topic": "recall classification"
+    },
+    "origin": "OFFICIAL_POLICY_REFERENCE",
+    "record_id": "FDA-RECALL-CLASSIFICATION",
+    "record_type": "policy",
+    "retrieved_at": "2026-08-30T00:00:00Z",
+    "source_class": "official",
+    "source_url": "https://www.fda.gov/safety/industry-guidance-recalls/recalls-background-and-definitions",
+    "text": "FDA classifies recalls by relative health hazard: Class I covers a reasonable probability of serious adverse health consequences or death; Class II covers temporary or medically reversible consequences or a remote probability of serious consequences; Class III is not likely to cause adverse health consequences.",
+    "title": "FDA recall health-hazard classifications — paraphrase"
+  },
+  {
+    "audience_label": "OFFICIAL — FDA reference (paraphrased)",
+    "citation_id": "FDA-RECALL-PROCESS",
+    "content_hash": "48205527f8bd4ff73633a55ff8542b5c7b2bc43183114471e1ab144cc1f0951e",
+    "metadata": {
+      "paraphrased": true,
+      "topic": "recall initiation and communication"
+    },
+    "origin": "OFFICIAL_POLICY_REFERENCE",
+    "record_id": "FDA-RECALL-PROCESS",
+    "record_type": "policy",
+    "retrieved_at": "2026-08-30T00:00:00Z",
+    "source_class": "official",
+    "source_url": "https://www.fda.gov/media/136987/download",
+    "text": "A firm may initiate a recall, FDA may request one, or FDA may order one when statutory authority applies. Recall communications should accurately identify the product, explain the problem and hazard, state recall depth, and give clear instructions to direct account consignees.",
+    "title": "FDA recall initiation and communication — paraphrase"
+  },
+  {
+    "audience_label": "OFFICIAL — FDA reference (paraphrased)",
+    "citation_id": "FDA-RECALL-EFFECTIVENESS",
+    "content_hash": "46826f420d6d4f5b80e2750cbf23d677c94c5e9d9ccfbf1fb6140f89a0016aa4",
+    "metadata": {
+      "paraphrased": true,
+      "topic": "effectiveness and termination"
+    },
+    "origin": "OFFICIAL_POLICY_REFERENCE",
+    "record_id": "FDA-RECALL-EFFECTIVENESS",
+    "record_type": "policy",
+    "retrieved_at": "2026-08-30T00:00:00Z",
+    "source_class": "official",
+    "source_url": "https://www.fda.gov/media/136987/download",
+    "text": "Effectiveness checks assess whether direct account consignees received the recall communication, understood it, followed its instructions, and whether the recall reached the intended distribution depth. FDA may audit firm checks. FDA, not an internal retailer workflow, formally determines recall termination after reviewing removal or correction, disposition, and status evidence.",
+    "title": "FDA recall effectiveness and termination — paraphrase"
+  },
+  {
+    "audience_label": "OFFICIAL — FDA reference (paraphrased)",
+    "citation_id": "FDA-TRACEABILITY-CONCEPTS",
+    "content_hash": "39ac0f8f103c370ab5d483865dc2c8fd411511b41db22f9b6ca574ca08e7d9b5",
+    "metadata": {
+      "paraphrased": true,
+      "topic": "CTE KDE and TLC"
+    },
+    "origin": "OFFICIAL_POLICY_REFERENCE",
+    "record_id": "FDA-TRACEABILITY-CONCEPTS",
+    "record_type": "policy",
+    "retrieved_at": "2026-08-30T00:00:00Z",
+    "source_class": "official",
+    "source_url": "https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-requirements-additional-traceability-records-certain-foods",
+    "text": "For foods and actors covered by FDA's Food Traceability Rule, records contain key data elements linked to critical tracking events such as shipping, receiving, and transformation. A traceability lot code links a traceability lot to its required records and source information across the supply chain.",
+    "title": "FDA food traceability concepts — paraphrase"
+  },
+  {
+    "audience_label": "OFFICIAL — GS1 reference (paraphrased)",
+    "citation_id": "GS1-EPCIS-CONCEPTS",
+    "content_hash": "310360eac5c1a7a17ca9aa341c89f8ac25ad4031d02b8bbc46fd5e6ab7419920",
+    "metadata": {
+      "paraphrased": true,
+      "topic": "EPCIS visibility events"
+    },
+    "origin": "OFFICIAL_POLICY_REFERENCE",
+    "record_id": "GS1-EPCIS-CONCEPTS",
+    "record_type": "policy",
+    "retrieved_at": "2026-08-30T00:00:00Z",
+    "source_class": "official",
+    "source_url": "https://ref.gs1.org/standards/epcis/2.0.1/",
+    "text": "Trading partners can reconstruct product movement with GS1 EPCIS, a visibility-event data standard for sharing what happened to products or assets, when it happened, where it happened, why it occurred in its business context, and how when sensor data applies. RecallOps uses EPCIS-like semantics without claiming conformance.",
+    "title": "GS1 EPCIS visibility-event concepts — paraphrase"
+  }
+]

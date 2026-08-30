@@ -1,6 +1,9 @@
 """Traceability MCP stdio server (read-only synthetic digital twin)."""
 
+from typing import Annotated
+
 from fastmcp import FastMCP
+from pydantic import Field, StrictInt
 
 from recallops.models import (
     CandidateProduct,
@@ -10,6 +13,7 @@ from recallops.models import (
     Reconciliation,
     TraceEvent,
 )
+from recallops.retrieval.models import HybridSearchResponse
 from recallops.services.traceability import TraceabilityService
 
 mcp = FastMCP("Traceability MCP", instructions="Read-only Northstar synthetic digital twin.")
@@ -51,6 +55,17 @@ def get_sales(lot_id: str) -> list[TraceEvent]:
 @mcp.tool()
 def reconcile_units(lot_id: str) -> Reconciliation:
     return service.reconcile_units(lot_id)
+
+
+@mcp.tool()
+def search_operational_evidence(
+    query: Annotated[str, Field(min_length=1)],
+    top_k: Annotated[StrictInt, Field(ge=1, le=20)] = 8,
+    record_types: tuple[str, ...] = (),
+) -> HybridSearchResponse:
+    """Run bounded BM25 plus local-LSA search over synthetic operational evidence only."""
+
+    return service.hybrid_search(query, top_k=top_k, record_types=record_types)
 
 
 @mcp.resource("recallops://policy/synthetic-boundary")

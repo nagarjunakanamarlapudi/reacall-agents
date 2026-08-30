@@ -8,6 +8,8 @@ from typing import Any, Literal
 from recallops.config import get_settings
 from recallops.data.loaders import load_demo_dataset
 from recallops.models import RecallPredicate, Reconciliation
+from recallops.retrieval.hybrid import HybridIndex, load_local_hybrid_index
+from recallops.retrieval.models import HybridSearchRequest, HybridSearchResponse
 
 
 def _upc(value: str | None) -> str:
@@ -21,6 +23,7 @@ class TraceabilityService:
         *,
         data_dir: Path | None = None,
         source_mode: Literal["snapshot", "live"] | None = None,
+        retrieval_index: HybridIndex | None = None,
     ) -> None:
         settings = get_settings()
         self.data_dir = Path(data_dir) if data_dir is not None else settings.data_dir
@@ -28,6 +31,13 @@ class TraceabilityService:
         if self.source_mode not in {"snapshot", "live"}:
             raise ValueError("source_mode must be 'snapshot' or 'live'")
         self.dataset = dataset if dataset is not None else load_demo_dataset(self.data_dir)
+        self._retrieval_index = retrieval_index
+
+    @property
+    def retrieval_index(self) -> HybridIndex:
+        if self._retrieval_index is None:
+            self._retrieval_index = load_local_hybrid_index(str(self.data_dir))
+        return self._retrieval_index
 
     def list_products(
         self, *, query: str | None = None, offset: int = 0, limit: int = 20
@@ -169,3 +179,21 @@ class TraceabilityService:
                 "verified": True,
             }
         )
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        record_types: tuple[str, ...] = (),
+    ) -> HybridSearchResponse:
+        """Search only labelled Northstar synthetic operational evidence."""
+
+        request = HybridSearchRequest(
+            query=query,
+            top_k=top_k,
+            source_filter="synthetic",
+            intent="operational",
+            record_types=record_types,
+        )
+        return self.retrieval_index.search(request)

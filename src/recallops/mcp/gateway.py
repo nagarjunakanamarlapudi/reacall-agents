@@ -20,6 +20,7 @@ from recallops.models import (
     Reconciliation,
     TraceEvent,
 )
+from recallops.retrieval.models import HybridSearchResponse
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
@@ -29,6 +30,9 @@ class Gateway(Protocol):
     """Async JSON-compatible contract shared by direct and stdio adapters."""
 
     async def search_recalls(self, query: str) -> list[dict[str, Any]]: ...
+    async def search_regulatory_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ) -> dict[str, Any]: ...
     async def get_recall(self, recall_number: str) -> dict[str, Any] | None: ...
     async def get_product_metadata(self, upc: str) -> dict[str, Any] | None: ...
     async def find_candidate_products(self, predicate: RecallPredicate) -> list[dict[str, Any]]: ...
@@ -38,6 +42,9 @@ class Gateway(Protocol):
     async def get_inventory(self, lot_id: str | None = None) -> list[dict[str, Any]]: ...
     async def get_sales(self, lot_id: str) -> list[dict[str, Any]]: ...
     async def reconcile_units(self, lot_id: str) -> dict[str, Any]: ...
+    async def search_operational_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ) -> dict[str, Any]: ...
     async def create_case(
         self,
         *,
@@ -131,6 +138,15 @@ class DirectGateway:
     async def search_recalls(self, query: str):
         return _json(self.registry.search_recalls(query))
 
+    async def search_regulatory_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ):
+        return _json(
+            HybridSearchResponse.model_validate(
+                self.registry.hybrid_search(query, top_k=top_k, record_types=record_types)
+            )
+        )
+
     async def get_recall(self, recall_number: str):
         return _json(self.registry.get_recall(recall_number))
 
@@ -176,6 +192,15 @@ class DirectGateway:
 
     async def reconcile_units(self, lot_id: str):
         return _json(self.traceability.reconcile_units(lot_id))
+
+    async def search_operational_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ):
+        return _json(
+            HybridSearchResponse.model_validate(
+                self.traceability.hybrid_search(query, top_k=top_k, record_types=record_types)
+            )
+        )
 
     async def create_case(
         self,
@@ -361,6 +386,15 @@ class StdioMCPGateway:
     async def search_recalls(self, query: str):
         return await self._call("registry", "search_recalls", {"query": query})
 
+    async def search_regulatory_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ):
+        return await self._call(
+            "registry",
+            "search_regulatory_evidence",
+            {"query": query, "top_k": top_k, "record_types": list(record_types)},
+        )
+
     async def get_recall(self, recall_number: str):
         return await self._call("registry", "get_recall", {"recall_number": recall_number})
 
@@ -389,6 +423,15 @@ class StdioMCPGateway:
 
     async def reconcile_units(self, lot_id: str):
         return await self._call("traceability", "reconcile_units", {"lot_id": lot_id})
+
+    async def search_operational_evidence(
+        self, query: str, *, top_k: int, record_types: tuple[str, ...] = ()
+    ):
+        return await self._call(
+            "traceability",
+            "search_operational_evidence",
+            {"query": query, "top_k": top_k, "record_types": list(record_types)},
+        )
 
     async def create_case(
         self,
