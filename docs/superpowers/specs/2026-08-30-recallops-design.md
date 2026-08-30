@@ -1,7 +1,7 @@
 # RecallOps Command Center — Design Specification
 
-**Date:** 30 August 2026  
-**Status:** Approved for implementation  
+**Date:** 30 August 2026
+**Status:** Approved for implementation
 **Submission:** GenAI Academy, Mastering Agentic AI — Week 3
 
 ## 1. Executive intent
@@ -234,4 +234,3 @@ Live openFDA plus frozen fallback, deterministic synthetic digital twin, three l
 Real ERP/WMS/POS connectors, production authentication, real holds or notifications, PII, production regulatory decisions, A2A, nationwide scale, 24/7 monitoring, deployment, and FSIS as a critical dependency.
 
 Any excluded item must remain labelled future work; it cannot be implied by diagrams, screenshots, or demo narration.
-

@@ -135,4 +135,3 @@
 - [ ] Compare every design-spec inclusion/exclusion and Week 3 topic against code, tests, docs, and diagrams.
 - [ ] Record exact counts, command outcomes, environment, warnings, and honest limitations in `docs/VERIFICATION.md`.
 - [ ] Review the final diff for secrets, accidental real-world claims, missing provenance, and unapproved write paths; commit the verified state.
-
