@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import math
+import os
 import sys
 from dataclasses import dataclass
 from typing import Annotated, Any, NotRequired
@@ -43,6 +46,7 @@ from recallops.config import Settings, get_settings
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.models import RecallPredicate
+from recallops.paths import PROJECT_ROOT
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
@@ -257,10 +261,38 @@ def _is_plain_json(value: Any) -> bool:
     if type(value) is list:
         return all(_is_plain_json(item) for item in value)
     if type(value) is dict:
-        return all(
-            type(key) is str and _is_plain_json(item) for key, item in value.items()
-        )
+        return all(type(key) is str and _is_plain_json(item) for key, item in value.items())
     return False
+
+
+def _has_exact_keys(value: Any, expected: frozenset[str]) -> bool:
+    if type(value) is not dict or len(value) != len(expected):
+        return False
+    if any(type(key) is not str for key in value):
+        return False
+    return all(key in value for key in expected)
+
+
+def _exact_state(instance: Any, expected: frozenset[str], label: str) -> dict[str, Any]:
+    state = vars(instance)
+    if not _has_exact_keys(state, expected):
+        raise ValueError(f"trusted RecallOps {label} has shadowed capabilities")
+    return state
+
+
+def _validated_settings() -> Settings:
+    settings = get_settings()
+    path_type = type(PROJECT_ROOT)
+    if (
+        type(settings) is not Settings
+        or type(settings.data_dir) is not path_type
+        or type(settings.operations_db_path) is not path_type
+        or type(settings.source_mode) is not str
+    ):
+        raise ValueError("trusted RecallOps Settings require exact trusted state types")
+    if settings.source_mode not in {"snapshot", "live"}:
+        raise ValueError("trusted RecallOps Settings contain an invalid source mode")
+    return settings
 
 
 def _validate_traceability_service(
@@ -271,14 +303,62 @@ def _validate_traceability_service(
 ) -> None:
     if type(service) is not TraceabilityService:
         raise ValueError("trusted RecallOps read gateway requires exact service identities")
-    if set(vars(service)) != {"data_dir", "source_mode", "dataset"}:
-        raise ValueError("trusted RecallOps traceability service has shadowed capabilities")
-    if service.data_dir != settings.data_dir or service.source_mode != settings.source_mode:
-        raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
-    if type(service.dataset) is not dict or not _is_plain_json(service.dataset):
+    state = _exact_state(
+        service,
+        frozenset({"data_dir", "source_mode", "dataset"}),
+        "traceability service",
+    )
+    path_type = type(settings.data_dir)
+    if type(state["data_dir"]) is not path_type or type(state["source_mode"]) is not str:
+        raise ValueError("trusted RecallOps direct gateway requires exact trusted state types")
+    if type(state["dataset"]) is not dict or not _is_plain_json(state["dataset"]):
         raise ValueError("trusted RecallOps read gateway requires a plain validated dataset")
-    if service.dataset != trusted_dataset:
+    if state["data_dir"] != settings.data_dir or state["source_mode"] != settings.source_mode:
+        raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
+    if state["dataset"] != trusted_dataset:
         raise ValueError("trusted RecallOps read gateway requires the validated dataset snapshot")
+
+
+def _trusted_stdio_environment(settings: Settings) -> dict[str, str]:
+    """Return a closed environment overriding every variable inherited by MCP stdio."""
+    return {
+        "HOME": str(PROJECT_ROOT / ".recallops-runtime" / "stdio-home"),
+        "LOGNAME": "recallops",
+        "PATH": os.defpath,
+        "SHELL": "/bin/sh",
+        "TERM": "dumb",
+        "USER": "recallops",
+        "PYTHONPATH": "",
+        "PYTHONNOUSERSITE": "1",
+        "RECALLOPS_DATA_DIR": str(settings.data_dir),
+        "RECALLOPS_OPERATIONS_DB": str(settings.operations_db_path),
+        "RECALLOPS_SOURCE_MODE": settings.source_mode,
+    }
+
+
+def _trusted_stdio_connections(settings: Settings) -> dict[str, dict[str, object]]:
+    environment = _trusted_stdio_environment(settings)
+    return {
+        server: {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": ["-I", "-m", module],
+            "cwd": str(PROJECT_ROOT),
+            "env": dict(environment),
+        }
+        for server, module in _STDIO_SERVERS.items()
+    }
+
+
+def _stdio_connection_digest(gateway: StdioMCPGateway, server: str) -> str:
+    connection = gateway.client.connections[server]
+    payload = json.dumps(
+        connection,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _close_read_gateway(
@@ -289,59 +369,84 @@ def _close_read_gateway(
     type[DirectGateway] | type[StdioMCPGateway],
 ]:
     if type(gateway) is DirectGateway:
-        if set(vars(gateway)) != {"registry", "traceability", "operations"}:
-            raise ValueError("trusted RecallOps direct gateway has shadowed capabilities")
+        gateway_state = _exact_state(
+            gateway,
+            frozenset({"registry", "traceability", "operations"}),
+            "direct gateway",
+        )
+        registry = gateway_state["registry"]
+        traceability = gateway_state["traceability"]
+        operations = gateway_state["operations"]
         if (
-            type(gateway.registry) is not RecallRegistryService
-            or type(gateway.traceability) is not TraceabilityService
-            or type(gateway.operations) is not OperationsService
+            type(registry) is not RecallRegistryService
+            or type(traceability) is not TraceabilityService
+            or type(operations) is not OperationsService
         ):
             raise ValueError("trusted RecallOps read gateway requires exact service identities")
-        registry = gateway.registry
-        if registry.http_transport is not None:
-            raise ValueError("trusted RecallOps read gateway forbids caller-supplied HTTP transport")
-        if set(vars(registry)) != {
-            "data_dir",
-            "source_mode",
-            "http_transport",
-            "timeout_seconds",
-        }:
-            raise ValueError("trusted RecallOps registry service has shadowed capabilities")
-        operations = gateway.operations
-        if operations._failure_injector is not None or operations._before_cas_hook is not None:
-            raise ValueError("trusted RecallOps read gateway forbids caller-supplied operation hook")
-        if set(vars(operations)) != {
-            "storage_path",
-            "source_mode",
-            "_failure_injector",
-            "_before_cas_hook",
-            "traceability",
-        }:
-            raise ValueError("trusted RecallOps operations service has shadowed capabilities")
-
-        settings = get_settings()
+        registry_state = _exact_state(
+            registry,
+            frozenset({"data_dir", "source_mode", "http_transport", "timeout_seconds"}),
+            "registry service",
+        )
+        operations_state = _exact_state(
+            operations,
+            frozenset(
+                {
+                    "storage_path",
+                    "source_mode",
+                    "_failure_injector",
+                    "_before_cas_hook",
+                    "traceability",
+                }
+            ),
+            "operations service",
+        )
+        settings = _validated_settings()
+        path_type = type(settings.data_dir)
+        timeout = registry_state["timeout_seconds"]
         if (
-            registry.data_dir != settings.data_dir
-            or registry.source_mode != settings.source_mode
-            or type(registry.timeout_seconds) not in {int, float}
-            or registry.timeout_seconds != 2.0
-            or operations.source_mode != settings.source_mode
+            type(registry_state["data_dir"]) is not path_type
+            or type(registry_state["source_mode"]) is not str
+            or type(timeout) not in {int, float}
+            or (type(timeout) is float and not math.isfinite(timeout))
+            or type(operations_state["storage_path"]) is not path_type
+            or type(operations_state["source_mode"]) is not str
+            or type(operations_state["traceability"]) is not TraceabilityService
         ):
-            raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
+            raise ValueError("trusted RecallOps direct gateway requires exact trusted state types")
+        if registry_state["http_transport"] is not None:
+            raise ValueError(
+                "trusted RecallOps read gateway forbids caller-supplied HTTP transport"
+            )
+        if (
+            operations_state["_failure_injector"] is not None
+            or operations_state["_before_cas_hook"] is not None
+        ):
+            raise ValueError(
+                "trusted RecallOps read gateway forbids caller-supplied operation hook"
+            )
         # These loaders validate the pinned public snapshot and synthetic manifest
         # before any caller-owned service is retained by a compiled capability.
         load_recall_snapshot(data_dir=settings.data_dir)
         trusted_dataset = load_demo_dataset(settings.data_dir)
         _validate_traceability_service(
-            gateway.traceability,
+            traceability,
             settings=settings,
             trusted_dataset=trusted_dataset,
         )
         _validate_traceability_service(
-            operations.traceability,
+            operations_state["traceability"],
             settings=settings,
             trusted_dataset=trusted_dataset,
         )
+        if (
+            registry_state["data_dir"] != settings.data_dir
+            or registry_state["source_mode"] != settings.source_mode
+            or timeout != 2.0
+            or operations_state["storage_path"] != settings.operations_db_path
+            or operations_state["source_mode"] != settings.source_mode
+        ):
+            raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
         closed = _ClosedDirectReads(
             registry=RecallRegistryService(
                 data_dir=settings.data_dir,
@@ -354,27 +459,73 @@ def _close_read_gateway(
         )
         return "direct", closed, DirectGateway
     if type(gateway) is StdioMCPGateway:
-        client = gateway.client
+        gateway_state = _exact_state(
+            gateway,
+            frozenset({"client"}),
+            "stdio gateway",
+        )
+        client = gateway_state["client"]
+        from langchain_mcp_adapters.callbacks import Callbacks
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
         if type(client) is not MultiServerMCPClient:
             raise ValueError("trusted RecallOps stdio gateway requires the official MCP client")
-        if client.tool_interceptors or client.tool_name_prefix is not False:
+        client_state = _exact_state(
+            client,
+            frozenset({"connections", "callbacks", "tool_interceptors", "tool_name_prefix"}),
+            "stdio client",
+        )
+        connections = client_state["connections"]
+        callbacks = client_state["callbacks"]
+        interceptors = client_state["tool_interceptors"]
+        tool_name_prefix = client_state["tool_name_prefix"]
+        if (
+            type(connections) is not dict
+            or type(callbacks) is not Callbacks
+            or type(interceptors) is not list
+            or type(tool_name_prefix) is not bool
+        ):
+            raise ValueError(
+                "trusted RecallOps stdio gateway requires exact trusted stdio state types"
+            )
+        if len(interceptors) != 0 or tool_name_prefix is not False:
             raise ValueError("trusted RecallOps stdio gateway forbids client interception")
-        if set(client.connections) != set(_STDIO_SERVERS):
+        callback_state = _exact_state(
+            callbacks,
+            frozenset({"on_logging_message", "on_progress", "on_elicitation"}),
+            "stdio callbacks",
+        )
+        if any(value is not None for value in callback_state.values()):
+            raise ValueError("trusted RecallOps stdio callbacks must all be disabled")
+        if not _has_exact_keys(connections, frozenset(_STDIO_SERVERS)):
             raise ValueError("trusted RecallOps stdio server identity set is incomplete")
         for server, module in _STDIO_SERVERS.items():
-            connection = client.connections[server]
-            if (
-                set(connection) != {"transport", "command", "args"}
-                or connection.get("transport") != "stdio"
-                or connection.get("command") != sys.executable
-                or connection.get("args") != ["-m", module]
+            connection = connections[server]
+            if type(connection) is not dict:
+                raise ValueError(
+                    "trusted RecallOps stdio gateway requires exact trusted stdio state types"
+                )
+            if not _has_exact_keys(
+                connection,
+                frozenset({"transport", "command", "args"}),
             ):
                 raise ValueError(f"trusted RecallOps stdio server identity mismatch: {server}")
-        if set(vars(gateway)) != {"client"}:
-            raise ValueError("trusted RecallOps stdio gateway has shadowed capabilities")
-        closed = StdioMCPGateway()
+            transport = connection["transport"]
+            command = connection["command"]
+            args = connection["args"]
+            if (
+                type(transport) is not str
+                or type(command) is not str
+                or type(args) is not list
+                or any(type(argument) is not str for argument in args)
+            ):
+                raise ValueError(
+                    "trusted RecallOps stdio gateway requires exact trusted stdio state types"
+                )
+            if transport != "stdio" or command != sys.executable or args != ["-m", module]:
+                raise ValueError(f"trusted RecallOps stdio server identity mismatch: {server}")
+        settings = _validated_settings()
+        closed = StdioMCPGateway(_trusted_stdio_connections(settings))
         return "stdio", closed, StdioMCPGateway
     raise ValueError("read_gateway must be a trusted RecallOps read gateway")
 
@@ -457,10 +608,12 @@ def _trusted_read_tools(
             for name in tools
         }
     else:
+        if type(closed_gateway) is not StdioMCPGateway:
+            raise ValueError("trusted RecallOps stdio reconstruction identity is invalid")
         identities = {
             name: (
-                f"stdio:reconstructed:{'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability'}:stdio:"
-                f"{_STDIO_SERVERS['registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability']}:{name}"
+                f"stdio:reconstructed:{'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability'}:"
+                f"config-sha256={_stdio_connection_digest(closed_gateway, 'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability')}:{name}"
             )
             for name in tools
         }
@@ -581,9 +734,7 @@ def build_deep_supervisor(
         }
         for name in ("ls", "read_file"):
             if actual_tools.get(name) is not specialist_fs_tools[name]:
-                raise ValueError(
-                    f"compiled {definition.name} capability {name!r} is untrusted"
-                )
+                raise ValueError(f"compiled {definition.name} capability {name!r} is untrusted")
         for name in definition.allowed_tool_names:
             if name not in tools_by_name:
                 continue
