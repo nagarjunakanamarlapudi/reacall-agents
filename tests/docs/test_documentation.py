@@ -232,14 +232,14 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         for edge in (
             "ACTION_REVIEW --> ACTION_GATE",
-            'ACTION_GATE -->|authorize exact action| RECORD',
+            "ACTION_GATE -->|authorize exact action| RECORD",
             "RECORD --> EVIDENCE",
             "EVIDENCE --> CLOSURE_REQUEST",
             "CLOSURE_REQUEST --> GATE_EVAL",
-            'GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW',
+            "GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW",
             "CLOSURE_REVIEW --> CLOSURE_GATE",
-            'CLOSURE_GATE -->|close| CLOSED',
-            'CLOSURE_GATE -->|keep open / escalate| OPEN',
+            "CLOSURE_GATE -->|close| CLOSED",
+            "CLOSURE_GATE -->|keep open / escalate| OPEN",
         ):
             self.assertIn(edge, diagram)
         self.assertNotRegex(diagram, r"(?:NOTICE|COORD|TRACE|ACTION_REVIEW)\s*-->\s*RECORD")
@@ -257,9 +257,7 @@ class DocumentationContractTests(unittest.TestCase):
             )
             self.assertTrue(boundary_line.endswith(":::synthetic"))
 
-        evidence_model = (IMAGES / "09_domain_evidence_model.mmd").read_text(
-            encoding="utf-8"
-        )
+        evidence_model = (IMAGES / "09_domain_evidence_model.mmd").read_text(encoding="utf-8")
         predicate_line = next(
             line.strip() for line in evidence_model.splitlines() if line.strip().startswith("PRED[")
         )
@@ -274,7 +272,9 @@ class DocumentationContractTests(unittest.TestCase):
         root = ElementTree.parse(IMAGES / "08_business_recall_lifecycle.svg").getroot()
         _, _, width, height = (float(value) for value in root.attrib["viewBox"].split())
         self.assertLessEqual(width, 850, "lifecycle SVG is too wide for a 700px Markdown column")
-        self.assertLessEqual(height / width, 4, "lifecycle SVG is too tall to scan as one lifecycle")
+        self.assertLessEqual(
+            height / width, 4, "lifecycle SVG is too tall to scan as one lifecycle"
+        )
 
     def test_business_lifecycle_cluster_titles_clear_their_first_nodes(self) -> None:
         root = ElementTree.parse(IMAGES / "08_business_recall_lifecycle.svg").getroot()
@@ -292,20 +292,14 @@ class DocumentationContractTests(unittest.TestCase):
             ("my-svg-STAGE2", "CLOSURE_REQUEST"),
         ):
             cluster = next(element for element in root.iter() if element.get("id") == cluster_id)
-            label = next(
-                element for element in cluster if element.get("class") == "cluster-label"
-            )
-            label_box = next(
-                element for element in label if element.tag.endswith("foreignObject")
-            )
+            label = next(element for element in cluster if element.get("class") == "cluster-label")
+            label_box = next(element for element in label if element.tag.endswith("foreignObject"))
             label_bottom = translated_y(label) + float(label_box.attrib["height"])
 
             first_node = next(
                 element
                 for element in root.iter()
-                if element.get("id", "").startswith(
-                    f"my-svg-flowchart-{first_node_name}-"
-                )
+                if element.get("id", "").startswith(f"my-svg-flowchart-{first_node_name}-")
             )
             node_box = next(
                 element

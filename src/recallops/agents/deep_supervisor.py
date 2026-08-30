@@ -632,22 +632,33 @@ def _validated_settings() -> Settings:
     return settings
 
 
+_TRACEABILITY_SERVICE_STATE_FIELDS = frozenset(
+    {"data_dir", "source_mode", "dataset", "_retrieval_index"}
+)
+
+
+def _traceability_service_state(service: TraceabilityService) -> dict[str, Any]:
+    if type(service) is not TraceabilityService:
+        raise ValueError("trusted RecallOps read gateway requires exact service identities")
+    return _exact_state(
+        service,
+        _TRACEABILITY_SERVICE_STATE_FIELDS,
+        "traceability service",
+    )
+
+
 def _validate_traceability_service(
     service: TraceabilityService,
     *,
     settings: Settings,
     trusted_dataset: dict[str, Any],
 ) -> None:
-    if type(service) is not TraceabilityService:
-        raise ValueError("trusted RecallOps read gateway requires exact service identities")
-    state = _exact_state(
-        service,
-        frozenset({"data_dir", "source_mode", "dataset"}),
-        "traceability service",
-    )
+    state = _traceability_service_state(service)
     path_type = type(settings.data_dir)
     if type(state["data_dir"]) is not path_type or type(state["source_mode"]) is not str:
         raise ValueError("trusted RecallOps direct gateway requires exact trusted state types")
+    if state["_retrieval_index"] is not None:
+        raise ValueError("trusted RecallOps read gateway forbids caller-supplied retrieval index")
     if type(state["dataset"]) is not dict or not _is_plain_json(state["dataset"]):
         raise ValueError("trusted RecallOps read gateway requires a plain validated dataset")
     if state["data_dir"] != settings.data_dir or state["source_mode"] != settings.source_mode:
@@ -827,9 +838,18 @@ def _close_read_gateway(
             raise ValueError("trusted RecallOps read gateway requires exact service identities")
         registry_state = _exact_state(
             registry,
-            frozenset({"data_dir", "source_mode", "http_transport", "timeout_seconds"}),
+            frozenset(
+                {
+                    "data_dir",
+                    "source_mode",
+                    "http_transport",
+                    "timeout_seconds",
+                    "_retrieval_index",
+                }
+            ),
             "registry service",
         )
+        traceability_state = _traceability_service_state(traceability)
         operations_state = _exact_state(
             operations,
             frozenset(
@@ -843,6 +863,9 @@ def _close_read_gateway(
             ),
             "operations service",
         )
+        operations_traceability_state = _traceability_service_state(
+            operations_state["traceability"]
+        )
         settings = _validated_settings()
         path_type = type(settings.data_dir)
         timeout = registry_state["timeout_seconds"]
@@ -854,6 +877,10 @@ def _close_read_gateway(
             or type(operations_state["storage_path"]) is not path_type
             or type(operations_state["source_mode"]) is not str
             or type(operations_state["traceability"]) is not TraceabilityService
+            or type(traceability_state["data_dir"]) is not path_type
+            or type(traceability_state["source_mode"]) is not str
+            or type(operations_traceability_state["data_dir"]) is not path_type
+            or type(operations_traceability_state["source_mode"]) is not str
         ):
             raise ValueError("trusted RecallOps direct gateway requires exact trusted state types")
         if registry_state["http_transport"] is not None:
@@ -866,6 +893,17 @@ def _close_read_gateway(
         ):
             raise ValueError(
                 "trusted RecallOps read gateway forbids caller-supplied operation hook"
+            )
+        if any(
+            state["_retrieval_index"] is not None
+            for state in (
+                registry_state,
+                traceability_state,
+                operations_traceability_state,
+            )
+        ):
+            raise ValueError(
+                "trusted RecallOps read gateway forbids caller-supplied retrieval index"
             )
         # These loaders validate the pinned public snapshot and synthetic manifest
         # before any caller-owned service is retained by a compiled capability.

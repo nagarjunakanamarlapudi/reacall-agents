@@ -820,6 +820,164 @@ async def test_deep_supervisor_routes_only_closed_direct_gateway_capabilities(
     assert recall["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
 
 
+@pytest.mark.asyncio
+async def test_combined_rag_services_keep_all_specialist_reads_lazy_and_transport_identical(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches RAG service state breaking or leaking into the sealed specialist tools."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.agents.specialists import investigate_recall
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+    from recallops.services.traceability import TraceabilityService
+
+    storage_path = (tmp_path / "combined-contract.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    caller_gateway = DirectGateway(operations=OperationsService(storage_path=storage_path))
+    assert caller_gateway.registry._retrieval_index is None
+    assert caller_gateway.traceability._retrieval_index is None
+    assert caller_gateway.operations.traceability._retrieval_index is None
+
+    direct = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=caller_gateway,
+    )
+    stdio = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=StdioMCPGateway(),
+    )
+
+    def read_tools(supervisor: Any) -> dict[str, Any]:
+        return {
+            tool.name: tool
+            for graph in module._compiled_subagent_graphs(supervisor.graph).values()
+            for tool in module._compiled_tools(graph).values()
+            if tool.name in supervisor.exposed_read_tool_names
+        }
+
+    direct_tools = read_tools(direct)
+    stdio_tools = read_tools(stdio)
+    expected_names = {
+        "search_recalls",
+        "get_recall",
+        "get_product_metadata",
+        "find_candidate_products",
+        "match_lots",
+        "trace_forward",
+        "trace_backward",
+        "get_inventory",
+        "get_sales",
+        "reconcile_units",
+    }
+    assert set(direct_tools) == expected_names
+    assert set(stdio_tools) == expected_names
+    assert not any("hybrid" in name or "evidence" in name for name in direct_tools)
+
+    predicate = investigate_recall(load_recall_snapshot()).predicate
+    payloads = {
+        "search_recalls": {"query": "H-1230-2026"},
+        "get_recall": {"recall_number": "H-1230-2026"},
+        "get_product_metadata": {"upc": predicate.upcs[0]},
+        "find_candidate_products": {"predicate": predicate},
+        "match_lots": {"predicate": predicate},
+        "trace_forward": {"lot_id": "LOT-EXACT-170"},
+        "trace_backward": {"lot_id": "LOT-EXACT-170"},
+        "get_inventory": {"lot_id": "LOT-EXACT-170"},
+        "get_sales": {"lot_id": "LOT-EXACT-170"},
+        "reconcile_units": {"lot_id": "LOT-EXACT-170"},
+    }
+    reconstructed_registry: list[RecallRegistryService] = []
+    reconstructed_traceability: list[TraceabilityService] = []
+    original_registry_init = RecallRegistryService.__init__
+    original_traceability_init = TraceabilityService.__init__
+
+    def track_registry(self: RecallRegistryService, *args: Any, **kwargs: Any) -> None:
+        original_registry_init(self, *args, **kwargs)
+        reconstructed_registry.append(self)
+
+    def track_traceability(self: TraceabilityService, *args: Any, **kwargs: Any) -> None:
+        original_traceability_init(self, *args, **kwargs)
+        reconstructed_traceability.append(self)
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", track_registry)
+    monkeypatch.setattr(TraceabilityService, "__init__", track_traceability)
+
+    for name, payload in payloads.items():
+        direct_result = await direct_tools[name].ainvoke(payload)
+        stdio_result = await stdio_tools[name].ainvoke(payload)
+        assert direct_result == stdio_result, name
+
+    assert len(reconstructed_registry) == 3
+    assert len(reconstructed_traceability) == 7
+    assert all(service._retrieval_index is None for service in reconstructed_registry)
+    assert all(service._retrieval_index is None for service in reconstructed_traceability)
+    assert caller_gateway.registry._retrieval_index is None
+    assert caller_gateway.traceability._retrieval_index is None
+    assert caller_gateway.operations.traceability._retrieval_index is None
+
+
+@pytest.mark.parametrize(
+    "owner_path",
+    ["registry", "traceability", "operations.traceability"],
+)
+@pytest.mark.parametrize("index_kind", ["preinitialized", "executable"])
+def test_deep_supervisor_rejects_caller_retrieval_indexes_before_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    owner_path: str,
+    index_kind: str,
+) -> None:
+    """Catches a caller-owned RAG index becoming specialist execution authority."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import build_deep_supervisor
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.retrieval.hybrid import load_local_hybrid_index
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / f"retrieval-{owner_path}-{index_kind}.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway = DirectGateway(operations=OperationsService(storage_path=storage_path))
+    owner: Any = gateway
+    for segment in owner_path.split("."):
+        owner = vars(owner)[segment]
+    access_calls: list[str] = []
+
+    class ExecutableIndex:
+        def __getattribute__(self, name: str) -> Any:
+            if name != "__class__":
+                access_calls.append(f"get:{name}")
+            return object.__getattribute__(self, name)
+
+        def __bool__(self) -> bool:
+            access_calls.append("bool")
+            return False
+
+        def __call__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            access_calls.append("call")
+
+    index: Any = (
+        load_local_hybrid_index(str(owner.data_dir))
+        if index_kind == "preinitialized"
+        else ExecutableIndex()
+    )
+    access_calls.clear()
+    vars(owner)["_retrieval_index"] = index
+
+    with pytest.raises(ValueError, match="caller-supplied retrieval index"):
+        build_deep_supervisor(
+            model=GenericFakeChatModel(messages=iter(["not invoked"])),
+            read_gateway=gateway,
+        )
+
+    assert access_calls == []
+
+
 def test_deep_supervisor_rejects_caller_http_transport_before_callback_execution(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
