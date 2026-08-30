@@ -11,7 +11,8 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, NamedTuple, NotRequired
+from types import MappingProxyType
+from typing import Annotated, Any, ClassVar, NamedTuple, NotRequired
 
 from deepagents import (
     GeneralPurposeSubagentProfile,
@@ -28,8 +29,8 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
-from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, ConfigDict
 
 from recallops.agents.prompts import (
     CONTAINMENT_COMMUNICATIONS_PROMPT,
@@ -207,6 +208,226 @@ class _ReadConfig(NamedTuple):
     environment: tuple[tuple[str, str], ...]
     servers: tuple[tuple[str, str], ...]
     digest: str
+
+
+class _SearchRecallsInput(BaseModel):
+    query: str
+
+
+class _GetRecallInput(BaseModel):
+    recall_number: str
+
+
+class _GetProductMetadataInput(BaseModel):
+    upc: str
+
+
+class _RecallPredicateInput(BaseModel):
+    predicate: RecallPredicate
+
+
+class _LotInput(BaseModel):
+    lot_id: str
+
+
+class _InventoryInput(BaseModel):
+    lot_id: str | None = None
+
+
+class _SealedCapabilityMeta(type):
+    """Prevent supported post-build mutation of capability class authority."""
+
+    def __setattr__(cls, name: str, value: Any) -> None:
+        del name, value
+        raise TypeError("sealed RecallOps capability class cannot be modified")
+
+    def __delattr__(cls, name: str) -> None:
+        del name
+        raise TypeError("sealed RecallOps capability class cannot be modified")
+
+
+class _SealedReadCapability(metaclass=_SealedCapabilityMeta):
+    """Stateless callable whose authority lives in sealed, immutable class state.
+
+    Threat boundary: ordinary gateway, middleware, tool, instance, and class
+    configuration mutation is rejected. A same-interpreter actor able to replace
+    Python code objects or module globals can replace the running program itself
+    and is intentionally outside this boundary.
+    """
+
+    __slots__ = ()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        del name, value
+        raise TypeError("sealed RecallOps capability instance cannot be modified")
+
+    def __delattr__(self, name: str) -> None:
+        del name
+        raise TypeError("sealed RecallOps capability instance cannot be modified")
+
+    async def _read(self, payload: dict[str, Any]) -> Any:
+        config, expected_digest, tool_name = _sealed_capability_authority(self)
+        return await _invoke_trusted_read(config, expected_digest, tool_name, payload)
+
+
+class _SearchRecallsCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, query: str) -> Any:
+        return await self._read({"query": query})
+
+
+class _GetRecallCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, recall_number: str) -> Any:
+        return await self._read({"recall_number": recall_number})
+
+
+class _GetProductMetadataCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, upc: str) -> Any:
+        return await self._read({"upc": upc})
+
+
+class _FindCandidateProductsCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, predicate: RecallPredicate) -> Any:
+        return await self._read({"predicate": predicate})
+
+
+class _MatchLotsCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, predicate: RecallPredicate) -> Any:
+        return await self._read({"predicate": predicate})
+
+
+class _TraceForwardCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, lot_id: str) -> Any:
+        return await self._read({"lot_id": lot_id})
+
+
+class _TraceBackwardCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, lot_id: str) -> Any:
+        return await self._read({"lot_id": lot_id})
+
+
+class _GetInventoryCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, lot_id: str | None = None) -> Any:
+        return await self._read({"lot_id": lot_id})
+
+
+class _GetSalesCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, lot_id: str) -> Any:
+        return await self._read({"lot_id": lot_id})
+
+
+class _ReconcileUnitsCapability(_SealedReadCapability):
+    __slots__ = ()
+
+    async def __call__(self, lot_id: str) -> Any:
+        return await self._read({"lot_id": lot_id})
+
+
+class _SealedToolMeta(type(BaseTool)):
+    """Seal the wrapper class after Pydantic finishes constructing it."""
+
+    def __new__(
+        metaclass: type[_SealedToolMeta],
+        name: str,
+        bases: tuple[type, ...],
+        namespace: dict[str, Any],
+        **kwargs: Any,
+    ) -> _SealedToolMeta:
+        cls = super().__new__(metaclass, name, bases, namespace, **kwargs)
+        type.__setattr__(cls, "model_config", MappingProxyType(dict(cls.model_config)))
+        type.__setattr__(cls, "_recallops_sealed", True)
+        return cls
+
+    def __setattr__(cls, name: str, value: Any) -> None:
+        if cls.__dict__.get("_recallops_sealed", False):
+            raise TypeError("sealed RecallOps tool wrapper class cannot be modified")
+        super().__setattr__(name, value)
+
+    def __delattr__(cls, name: str) -> None:
+        if cls.__dict__.get("_recallops_sealed", False):
+            raise TypeError("sealed RecallOps tool wrapper class cannot be modified")
+        super().__delattr__(name)
+
+
+class _SealedReadTool(BaseTool, metaclass=_SealedToolMeta):
+    """Frozen metadata wrapper with authority only in sealed class state."""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    _capability: ClassVar[_SealedReadCapability]
+    _trusted_args_schema: ClassVar[type[BaseModel]]
+    _trusted_description: ClassVar[str]
+
+    def __getattribute__(self, name: str) -> Any:
+        tool_type = type(self)
+        class_state = vars(tool_type)
+        if name == "name":
+            capability = class_state["_capability"]
+            return vars(type(capability))["_tool_name"]
+        if name == "description":
+            return class_state["_trusted_description"]
+        if name == "args_schema":
+            return class_state["_trusted_args_schema"]
+        if name in {"callbacks", "tags", "metadata", "extras"}:
+            return None
+        if name in {
+            "return_direct",
+            "verbose",
+            "handle_tool_error",
+            "handle_validation_error",
+        }:
+            return False
+        if name == "response_format":
+            return "content"
+        if name == "_injected_args_keys":
+            return BaseTool._injected_args_keys.func(self)
+        if name == "__dict__":
+            state = super().__getattribute__("__dict__")
+            return MappingProxyType(state)
+        # Keep execution entry points on sealed class code even if a caller uses
+        # low-level access to write shadow attributes into Pydantic's storage.
+        if name == "ainvoke":
+            return BaseTool.ainvoke.__get__(self, type(self))
+        if name == "invoke":
+            return BaseTool.invoke.__get__(self, type(self))
+        if name == "arun":
+            return BaseTool.arun.__get__(self, type(self))
+        if name == "run":
+            return BaseTool.run.__get__(self, type(self))
+        if name == "_arun":
+            return _SealedReadTool._arun.__get__(self, type(self))
+        if name == "_run":
+            return _SealedReadTool._run.__get__(self, type(self))
+        return super().__getattribute__(name)
+
+    @property
+    def coroutine(self) -> Any:
+        """Expose inspectable metadata without retaining a bound method."""
+        return _sealed_tool_capability(self).__call__
+
+    def _run(self, **payload: Any) -> Any:
+        del payload
+        raise RuntimeError("RecallOps sealed read tools require asynchronous invocation")
+
+    async def _arun(self, **payload: Any) -> Any:
+        capability = _sealed_tool_capability(self)
+        return await capability(**payload)
 
 
 def specialist_catalog() -> list[SpecialistDefinition]:
@@ -790,131 +1011,207 @@ async def _invoke_trusted_read(
     return await _invoke_stdio_read(config, tool_name, payload)
 
 
+def _capability_base(tool_name: str) -> type[_SealedReadCapability]:
+    if tool_name == "search_recalls":
+        return _SearchRecallsCapability
+    if tool_name == "get_recall":
+        return _GetRecallCapability
+    if tool_name == "get_product_metadata":
+        return _GetProductMetadataCapability
+    if tool_name == "find_candidate_products":
+        return _FindCandidateProductsCapability
+    if tool_name == "match_lots":
+        return _MatchLotsCapability
+    if tool_name == "trace_forward":
+        return _TraceForwardCapability
+    if tool_name == "trace_backward":
+        return _TraceBackwardCapability
+    if tool_name == "get_inventory":
+        return _GetInventoryCapability
+    if tool_name == "get_sales":
+        return _GetSalesCapability
+    if tool_name == "reconcile_units":
+        return _ReconcileUnitsCapability
+    raise ValueError("trusted RecallOps read capability is invalid")
+
+
+def _capability_args_schema(tool_name: str) -> type[BaseModel]:
+    if tool_name == "search_recalls":
+        return _SearchRecallsInput
+    if tool_name == "get_recall":
+        return _GetRecallInput
+    if tool_name == "get_product_metadata":
+        return _GetProductMetadataInput
+    if tool_name in {"find_candidate_products", "match_lots"}:
+        return _RecallPredicateInput
+    if tool_name == "get_inventory":
+        return _InventoryInput
+    if tool_name in {
+        "trace_forward",
+        "trace_backward",
+        "get_sales",
+        "reconcile_units",
+    }:
+        return _LotInput
+    raise ValueError("trusted RecallOps read capability is invalid")
+
+
+def _capability_description(tool_name: str) -> str:
+    if tool_name == "search_recalls":
+        return "Search official recall registry evidence."
+    if tool_name == "get_recall":
+        return "Get one official recall record by recall number."
+    if tool_name == "get_product_metadata":
+        return "Get official product metadata by UPC."
+    if tool_name == "find_candidate_products":
+        return "Find synthetic retailer product candidates for a recall predicate."
+    if tool_name == "match_lots":
+        return "Match synthetic retailer lots to a recall predicate."
+    if tool_name == "trace_forward":
+        return "Trace a synthetic lot forward through the facility network."
+    if tool_name == "trace_backward":
+        return "Trace a synthetic lot backward to its receiving root."
+    if tool_name == "get_inventory":
+        return "Read synthetic retailer inventory positions."
+    if tool_name == "get_sales":
+        return "Read synthetic retailer sale events for a lot."
+    if tool_name == "reconcile_units":
+        return "Read evidence-backed synthetic unit reconciliation for a lot."
+    raise ValueError("trusted RecallOps read capability is invalid")
+
+
+def _sealed_capability_authority(
+    capability: _SealedReadCapability,
+) -> tuple[_ReadConfig, str, str]:
+    capability_type = type(capability)
+    if type(capability_type) is not _SealedCapabilityMeta:
+        raise ValueError("trusted RecallOps read capability is not sealed")
+    class_state = vars(capability_type)
+    config = class_state.get("_config")
+    expected_digest = class_state.get("_expected_digest")
+    tool_name = class_state.get("_tool_name")
+    if (
+        type(config) is not _ReadConfig
+        or type(expected_digest) is not str
+        or type(tool_name) is not str
+        or capability_type.__bases__ != (_capability_base(tool_name),)
+    ):
+        raise ValueError("trusted RecallOps sealed capability authority is invalid")
+    _validate_read_config(config, expected_config_digest=expected_digest)
+    return config, expected_digest, tool_name
+
+
+def _make_sealed_capability(
+    config: _ReadConfig,
+    tool_name: str,
+) -> _SealedReadCapability:
+    base = _capability_base(tool_name)
+    # Encode/decode forces an independent immutable scalar authority rather than
+    # deriving the expected value from the config during each invocation.
+    expected_digest = config.digest.encode("ascii").decode("ascii")
+    capability_type = _SealedCapabilityMeta(
+        f"_Bound{''.join(part.title() for part in tool_name.split('_'))}Capability",
+        (base,),
+        {
+            "__module__": __name__,
+            "__slots__": (),
+            "_config": config,
+            "_expected_digest": expected_digest,
+            "_tool_name": tool_name,
+        },
+    )
+    capability = capability_type()
+    _sealed_capability_authority(capability)
+    return capability
+
+
+def _sealed_tool_capability(tool: BaseTool) -> _SealedReadCapability:
+    tool_type = type(tool)
+    if type(tool_type) is not _SealedToolMeta or tool_type.__bases__ != (_SealedReadTool,):
+        raise ValueError("trusted RecallOps read tool is not sealed")
+    capability = vars(tool_type).get("_capability")
+    schema = vars(tool_type).get("_trusted_args_schema")
+    description = vars(tool_type).get("_trusted_description")
+    if not isinstance(capability, _SealedReadCapability):
+        raise ValueError("trusted RecallOps read tool capability is invalid")
+    _config, _expected_digest, tool_name = _sealed_capability_authority(capability)
+    if (
+        schema is not _capability_args_schema(tool_name)
+        or type(description) is not str
+        or description != _capability_description(tool_name)
+    ):
+        raise ValueError("trusted RecallOps read tool metadata is invalid")
+    return capability
+
+
+def _sealed_tool(
+    capability: _SealedReadCapability,
+) -> _SealedReadTool:
+    config, expected_digest, tool_name = _sealed_capability_authority(capability)
+    call_method = type(capability).__call__
+    read_method = _SealedReadCapability._read
+    tool_methods = (_SealedReadTool._run, _SealedReadTool._arun)
+    if (
+        call_method.__closure__ is not None
+        or read_method.__closure__ is not None
+        or any(method.__closure__ is not None for method in tool_methods)
+    ):
+        raise ValueError("trusted RecallOps capability contains a closure")
+    authority_defaults = (
+        *(call_method.__defaults__ or ()),
+        *(read_method.__defaults__ or ()),
+        *(value for method in tool_methods for value in (method.__defaults__ or ())),
+    )
+    if any(
+        isinstance(value, _ReadConfig)
+        or (type(value) is str and hmac.compare_digest(value, expected_digest))
+        for value in authority_defaults
+    ):
+        raise ValueError("trusted RecallOps capability contains authority defaults")
+    tool_type = _SealedToolMeta(
+        f"_Bound{''.join(part.title() for part in tool_name.split('_'))}Tool",
+        (_SealedReadTool,),
+        {
+            "__module__": __name__,
+            "_capability": capability,
+            "_trusted_args_schema": _capability_args_schema(tool_name),
+            "_trusted_description": _capability_description(tool_name),
+        },
+    )
+    tool = tool_type(
+        name=tool_name,
+        description=_capability_description(tool_name),
+        args_schema=_capability_args_schema(tool_name),
+    )
+    if (
+        _sealed_tool_capability(tool) is not capability
+        or "_capability" in tool.__dict__
+        or "coroutine" in tool.__dict__
+        or "func" in tool.__dict__
+        or config.digest != expected_digest
+    ):
+        raise ValueError("trusted RecallOps read tool wrapper is unsafe")
+    return tool
+
+
 def _trusted_read_tools(
     gateway: DirectGateway | StdioMCPGateway | None,
 ) -> tuple[dict[str, BaseTool], dict[str, str]]:
     if gateway is None:
         return {}, {}
     read_config = _close_read_gateway(gateway)
-    expected_config_digest = read_config.digest
-
-    async def search_recalls(query: str) -> Any:
-        """Search official recall registry evidence."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "search_recalls",
-            {"query": query},
-        )
-
-    async def get_recall(recall_number: str) -> Any:
-        """Get one official recall record by recall number."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "get_recall",
-            {"recall_number": recall_number},
-        )
-
-    async def get_product_metadata(upc: str) -> Any:
-        """Get official product metadata by UPC."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "get_product_metadata",
-            {"upc": upc},
-        )
-
-    async def find_candidate_products(predicate: RecallPredicate) -> Any:
-        """Find synthetic retailer product candidates for a recall predicate."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "find_candidate_products",
-            {"predicate": predicate},
-        )
-
-    async def match_lots(predicate: RecallPredicate) -> Any:
-        """Match synthetic retailer lots to a recall predicate."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "match_lots",
-            {"predicate": predicate},
-        )
-
-    async def trace_forward(lot_id: str) -> Any:
-        """Trace a synthetic lot forward through the facility network."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "trace_forward",
-            {"lot_id": lot_id},
-        )
-
-    async def trace_backward(lot_id: str) -> Any:
-        """Trace a synthetic lot backward to its receiving root."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "trace_backward",
-            {"lot_id": lot_id},
-        )
-
-    async def get_inventory(lot_id: str | None = None) -> Any:
-        """Read synthetic retailer inventory positions."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "get_inventory",
-            {"lot_id": lot_id},
-        )
-
-    async def get_sales(lot_id: str) -> Any:
-        """Read synthetic retailer sale events for a lot."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "get_sales",
-            {"lot_id": lot_id},
-        )
-
-    async def reconcile_units(lot_id: str) -> Any:
-        """Read evidence-backed synthetic unit reconciliation for a lot."""
-        return await _invoke_trusted_read(
-            read_config,
-            expected_config_digest,
-            "reconcile_units",
-            {"lot_id": lot_id},
-        )
-
-    functions = {
-        function.__name__: function
-        for function in (
-            search_recalls,
-            get_recall,
-            get_product_metadata,
-            find_candidate_products,
-            match_lots,
-            trace_forward,
-            trace_backward,
-            get_inventory,
-            get_sales,
-            reconcile_units,
-        )
-    }
+    capabilities = tuple(
+        _make_sealed_capability(read_config, name) for name in sorted(_TRUSTED_READ_TOOL_NAMES)
+    )
     tools = {
-        name: StructuredTool.from_function(
-            coroutine=function,
-            name=name,
-            description=inspect.getdoc(function) or f"Trusted RecallOps {name} capability.",
-        )
-        for name, function in functions.items()
+        type(capability).__dict__["_tool_name"]: _sealed_tool(capability)
+        for capability in capabilities
     }
     if read_config.transport == "direct":
         identities = {
             name: (
-                f"direct:reconstructed:immutable:config-sha256={expected_config_digest}:"
+                f"direct:reconstructed:sealed:config-sha256="
+                f"{_sealed_capability_authority(tools[name].coroutine.__self__)[1]}:"
                 f"{'RecallRegistryService' if name in _REGISTRY_READ_TOOL_NAMES else 'TraceabilityService'}.{name}"
             )
             for name in tools
@@ -922,9 +1219,9 @@ def _trusted_read_tools(
     else:
         identities = {
             name: (
-                f"stdio:reconstructed:immutable:"
+                f"stdio:reconstructed:sealed:"
                 f"{'registry' if name in _REGISTRY_READ_TOOL_NAMES else 'traceability'}:"
-                f"config-sha256={expected_config_digest}:{name}"
+                f"config-sha256={_sealed_capability_authority(tools[name].coroutine.__self__)[1]}:{name}"
             )
             for name in tools
         }

@@ -1060,29 +1060,196 @@ def test_compiled_read_coroutines_capture_only_deeply_immutable_configuration(
             if tool.name not in supervisor.exposed_read_tool_names:
                 continue
             coroutine = tool.coroutine
-            closure = inspect.getclosurevars(coroutine)
+            assert coroutine is not None
+            assert inspect.ismethod(coroutine)
+            assert coroutine.__func__.__closure__ is None
             for value in (
-                *closure.nonlocals.values(),
-                *closure.globals.values(),
-                *(coroutine.__defaults__ or ()),
-                *(coroutine.__kwdefaults__ or {}).values(),
+                *(coroutine.__func__.__defaults__ or ()),
+                *(coroutine.__func__.__kwdefaults__ or {}).values(),
             ):
-                if inspect.isfunction(value):
-                    continue
                 assert_deeply_immutable(value)
-            config = closure.nonlocals["read_config"]
-            expected_digest = closure.nonlocals["expected_config_digest"]
+            capability = coroutine.__self__
+            class_state = vars(type(capability))
+            config = class_state["_config"]
+            expected_digest = class_state["_expected_digest"]
+            assert_deeply_immutable(config)
             captured_configs.append(config)
             with pytest.raises(AttributeError):
                 config.digest = "0" * 64
             assert type(expected_digest) is str
             assert expected_digest == config.digest
-            assert (
-                f"config-sha256={expected_digest}" in supervisor.capability_manifest[tool.name]
-            )
+            assert f"config-sha256={expected_digest}" in supervisor.capability_manifest[tool.name]
 
     assert captured_configs
     assert len({id(config) for config in captured_configs}) == 1
+
+
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+@pytest.mark.asyncio
+async def test_compiled_read_tools_use_sealed_stateless_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+) -> None:
+    """The actual BaseTool wrapper must expose no writable authority cells."""
+    from types import MappingProxyType
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.tools import BaseTool
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+
+    storage_path = (tmp_path / "sealed.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway: Any = (
+        DirectGateway(operations=OperationsService(storage_path=storage_path))
+        if transport == "direct"
+        else StdioMCPGateway()
+    )
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+
+    seen: set[str] = set()
+    for subgraph in module._compiled_subagent_graphs(supervisor.graph).values():
+        for tool in module._compiled_tools(subgraph).values():
+            if tool.name not in supervisor.exposed_read_tool_names or tool.name in seen:
+                continue
+            seen.add(tool.name)
+            assert isinstance(tool, BaseTool)
+            assert isinstance(tool.model_config, MappingProxyType)
+            assert isinstance(tool.__dict__, MappingProxyType)
+            with pytest.raises(TypeError):
+                tool.model_config["frozen"] = False
+            with pytest.raises(TypeError):
+                tool.__dict__["_capability"] = object()
+            with pytest.raises(TypeError, match="sealed"):
+                setattr(type(tool), "model_config", {})
+            with pytest.raises((AttributeError, TypeError, ValidationError)):
+                setattr(tool, "name", "create_case")
+            with pytest.raises((AttributeError, TypeError, ValidationError)):
+                delattr(tool, "name")
+            assert "coroutine" not in tool.__dict__
+            assert "func" not in tool.__dict__
+            capability = vars(type(tool))["_capability"]
+            capability_type = type(capability)
+            assert capability_type.__slots__ == ()
+            assert not hasattr(capability, "__dict__")
+            call_method = capability_type.__call__
+            assert call_method.__closure__ is None
+            assert call_method.__defaults__ in {None, (None,)}
+            assert call_method.__kwdefaults__ is None
+
+            class_state = vars(capability_type)
+            config = class_state["_config"]
+            expected_digest = class_state["_expected_digest"]
+            assert type(config) is module._ReadConfig
+            assert type(expected_digest) is str
+            assert expected_digest == config.digest
+            assert f"config-sha256={expected_digest}" in supervisor.capability_manifest[tool.name]
+
+            with pytest.raises(TypeError, match="sealed"):
+                setattr(capability, "_config", config)
+            with pytest.raises(TypeError, match="sealed"):
+                delattr(capability, "_config")
+            with pytest.raises(TypeError, match="sealed"):
+                setattr(capability_type, "_config", config)
+            with pytest.raises(TypeError, match="sealed"):
+                delattr(capability_type, "_expected_digest")
+
+            injected = False
+
+            async def injected_capability(*args: Any, **payload: Any) -> Any:
+                nonlocal injected
+                del args, payload
+                injected = True
+                return {"poisoned": True}
+
+            raw_state = object.__getattribute__(tool, "__dict__")
+            raw_state["_capability"] = injected_capability
+            raw_state["ainvoke"] = injected_capability
+            raw_state["_arun"] = injected_capability
+            raw_state["name"] = "create_case"
+            raw_state["args_schema"] = object()
+            assert tool.name != "create_case"
+            assert tool.args_schema is vars(type(tool))["_trusted_args_schema"]
+            if tool.name == "get_recall":
+                recall = await tool.ainvoke({"recall_number": "H-1230-2026"})
+                assert recall["recall_number"] == "H-1230-2026"
+                assert injected is False
+
+    assert seen == set(supervisor.exposed_read_tool_names)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+async def test_sealed_capability_rejects_paired_config_digest_replacement_before_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+) -> None:
+    """A self-consistent config/digest pair cannot be installed through supported mutation."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    storage_path = (tmp_path / "paired-replacement.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway: Any = (
+        DirectGateway(operations=OperationsService(storage_path=storage_path))
+        if transport == "direct"
+        else StdioMCPGateway()
+    )
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    coroutine = get_recall.coroutine
+    assert coroutine is not None
+    capability = coroutine.__self__
+    capability_type = type(capability)
+    config = vars(capability_type)["_config"]
+    replacement = config._replace(
+        data_dir=(tmp_path / "attacker-data").resolve(),
+        digest="",
+    )
+    replacement = replacement._replace(digest=module._read_config_digest(replacement))
+
+    constructed: list[str] = []
+
+    def reject_registry_construction(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        constructed.append("registry")
+        raise AssertionError("sealed mutation reached registry construction")
+
+    def reject_stdio_construction(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        constructed.append("stdio")
+        raise AssertionError("sealed mutation reached stdio construction")
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", reject_registry_construction)
+    monkeypatch.setattr(StdioMCPGateway, "__init__", reject_stdio_construction)
+
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_config", replacement)
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_expected_digest", replacement.digest)
+    with pytest.raises(TypeError, match="sealed"):
+        delattr(capability_type, "_config")
+    with pytest.raises(TypeError, match="sealed"):
+        delattr(capability_type, "_expected_digest")
+    assert constructed == []
 
 
 @pytest.mark.asyncio
@@ -1109,15 +1276,11 @@ async def test_compiled_read_rejects_tampered_immutable_config_digest(
         .nodes["tools"]
         .bound._tools_by_name["get_recall"]
     )
-    freevars = dict(
-        zip(
-            get_recall.coroutine.__code__.co_freevars,
-            get_recall.coroutine.__closure__,
-            strict=True,
-        )
-    )
-    config = freevars["read_config"].cell_contents
-    freevars["read_config"].cell_contents = config._replace(digest="0" * 64)
+    coroutine = get_recall.coroutine
+    assert coroutine is not None
+    assert coroutine.__func__.__closure__ is None
+    capability_type = type(coroutine.__self__)
+    config = vars(capability_type)["_config"]
     constructed: list[RecallRegistryService] = []
     original_init = RecallRegistryService.__init__
 
@@ -1127,8 +1290,10 @@ async def test_compiled_read_rejects_tampered_immutable_config_digest(
 
     monkeypatch.setattr(RecallRegistryService, "__init__", track_init)
 
-    with pytest.raises(ValueError, match="immutable read configuration digest"):
-        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_config", config._replace(digest="0" * 64))
+    with pytest.raises((AttributeError, TypeError, ValidationError)):
+        get_recall.coroutine = track_init
     assert constructed == []
 
 
@@ -1174,14 +1339,11 @@ async def test_compiled_read_rejects_self_consistent_post_build_config_replaceme
         .nodes["tools"]
         .bound._tools_by_name["get_recall"]
     )
-    freevars = dict(
-        zip(
-            get_recall.coroutine.__code__.co_freevars,
-            get_recall.coroutine.__closure__,
-            strict=True,
-        )
-    )
-    config = freevars["read_config"].cell_contents
+    coroutine = get_recall.coroutine
+    assert coroutine is not None
+    assert coroutine.__func__.__closure__ is None
+    capability_type = type(coroutine.__self__)
+    config = vars(capability_type)["_config"]
     if replacement == "source_mode":
         replacement_config = config._replace(source_mode="live", digest="")
     elif replacement == "data_dir":
@@ -1206,8 +1368,6 @@ async def test_compiled_read_rejects_self_consistent_post_build_config_replaceme
     replacement_config = replacement_config._replace(
         digest=module._read_config_digest(replacement_config)
     )
-    freevars["read_config"].cell_contents = replacement_config
-
     constructed: list[str] = []
 
     def reject_registry_construction(*args: Any, **kwargs: Any) -> None:
@@ -1223,8 +1383,10 @@ async def test_compiled_read_rejects_self_consistent_post_build_config_replaceme
     monkeypatch.setattr(RecallRegistryService, "__init__", reject_registry_construction)
     monkeypatch.setattr(StdioMCPGateway, "__init__", reject_stdio_construction)
 
-    with pytest.raises(ValueError, match="build-time read configuration digest"):
-        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_config", replacement_config)
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_expected_digest", replacement_config.digest)
     assert constructed == []
 
 
@@ -1252,20 +1414,17 @@ async def test_compiled_read_uses_separate_build_time_digest_authority(
         .nodes["tools"]
         .bound._tools_by_name["get_recall"]
     )
-    freevars = dict(
-        zip(
-            get_recall.coroutine.__code__.co_freevars,
-            get_recall.coroutine.__closure__,
-            strict=True,
-        )
-    )
-    config = freevars["read_config"].cell_contents
-    expected_digest = freevars["expected_config_digest"].cell_contents
+    coroutine = get_recall.coroutine
+    assert coroutine is not None
+    capability_type = type(coroutine.__self__)
+    class_state = vars(capability_type)
+    config = class_state["_config"]
+    expected_digest = class_state["_expected_digest"]
     assert type(expected_digest) is str
     assert expected_digest == config.digest
+    assert expected_digest is not config.digest
     assert f"config-sha256={expected_digest}" in supervisor.capability_manifest["get_recall"]
 
-    freevars["expected_config_digest"].cell_contents = "0" * 64
     constructed: list[RecallRegistryService] = []
     original_init = RecallRegistryService.__init__
 
@@ -1275,8 +1434,8 @@ async def test_compiled_read_uses_separate_build_time_digest_authority(
 
     monkeypatch.setattr(RecallRegistryService, "__init__", track_init)
 
-    with pytest.raises(ValueError, match="build-time read configuration digest"):
-        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    with pytest.raises(TypeError, match="sealed"):
+        setattr(capability_type, "_expected_digest", "0" * 64)
     assert constructed == []
 
 
@@ -1562,7 +1721,9 @@ async def test_reconstructed_stdio_is_isolated_from_later_process_cwd(
         .nodes["tools"]
         .bound._tools_by_name["get_recall"]
     )
-    read_config = inspect.getclosurevars(get_recall.coroutine).nonlocals["read_config"]
+    coroutine = get_recall.coroutine
+    assert coroutine is not None
+    read_config = vars(type(coroutine.__self__))["_config"]
     environment = dict(read_config.environment)
     assert read_config.python_executable == Path(sys.executable)
     assert read_config.cwd == PROJECT_ROOT
