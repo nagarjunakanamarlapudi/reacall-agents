@@ -819,6 +819,177 @@ async def test_deep_supervisor_routes_only_closed_direct_gateway_capabilities(
     assert recall["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
 
 
+def test_deep_supervisor_rejects_caller_http_transport_before_callback_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Catches exact service classes carrying an executable HTTP transport callback."""
+    import httpx
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import build_deep_supervisor
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    monkeypatch.setenv("RECALLOPS_SOURCE_MODE", "live")
+    callback_executed = False
+
+    def injected_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal callback_executed
+        callback_executed = True
+        return httpx.Response(500, request=request)
+
+    gateway = DirectGateway(
+        registry=RecallRegistryService(
+            http_transport=httpx.MockTransport(injected_transport),
+        ),
+        operations=OperationsService(storage_path=tmp_path / "transport.sqlite3"),
+    )
+    with pytest.raises(ValueError, match="caller-supplied HTTP transport"):
+        build_deep_supervisor(
+            model=GenericFakeChatModel(messages=iter(["not invoked"])),
+            read_gateway=gateway,
+        )
+    assert callback_executed is False
+
+
+@pytest.mark.asyncio
+async def test_compiled_direct_capabilities_are_detached_from_caller_mutation(
+    tmp_path: Any,
+) -> None:
+    """Catches trusted wrappers retaining the caller-owned gateway after compilation."""
+    import httpx
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    callback_executed = False
+
+    def injected_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal callback_executed
+        callback_executed = True
+        return httpx.Response(500, request=request)
+
+    caller_gateway = DirectGateway(
+        operations=OperationsService(storage_path=tmp_path / "detached.sqlite3")
+    )
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=caller_gateway,
+    )
+    caller_gateway.registry.source_mode = "live"
+    caller_gateway.registry.http_transport = httpx.MockTransport(injected_transport)
+    get_recall = module._compiled_subagent_graphs(supervisor.graph)[
+        "recall-intelligence"
+    ].nodes["tools"].bound._tools_by_name["get_recall"]
+
+    recall = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+
+    assert callback_executed is False
+    assert recall["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
+    assert all(
+        identity.startswith("direct:reconstructed:")
+        for identity in supervisor.capability_manifest.values()
+    )
+
+
+@pytest.mark.parametrize("hook_name", ["failure_injector", "before_cas_hook"])
+def test_deep_supervisor_rejects_caller_operation_hooks(
+    tmp_path: Any,
+    hook_name: str,
+) -> None:
+    """Catches executable hooks hidden in the exact OperationsService dependency."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import build_deep_supervisor
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    hook_executed = False
+
+    def injected_hook(stage: str) -> None:
+        nonlocal hook_executed
+        del stage
+        hook_executed = True
+
+    gateway = DirectGateway(
+        operations=OperationsService(
+            storage_path=tmp_path / f"{hook_name}.sqlite3",
+            **{hook_name: injected_hook},
+        )
+    )
+    with pytest.raises(ValueError, match="caller-supplied operation hook"):
+        build_deep_supervisor(
+            model=GenericFakeChatModel(messages=iter(["not invoked"])),
+            read_gateway=gateway,
+        )
+    assert hook_executed is False
+
+
+def test_deep_supervisor_rejects_executable_dataset_implementation(tmp_path: Any) -> None:
+    """Catches a dict-compatible dataset whose iteration executes caller code."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import build_deep_supervisor
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.traceability import TraceabilityService
+
+    dataset_iterated = False
+
+    class ExecutableDataset(dict[str, Any]):
+        def __iter__(self):
+            nonlocal dataset_iterated
+            dataset_iterated = True
+            return super().__iter__()
+
+    gateway = DirectGateway(
+        traceability=TraceabilityService(ExecutableDataset(load_demo_dataset())),
+        operations=OperationsService(storage_path=tmp_path / "dataset.sqlite3"),
+    )
+    with pytest.raises(ValueError, match="plain validated dataset"):
+        build_deep_supervisor(
+            model=GenericFakeChatModel(messages=iter(["not invoked"])),
+            read_gateway=gateway,
+        )
+    assert dataset_iterated is False
+
+
+@pytest.mark.asyncio
+async def test_fixed_stdio_gateway_is_reconstructed_before_compilation() -> None:
+    """Catches compiled stdio tools retaining mutable caller connection dictionaries."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import StdioMCPGateway
+
+    caller_gateway = StdioMCPGateway()
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=caller_gateway,
+    )
+    caller_gateway.client.connections["registry"] = {
+        "transport": "stdio",
+        "command": "/definitely/not/a/command",
+        "args": [],
+    }
+    assert all(
+        identity.startswith("stdio:reconstructed:")
+        for identity in supervisor.capability_manifest.values()
+    )
+    get_recall = module._compiled_subagent_graphs(supervisor.graph)[
+        "recall-intelligence"
+    ].nodes["tools"].bound._tools_by_name["get_recall"]
+
+    recall = await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+
+    assert recall["recall_number"] == "H-1230-2026"
+    assert recall["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
+
+
 def test_deep_supervisor_rejects_spoof_gateway_and_nonstdio_server_identity() -> None:
     """Catches trusted method names backed by an unknown adapter or unsafe transport/process."""
     import sys

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import sys
 from dataclasses import dataclass
 from typing import Annotated, Any, NotRequired
@@ -38,6 +39,8 @@ from recallops.agents.specialists import (
     RecallIntelligence,
     TraceabilityAssessment,
 )
+from recallops.config import Settings, get_settings
+from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.models import RecallPredicate
 from recallops.services.operations import OperationsService
@@ -164,6 +167,14 @@ class DeepSupervisor:
     capability_manifest: dict[str, str]
 
 
+@dataclass(frozen=True)
+class _ClosedDirectReads:
+    """Reconstructed services with no reference to caller-owned executable state."""
+
+    registry: RecallRegistryService
+    traceability: TraceabilityService
+
+
 def specialist_catalog() -> list[SpecialistDefinition]:
     """Return the fixed roles and their least-privilege read-tool allowlists."""
     return [
@@ -238,25 +249,110 @@ def _compiled_subagent_graphs(graph: Any) -> dict[str, Any]:
     return graphs
 
 
-def _validate_read_gateway(
+def _is_plain_json(value: Any) -> bool:
+    if value is None or type(value) in {str, bool, int}:
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) is list:
+        return all(_is_plain_json(item) for item in value)
+    if type(value) is dict:
+        return all(
+            type(key) is str and _is_plain_json(item) for key, item in value.items()
+        )
+    return False
+
+
+def _validate_traceability_service(
+    service: TraceabilityService,
+    *,
+    settings: Settings,
+    trusted_dataset: dict[str, Any],
+) -> None:
+    if type(service) is not TraceabilityService:
+        raise ValueError("trusted RecallOps read gateway requires exact service identities")
+    if set(vars(service)) != {"data_dir", "source_mode", "dataset"}:
+        raise ValueError("trusted RecallOps traceability service has shadowed capabilities")
+    if service.data_dir != settings.data_dir or service.source_mode != settings.source_mode:
+        raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
+    if type(service.dataset) is not dict or not _is_plain_json(service.dataset):
+        raise ValueError("trusted RecallOps read gateway requires a plain validated dataset")
+    if service.dataset != trusted_dataset:
+        raise ValueError("trusted RecallOps read gateway requires the validated dataset snapshot")
+
+
+def _close_read_gateway(
     gateway: DirectGateway | StdioMCPGateway,
-) -> tuple[str, type[DirectGateway] | type[StdioMCPGateway]]:
+) -> tuple[
+    str,
+    _ClosedDirectReads | StdioMCPGateway,
+    type[DirectGateway] | type[StdioMCPGateway],
+]:
     if type(gateway) is DirectGateway:
+        if set(vars(gateway)) != {"registry", "traceability", "operations"}:
+            raise ValueError("trusted RecallOps direct gateway has shadowed capabilities")
         if (
             type(gateway.registry) is not RecallRegistryService
             or type(gateway.traceability) is not TraceabilityService
             or type(gateway.operations) is not OperationsService
         ):
             raise ValueError("trusted RecallOps read gateway requires exact service identities")
-        shadowable = {
-            *RecallRegistryService.__dict__,
-            *TraceabilityService.__dict__,
-        }
-        if shadowable & set(vars(gateway.registry)) or shadowable & set(
-            vars(gateway.traceability)
+        registry = gateway.registry
+        if registry.http_transport is not None:
+            raise ValueError("trusted RecallOps read gateway forbids caller-supplied HTTP transport")
+        if set(vars(registry)) != {
+            "data_dir",
+            "source_mode",
+            "http_transport",
+            "timeout_seconds",
+        }:
+            raise ValueError("trusted RecallOps registry service has shadowed capabilities")
+        operations = gateway.operations
+        if operations._failure_injector is not None or operations._before_cas_hook is not None:
+            raise ValueError("trusted RecallOps read gateway forbids caller-supplied operation hook")
+        if set(vars(operations)) != {
+            "storage_path",
+            "source_mode",
+            "_failure_injector",
+            "_before_cas_hook",
+            "traceability",
+        }:
+            raise ValueError("trusted RecallOps operations service has shadowed capabilities")
+
+        settings = get_settings()
+        if (
+            registry.data_dir != settings.data_dir
+            or registry.source_mode != settings.source_mode
+            or type(registry.timeout_seconds) not in {int, float}
+            or registry.timeout_seconds != 2.0
+            or operations.source_mode != settings.source_mode
         ):
-            raise ValueError("trusted RecallOps read gateway has shadowed service capabilities")
-        return "direct", DirectGateway
+            raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
+        # These loaders validate the pinned public snapshot and synthetic manifest
+        # before any caller-owned service is retained by a compiled capability.
+        load_recall_snapshot(data_dir=settings.data_dir)
+        trusted_dataset = load_demo_dataset(settings.data_dir)
+        _validate_traceability_service(
+            gateway.traceability,
+            settings=settings,
+            trusted_dataset=trusted_dataset,
+        )
+        _validate_traceability_service(
+            operations.traceability,
+            settings=settings,
+            trusted_dataset=trusted_dataset,
+        )
+        closed = _ClosedDirectReads(
+            registry=RecallRegistryService(
+                data_dir=settings.data_dir,
+                source_mode=settings.source_mode,
+            ),
+            traceability=TraceabilityService(
+                data_dir=settings.data_dir,
+                source_mode=settings.source_mode,
+            ),
+        )
+        return "direct", closed, DirectGateway
     if type(gateway) is StdioMCPGateway:
         client = gateway.client
         from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -278,7 +374,8 @@ def _validate_read_gateway(
                 raise ValueError(f"trusted RecallOps stdio server identity mismatch: {server}")
         if set(vars(gateway)) != {"client"}:
             raise ValueError("trusted RecallOps stdio gateway has shadowed capabilities")
-        return "stdio", StdioMCPGateway
+        closed = StdioMCPGateway()
+        return "stdio", closed, StdioMCPGateway
     raise ValueError("read_gateway must be a trusted RecallOps read gateway")
 
 
@@ -287,47 +384,47 @@ def _trusted_read_tools(
 ) -> tuple[dict[str, BaseTool], dict[str, str]]:
     if gateway is None:
         return {}, {}
-    transport, gateway_type = _validate_read_gateway(gateway)
+    transport, closed_gateway, gateway_type = _close_read_gateway(gateway)
 
     async def search_recalls(query: str) -> Any:
         """Search official recall registry evidence."""
-        return await gateway_type.search_recalls(gateway, query)
+        return await gateway_type.search_recalls(closed_gateway, query)
 
     async def get_recall(recall_number: str) -> Any:
         """Get one official recall record by recall number."""
-        return await gateway_type.get_recall(gateway, recall_number)
+        return await gateway_type.get_recall(closed_gateway, recall_number)
 
     async def get_product_metadata(upc: str) -> Any:
         """Get official product metadata by UPC."""
-        return await gateway_type.get_product_metadata(gateway, upc)
+        return await gateway_type.get_product_metadata(closed_gateway, upc)
 
     async def find_candidate_products(predicate: RecallPredicate) -> Any:
         """Find synthetic retailer product candidates for a recall predicate."""
-        return await gateway_type.find_candidate_products(gateway, predicate)
+        return await gateway_type.find_candidate_products(closed_gateway, predicate)
 
     async def match_lots(predicate: RecallPredicate) -> Any:
         """Match synthetic retailer lots to a recall predicate."""
-        return await gateway_type.match_lots(gateway, predicate)
+        return await gateway_type.match_lots(closed_gateway, predicate)
 
     async def trace_forward(lot_id: str) -> Any:
         """Trace a synthetic lot forward through the facility network."""
-        return await gateway_type.trace_forward(gateway, lot_id)
+        return await gateway_type.trace_forward(closed_gateway, lot_id)
 
     async def trace_backward(lot_id: str) -> Any:
         """Trace a synthetic lot backward to its receiving root."""
-        return await gateway_type.trace_backward(gateway, lot_id)
+        return await gateway_type.trace_backward(closed_gateway, lot_id)
 
     async def get_inventory(lot_id: str | None = None) -> Any:
         """Read synthetic retailer inventory positions."""
-        return await gateway_type.get_inventory(gateway, lot_id)
+        return await gateway_type.get_inventory(closed_gateway, lot_id)
 
     async def get_sales(lot_id: str) -> Any:
         """Read synthetic retailer sale events for a lot."""
-        return await gateway_type.get_sales(gateway, lot_id)
+        return await gateway_type.get_sales(closed_gateway, lot_id)
 
     async def reconcile_units(lot_id: str) -> Any:
         """Read evidence-backed synthetic unit reconciliation for a lot."""
-        return await gateway_type.reconcile_units(gateway, lot_id)
+        return await gateway_type.reconcile_units(closed_gateway, lot_id)
 
     functions = {
         function.__name__: function
@@ -355,14 +452,14 @@ def _trusted_read_tools(
     if transport == "direct":
         identities = {
             name: (
-                f"direct:{'RecallRegistryService' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'TraceabilityService'}.{name}"
+                f"direct:reconstructed:{'RecallRegistryService' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'TraceabilityService'}.{name}"
             )
             for name in tools
         }
     else:
         identities = {
             name: (
-                f"stdio:{'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability'}:stdio:"
+                f"stdio:reconstructed:{'registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability'}:stdio:"
                 f"{_STDIO_SERVERS['registry' if name in {'search_recalls', 'get_recall', 'get_product_metadata'} else 'traceability']}:{name}"
             )
             for name in tools
