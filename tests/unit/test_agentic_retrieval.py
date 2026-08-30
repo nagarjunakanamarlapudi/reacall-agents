@@ -71,6 +71,67 @@ def test_agentic_retriever_rejects_public_structural_gateway_injection(
         AgenticRetriever(LocalReadGateway(index))
 
 
+@pytest.mark.asyncio
+async def test_agentic_retriever_seals_gateway_and_rejects_object_level_proxy_before_call() -> None:
+    """A post-construction dependency replacement cannot install a caller hook."""
+
+    class CallerProxy:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def call(self, *args: object, **kwargs: object) -> dict:
+            del args, kwargs
+            self.calls += 1
+            raise AssertionError("caller proxy must never execute")
+
+    proxy = CallerProxy()
+    retriever = AgenticRetriever(ClosedRetrievalGateway.direct())
+
+    with pytest.raises(AttributeError, match="sealed"):
+        retriever.gateway = proxy
+    with pytest.raises(AttributeError, match="sealed"):
+        retriever._dependencies = proxy
+    dependencies = retriever._dependencies
+    assert not hasattr(retriever, "__dict__")
+    with pytest.raises(AttributeError):
+        dependencies.gateway = proxy
+    object.__setattr__(
+        retriever,
+        "_dependencies",
+        dependencies._replace(gateway=proxy),
+    )
+
+    with pytest.raises(TypeError, match="exact ClosedRetrievalGateway"):
+        await retriever.retrieve("How does FDA classify a recall?")
+    assert proxy.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_agentic_retriever_revalidates_original_manifest_before_each_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway = ClosedRetrievalGateway.direct()
+    retriever = AgenticRetriever(gateway)
+    original = gateway._config
+    replacement = original._replace(source_mode="live", digest="")
+    replacement = replacement._replace(digest=agentic_module._retrieval_config_digest(replacement))
+    object.__setattr__(gateway, "_config", replacement)
+    object.__setattr__(gateway, "_expected_digest", replacement.digest)
+    search_calls = 0
+
+    def poisoned_search(self: HybridIndex, request: HybridSearchRequest) -> HybridSearchResponse:
+        nonlocal search_calls
+        del self, request
+        search_calls += 1
+        raise AssertionError("manifest identity must be checked before retrieval")
+
+    monkeypatch.setattr(HybridIndex, "search", poisoned_search)
+
+    with pytest.raises(ValueError, match="capability identity changed"):
+        await retriever.retrieve("How does FDA classify a recall?")
+    assert search_calls == 0
+
+
 def test_closed_direct_gateway_has_only_two_manifest_bound_read_connections() -> None:
     with pytest.raises(TypeError, match="factory-built"):
         ClosedRetrievalGateway(())
@@ -360,6 +421,69 @@ async def test_normalized_domain_paraphrase_families_are_covered(
     assert result.intent == expected_intent
     assert result.coverage_satisfied is True, result.evidence_gaps
     assert expected_citation in {item.citation_id for item in result.citations}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "expected_citation"),
+    [
+        ("What happens when FDA terminates a recall?", "FDA-RECALL-EFFECTIVENESS"),
+        ("What ends an FDA recall?", "FDA-RECALL-EFFECTIVENESS"),
+        (
+            "How does the regulator decide that a recall is over?",
+            "FDA-RECALL-EFFECTIVENESS",
+        ),
+        (
+            "How are traceable food batches connected to shipping and receiving records?",
+            "FDA-TRACEABILITY-CONCEPTS",
+        ),
+        (
+            "How are traceable batches linked between dispatch and receipt?",
+            "FDA-TRACEABILITY-CONCEPTS",
+        ),
+        (
+            "Which receipt records connect a dispatched batch across facilities?",
+            "FDA-TRACEABILITY-CONCEPTS",
+        ),
+        (
+            "What corrective evidence lets the regulator close a recall?",
+            "FDA-RECALL-EFFECTIVENESS",
+        ),
+        (
+            "How is a lot traceable from shipment to receipt?",
+            "FDA-TRACEABILITY-CONCEPTS",
+        ),
+    ],
+)
+async def test_reviewer_domain_relationship_paraphrases_are_covered(
+    question: str,
+    expected_citation: str,
+) -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+
+    assert result.coverage_satisfied is True, result.evidence_gaps
+    assert expected_citation in {item.citation_id for item in result.citations}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How are traceable quantum batches linked between dispatch and receipt?",
+        "What happens when FDA terminates a blockchain recall?",
+        "How are submarine batches connected to receiving records?",
+    ],
+)
+async def test_valid_domain_relationship_language_cannot_hide_unsupported_concepts(
+    question: str,
+) -> None:
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+
+    assert result.coverage_satisfied is False
+    assert any(
+        token in " ".join(result.evidence_gaps).casefold()
+        for token in ("quantum", "blockchain", "submarine")
+    )
 
 
 @pytest.mark.asyncio

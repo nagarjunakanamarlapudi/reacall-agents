@@ -51,7 +51,7 @@ IDENTIFIER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 CONCEPT_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-QUERY_GLUE_WORDS = frozenset(
+QUERY_RELATION_WORDS = frozenset(
     {
         "a",
         "after",
@@ -64,6 +64,7 @@ QUERY_GLUE_WORDS = frozenset(
         "business",
         "can",
         "could",
+        "decide",
         "determines",
         "did",
         "do",
@@ -75,6 +76,7 @@ QUERY_GLUE_WORDS = frozenset(
         "from",
         "have",
         "how",
+        "happens",
         "in",
         "inspect",
         "is",
@@ -100,6 +102,7 @@ QUERY_GLUE_WORDS = frozenset(
         "this",
         "to",
         "through",
+        "that",
         "under",
         "we",
         "what",
@@ -109,6 +112,8 @@ QUERY_GLUE_WORDS = frozenset(
         "who",
         "why",
         "with",
+        "between",
+        "food",
     }
 )
 
@@ -130,6 +135,8 @@ CONCEPT_ALIASES = {
     "closure": "termination",
     "communication": "effectiveness",
     "communications": "effectiveness",
+    "connect": "traceability",
+    "connected": "traceability",
     "consignee": "effectiveness",
     "consignees": "effectiveness",
     "correct": "remediation",
@@ -140,6 +147,8 @@ CONCEPT_ALIASES = {
     "cte": "cte",
     "ctes": "cte",
     "danger": "hazard",
+    "dispatch": "shipping",
+    "dispatched": "shipping",
     "disposition": "remediation",
     "disposal": "remediation",
     "dispose": "remediation",
@@ -147,6 +156,7 @@ CONCEPT_ALIASES = {
     "downstream": "effectiveness",
     "end": "termination",
     "ended": "termination",
+    "ends": "termination",
     "event": "cte",
     "events": "cte",
     "facility": "facility",
@@ -170,6 +180,7 @@ CONCEPT_ALIASES = {
     "kdes": "kde",
     "location": "facility",
     "locations": "facility",
+    "linked": "traceability",
     "lot": "lot",
     "lots": "lot",
     "move": "traceability",
@@ -178,6 +189,7 @@ CONCEPT_ALIASES = {
     "movements": "traceability",
     "notice": "effectiveness",
     "notices": "effectiveness",
+    "over": "termination",
     "recipient": "effectiveness",
     "recipients": "effectiveness",
     "recall": "recall",
@@ -187,6 +199,7 @@ CONCEPT_ALIASES = {
     "received": "receiving",
     "receiving": "receiving",
     "receipt": "receiving",
+    "records": "cte",
     "delivered": "receiving",
     "delivery": "receiving",
     "reconcile": "reconciliation",
@@ -216,6 +229,7 @@ CONCEPT_ALIASES = {
     "terminates": "termination",
     "termination": "termination",
     "trace": "traceability",
+    "traceable": "traceability",
     "traceability": "traceability",
     "traced": "traceability",
     "tracking": "traceability",
@@ -272,6 +286,17 @@ OPERATIONAL_ROUTE_CONCEPTS = frozenset(
 )
 OFFICIAL_SUPPORT_CONCEPTS = REGULATORY_ROUTE_CONCEPTS - {"cte", "kde"}
 SYNTHETIC_SUPPORT_CONCEPTS = OPERATIONAL_ROUTE_CONCEPTS - {"receiving", "shipping"}
+OUT_OF_DOMAIN_CONCEPTS = frozenset(
+    {
+        "astrology",
+        "blockchain",
+        "cryptocurrency",
+        "propulsion",
+        "quantum",
+        "submarine",
+        "teleportation",
+    }
+)
 
 
 def _domain_concepts(text: str) -> tuple[set[str], set[str]]:
@@ -714,8 +739,36 @@ class RetrievalInterruption(BaseModel):
     state: RetrievalLoopState
 
 
+class _RetrieverDependencies(NamedTuple):
+    """Frozen dependency bundle retained by the sealed retrieval engine."""
+
+    gateway: ClosedRetrievalGateway
+    budgets: RetrievalBudgets
+    top_k_per_source: int
+    tool_manifest: tuple[RetrievalToolCapability, ...]
+    manifest_digest: str
+
+
+def _capability_manifest_digest(
+    manifest: tuple[RetrievalToolCapability, ...],
+) -> str:
+    if type(manifest) is not tuple or any(
+        type(item) is not RetrievalToolCapability for item in manifest
+    ):
+        raise TypeError("retrieval capability manifest must contain exact immutable entries")
+    payload = json.dumps(
+        [item.model_dump(mode="json") for item in manifest],
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
 class AgenticRetriever:
     """Deterministic evidence agent; retrieved text is data and never executable control."""
+
+    __slots__ = ("_dependencies", "_expected_manifest_digest")
 
     def __init__(
         self,
@@ -732,15 +785,62 @@ class AgenticRetriever:
             raise ValueError("top_k_per_source must be an integer from 1 through 20")
         if type(gateway) is not ClosedRetrievalGateway:
             raise TypeError("gateway must be an exact ClosedRetrievalGateway")
-        self.gateway = gateway
-        self.budgets = budgets or RetrievalBudgets()
-        self.top_k_per_source = top_k_per_source
-        self.tool_manifest = gateway.tool_manifest
+        manifest = gateway.tool_manifest
+        manifest_digest = _capability_manifest_digest(manifest)
+        dependencies = _RetrieverDependencies(
+            gateway=gateway,
+            budgets=budgets or RetrievalBudgets(),
+            top_k_per_source=top_k_per_source,
+            tool_manifest=manifest,
+            manifest_digest=manifest_digest,
+        )
+        object.__setattr__(self, "_dependencies", dependencies)
+        object.__setattr__(self, "_expected_manifest_digest", manifest_digest)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        del name, value
+        raise AttributeError("AgenticRetriever is sealed after construction")
+
+    def __delattr__(self, name: str) -> None:
+        del name
+        raise AttributeError("AgenticRetriever is sealed after construction")
+
+    @property
+    def budgets(self) -> RetrievalBudgets:
+        return self._dependencies.budgets
+
+    @property
+    def top_k_per_source(self) -> int:
+        return self._dependencies.top_k_per_source
+
+    @property
+    def tool_manifest(self) -> tuple[RetrievalToolCapability, ...]:
+        return self._dependencies.tool_manifest
+
+    def _validated_gateway(self) -> ClosedRetrievalGateway:
+        dependencies = self._dependencies
+        expected_digest = self._expected_manifest_digest
+        if type(dependencies) is not _RetrieverDependencies:
+            raise TypeError("retriever dependencies must retain their exact immutable identity")
+        if type(dependencies.gateway) is not ClosedRetrievalGateway:
+            raise TypeError("retriever dependency must be an exact ClosedRetrievalGateway")
+        current_manifest = dependencies.gateway.tool_manifest
+        current_digest = _capability_manifest_digest(current_manifest)
+        if (
+            type(expected_digest) is not str
+            or not hmac.compare_digest(dependencies.manifest_digest, expected_digest)
+            or not hmac.compare_digest(current_digest, expected_digest)
+            or current_manifest != dependencies.tool_manifest
+        ):
+            raise ValueError("retrieval gateway capability identity changed after construction")
+        return dependencies.gateway
 
     @staticmethod
     def _plan(question: str) -> tuple[RetrievalIntent, tuple[SourceRoute, ...]]:
         concepts, _ = _domain_concepts(question)
-        regulatory = bool(concepts & REGULATORY_ROUTE_CONCEPTS)
+        regulatory = bool(concepts & REGULATORY_ROUTE_CONCEPTS) or (
+            "traceability" in concepts and bool(concepts & {"receiving", "shipping"})
+        )
         operational = bool(IDENTIFIER_PATTERN.search(question)) or bool(
             concepts & OPERATIONAL_ROUTE_CONCEPTS
         )
@@ -811,7 +911,6 @@ class AgenticRetriever:
                 gaps.append(
                     f"Requested identifier {identifier} is not covered by retrieved evidence."
                 )
-        searchable_tokens = set(CONCEPT_TOKEN_PATTERN.findall(searchable))
         searchable_concepts, _ = _domain_concepts(searchable)
         official_concepts, _ = _domain_concepts(
             " ".join(
@@ -842,10 +941,11 @@ class AgenticRetriever:
                     f"Requested concept {CONCEPT_LABELS[concept]!r} is not covered by "
                     "retrieved evidence."
                 )
-        for token in sorted(question_tokens - consumed - QUERY_GLUE_WORDS):
-            if len(token) < 4 or token in searchable_tokens:
-                continue
-            gaps.append(f"Requested concept {token!r} is not covered by retrieved evidence.")
+        unclassified_tokens = question_tokens - consumed - QUERY_RELATION_WORDS
+        for token in sorted(unclassified_tokens & OUT_OF_DOMAIN_CONCEPTS):
+            gaps.append(
+                f"Requested out-of-domain concept {token!r} is not covered by retrieved evidence."
+            )
         for item in evidence:
             claims = item.document.metadata.get("claims", {})
             if not isinstance(claims, Mapping):
@@ -888,7 +988,8 @@ class AgenticRetriever:
             expected_filter = "synthetic"
             expected_intent = "operational"
             expected_origins = {"SYNTHETIC_RETAILER_DIGITAL_TWIN"}
-        raw = await self.gateway.call(
+        gateway = self._validated_gateway()
+        raw = await gateway.call(
             connection_id,
             query,
             top_k=self.top_k_per_source,
