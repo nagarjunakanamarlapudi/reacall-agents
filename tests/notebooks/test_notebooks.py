@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import tempfile
 from pathlib import Path
 
 import nbformat
@@ -29,8 +31,9 @@ TOPIC_TERMS = {
     EXPECTED[5]: ("investigation", "evaluation", "reconciliation", "assert"),
 }
 FORBIDDEN_SOURCE = re.compile(
-    r"(?:%|!)pip\s+install|conda\s+install|\brecallops\b|\brequests\b|"
-    r"\burllib\b|\bsocket\b|https?://|Path\s*\(|open\s*\(",
+    r"(?:%|!)pip\s+install|conda\s+install|\brecallops\b|\bhttpx\b|"
+    r"\baiohttp\b|\bwebsockets\b|\brequests\b|\burllib\b|\bsocket\b|"
+    r"https?://|Path\s*\(|open\s*\(",
     re.IGNORECASE,
 )
 
@@ -42,6 +45,27 @@ def _sources(notebook: dict) -> str:
 def test_exactly_six_numbered_notebooks_exist() -> None:
     actual = sorted(path.name for path in NOTEBOOKS.glob("*.ipynb"))
     assert actual == EXPECTED
+
+
+def test_builder_is_byte_deterministic_in_separate_directories() -> None:
+    sys.path.insert(0, str(ROOT))
+    from scripts import build_notebooks
+
+    with tempfile.TemporaryDirectory() as temporary:
+        first = Path(temporary) / "first"
+        second = Path(temporary) / "second"
+        build_notebooks.build_notebooks(first)
+        build_notebooks.build_notebooks(second)
+        for name in EXPECTED:
+            assert (first / name).read_bytes() == (second / name).read_bytes(), name
+
+
+def test_hitl_notebook_uses_sqlite_and_rebuilds_the_checkpointer() -> None:
+    source = _sources(nbformat.read(str(NOTEBOOKS / EXPECTED[4]), as_version=4))
+    assert "SqliteSaver" in source
+    assert "MemorySaver" not in source
+    assert "rebuild" in source.lower()
+    assert "same thread_id" in source.lower()
 
 
 def test_each_notebook_is_self_contained_and_teaches_its_topic() -> None:

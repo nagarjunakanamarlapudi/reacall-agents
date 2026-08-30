@@ -39,6 +39,8 @@ def make_notebook(title: str, cells: list[dict]) -> dict:
             "language_info": {"name": "python", "version": "3"},
         },
     )
+    for index, cell in enumerate(notebook.cells, start=1):
+        cell["id"] = f"cell-{index:02d}"
     return notebook
 
 
@@ -67,7 +69,7 @@ def notebook_02() -> dict:
         "2. MCP tools, resources, discovery, and schema boundaries",
         [
             md(
-                f"""{MARKER}\n\nMCP separates an agent from an integration's implementation. We use the real MCP SDK `Tool` and `Resource` schema objects, plus a tiny in-process client that models discovery and calls without a server subprocess. The boundary accepts JSON-shaped arguments and returns JSON-shaped results."""
+                f"""{MARKER}\n\nMCP separates an agent from an integration's implementation. We use the real MCP SDK `Tool` and `Resource` schema objects, plus a tiny in-process client that models discovery and calls without a server subprocess. The boundary accepts JSON-shaped arguments and returns JSON-shaped results. Protocol transport and session negotiation are intentionally not exercised in this lesson; the schema boundary is the focus."""
             ),
             code(
                 """from mcp.types import Resource, Tool\n\n\ntools = [\n    Tool(\n        name=\"search_recalls\",\n        description=\"Find recalls by recall number\",\n        inputSchema={\"type\": \"object\", \"properties\": {\"recall_number\": {\"type\": \"string\"}}, \"required\": [\"recall_number\"]},\n    )\n]\nresources = [\n    Resource(uri=\"recall://policy/traceability\", name=\"traceability policy\", mimeType=\"text/plain\")\n]\n\nclass InProcessMCPClient:\n    def list_tools(self) -> list[Tool]:\n        return tools\n\n    def list_resources(self) -> list[Resource]:\n        return resources\n\n    def call_tool(self, name: str, arguments: dict) -> dict:\n        if name != \"search_recalls\":\n            raise KeyError(name)\n        schema = tools[0].inputSchema\n        required = schema[\"required\"]\n        if any(key not in arguments for key in required):\n            raise ValueError(\"schema boundary: recall_number is required\")\n        return {\"recall_number\": arguments[\"recall_number\"], \"hazard\": \"Salmonella\", \"origin\": \"PUBLIC_SNAPSHOT\"}\n\n    def read_resource(self, uri: str) -> str:\n        if uri != str(resources[0].uri):\n            raise KeyError(uri)\n        return \"Keep source citations with every observation.\"\n\nclient = InProcessMCPClient()\nprint(\"discovered tools ->\", [(tool.name, tool.inputSchema) for tool in client.list_tools()])\nprint(\"discovered resources ->\", [(str(resource.uri), resource.name) for resource in client.list_resources()])\nrecall = client.call_tool(\"search_recalls\", {\"recall_number\": \"H-1230-2026\"})\nprint(\"tool result ->\", recall)\nprint(\"resource result ->\", client.read_resource(\"recall://policy/traceability\"))\nassert recall[\"hazard\"] == \"Salmonella\"\ntry:\n    client.call_tool(\"search_recalls\", {})\nexcept ValueError as error:\n    print(\"rejected invalid arguments ->\", error)\nelse:\n    raise AssertionError(\"invalid arguments crossed the schema boundary\")\nprint(\"ASSERTION PASSED: discovery, resource reading, and schema validation are visible\")\n"""
@@ -123,19 +125,19 @@ print("ASSERTION PASSED: {MARKER}")'''
     )
 
 
-def notebook_05() -> dict:
+def notebook_05_sqlite() -> dict:
     return make_notebook(
         "5. Durable HITL interrupt, resume, and idempotent writes",
         [
             md(
-                f"""{MARKER}\n\nA durable human-in-the-loop (HITL) gate pauses before a simulated write. LangGraph's `interrupt` persists the pending decision in a checkpointer; `Command(resume=...)` continues the same `thread_id`. The write uses an idempotency key, so replay returns one logical receipt."""
+                f"""{MARKER}\n\nA durable human-in-the-loop (HITL) gate pauses before a simulated write. This lesson uses the real LangGraph `SqliteSaver` checkpointer on a temporary on-disk SQLite database. We close the first graph/checkpointer, rebuild a new graph/checkpointer over that same database, and resume with the same `thread_id`. The write uses an idempotency key, so replay returns one logical receipt."""
             ),
             code(
-                """from typing import TypedDict\n\nfrom langgraph.checkpoint.memory import MemorySaver\nfrom langgraph.graph import END, START, StateGraph\nfrom langgraph.types import Command, interrupt\n\n\nclass HitlState(TypedDict, total=False):\n    proposal: str\n    idempotency_key: str\n    decision: dict\n    receipt: dict\n    status: str\n\n\nreceipts: dict[str, dict] = {}\n\ndef write_once(key: str, action: str) -> dict:\n    if key not in receipts:\n        receipts[key] = {\"receipt_id\": \"R-001\", \"action\": action, \"key\": key}\n    return receipts[key]\n\n\ndef review_node(state: HitlState) -> dict:\n    decision = interrupt({\"proposal\": state[\"proposal\"], \"risk\": \"inventory hold\"})\n    return {\"decision\": decision, \"status\": \"approved\" if decision.get(\"approved\") else \"rejected\"}\n\n\ndef apply_node(state: HitlState) -> dict:\n    if state[\"status\"] != \"approved\":\n        return {\"receipt\": {\"status\": \"not written\"}}\n    receipt = write_once(state[\"idempotency_key\"], state[\"proposal\"])\n    return {\"receipt\": receipt}\n\n\nbuilder = StateGraph(HitlState)\nbuilder.add_node(\"review\", review_node)\nbuilder.add_node(\"apply\", apply_node)\nbuilder.add_edge(START, \"review\")\nbuilder.add_edge(\"review\", \"apply\")\nbuilder.add_edge(\"apply\", END)\napp = builder.compile(checkpointer=MemorySaver())\nconfig = {\"configurable\": {\"thread_id\": \"case-H-1230-2026\"}}\npaused = app.invoke({\"proposal\": \"hold SKU-1 at DC-West\", \"idempotency_key\": \"hold-case-1\"}, config)\nprint(\"paused interrupt ->\", paused[\"__interrupt__\"][0].value)\nassert paused[\"__interrupt__\"][0].value[\"risk\"] == \"inventory hold\"\nresumed = app.invoke(Command(resume={\"approved\": True, \"actor\": \"food-safety-manager\"}), config)\nprint(\"resumed state ->\", resumed)\nfirst = resumed[\"receipt\"]\nsecond = write_once(\"hold-case-1\", \"hold SKU-1 at DC-West\")\nprint(\"replayed receipt ->\", second)\nassert resumed[\"status\"] == \"approved\"\nassert first == second and first[\"receipt_id\"] == \"R-001\"\nprint(\"ASSERTION PASSED: interrupt paused, resume preserved thread state, and write replay was idempotent\")\n"""
+                """import os\nimport tempfile\nfrom typing import TypedDict\n\nfrom langgraph.checkpoint.sqlite import SqliteSaver\nfrom langgraph.graph import END, START, StateGraph\nfrom langgraph.types import Command, interrupt\n\n\nclass HitlState(TypedDict, total=False):\n    proposal: str\n    idempotency_key: str\n    decision: dict\n    receipt: dict\n    status: str\n\n\nreceipts: dict[str, dict] = {}\n\ndef write_once(key: str, action: str) -> dict:\n    if key not in receipts:\n        receipts[key] = {\"receipt_id\": \"R-001\", \"action\": action, \"key\": key}\n    return receipts[key]\n\n\ndef build_graph(checkpointer):\n    def review_node(state: HitlState) -> dict:\n        decision = interrupt({\"proposal\": state[\"proposal\"], \"risk\": \"inventory hold\"})\n        return {\"decision\": decision, \"status\": \"approved\" if decision.get(\"approved\") else \"rejected\"}\n\n    def apply_node(state: HitlState) -> dict:\n        if state[\"status\"] != \"approved\":\n            return {\"receipt\": {\"status\": \"not written\"}}\n        return {\"receipt\": write_once(state[\"idempotency_key\"], state[\"proposal\"])}\n\n    builder = StateGraph(HitlState)\n    builder.add_node(\"review\", review_node)\n    builder.add_node(\"apply\", apply_node)\n    builder.add_edge(START, \"review\")\n    builder.add_edge(\"review\", \"apply\")\n    builder.add_edge(\"apply\", END)\n    return builder.compile(checkpointer=checkpointer)\n\n\nwith tempfile.TemporaryDirectory() as temporary:\n    database = os.path.join(temporary, \"case-checkpoints.sqlite\")\n    config = {\"configurable\": {\"thread_id\": \"case-H-1230-2026\"}}\n    with SqliteSaver.from_conn_string(database) as first_checkpointer:\n        first_checkpointer.setup()\n        first_graph = build_graph(first_checkpointer)\n        paused = first_graph.invoke({\"proposal\": \"hold SKU-1 at DC-West\", \"idempotency_key\": \"hold-case-1\"}, config)\n        print(\"paused interrupt ->\", paused[\"__interrupt__\"][0].value)\n        assert paused[\"__interrupt__\"][0].value[\"risk\"] == \"inventory hold\"\n    with SqliteSaver.from_conn_string(database) as rebuilt_checkpointer:\n        rebuilt_checkpointer.setup()\n        rebuilt_graph = build_graph(rebuilt_checkpointer)\n        resumed = rebuilt_graph.invoke(Command(resume={\"approved\": True, \"actor\": \"food-safety-manager\"}), config)\n        print(\"resumed after rebuild ->\", resumed)\n        first = resumed[\"receipt\"]\n\nsecond = write_once(\"hold-case-1\", \"hold SKU-1 at DC-West\")\nprint(\"replayed receipt ->\", second)\nassert resumed[\"status\"] == \"approved\"\nassert first == second and first[\"receipt_id\"] == \"R-001\"\nprint(\"ASSERTION PASSED: SQLite pause, rebuilt resume, same thread_id, and idempotent write replay worked\")\n"""
             ),
             code(
                 f'''print("{MARKER}")
-print("Durability means a review can resume; idempotency means retrying does not duplicate the side effect.")
+print("SQLite makes the checkpoint survive graph reconstruction; idempotency makes retry safe.")
 assert list(receipts) == ["hold-case-1"]
 print("ASSERTION PASSED: {MARKER}")'''
             ),
@@ -168,17 +170,21 @@ BUILDERS = [
     ("02_mcp_boundaries.ipynb", notebook_02),
     ("03_middleware_recovery.ipynb", notebook_03),
     ("04_supervisor_specialists.ipynb", notebook_04),
-    ("05_durable_hitl.ipynb", notebook_05),
+    ("05_durable_hitl.ipynb", notebook_05_sqlite),
     ("06_end_to_end_evaluation.ipynb", notebook_06),
 ]
 
 
-def main() -> None:
-    OUTPUT.mkdir(parents=True, exist_ok=True)
+def build_notebooks(output: Path = OUTPUT) -> None:
+    output.mkdir(parents=True, exist_ok=True)
     for filename, builder in BUILDERS:
-        path = OUTPUT / filename
+        path = output / filename
         nbf.write(builder(), path)
         print(f"wrote {path}")
+
+
+def main() -> None:
+    build_notebooks()
 
 
 if __name__ == "__main__":
