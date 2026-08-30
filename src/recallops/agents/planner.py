@@ -28,9 +28,19 @@ class InvestigationPlan(BaseModel):
     objective: str = Field(min_length=1)
     todos: list[InvestigationTodo] = Field(min_length=4, max_length=4)
 
-    def write_todos_payload(self) -> list[dict[str, str]]:
-        """Return the same JSON-safe shape consumed by a write_todos planning tool."""
-        return [todo.model_dump(mode="json") for todo in self.todos]
+    def write_todos_payload(self) -> dict[str, list[dict[str, str]]]:
+        """Return the exact argument schema consumed by the real write_todos tool."""
+        return {
+            "todos": [
+                {
+                    "content": (
+                        f"[{todo.specialist}] {todo.task} Completion: {todo.completion_criteria}"
+                    ),
+                    "status": todo.status,
+                }
+                for todo in self.todos
+            ]
+        }
 
 
 _TODO_BLUEPRINTS = (
