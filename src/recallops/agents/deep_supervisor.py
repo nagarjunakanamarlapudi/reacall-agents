@@ -439,7 +439,11 @@ def _has_exact_string_pairs(value: Any) -> bool:
     return True
 
 
-def _validate_read_config(config: _ReadConfig) -> None:
+def _validate_read_config(
+    config: _ReadConfig,
+    *,
+    expected_config_digest: str,
+) -> None:
     path_type = type(PROJECT_ROOT)
     if type(config) is not _ReadConfig:
         raise ValueError("trusted RecallOps requires an exact immutable read configuration")
@@ -459,6 +463,14 @@ def _validate_read_config(config: _ReadConfig) -> None:
         or config.source_mode not in {"snapshot", "live"}
     ):
         raise ValueError("trusted RecallOps immutable read configuration is invalid")
+    actual_digest = _read_config_digest(config)
+    if not hmac.compare_digest(config.digest, actual_digest):
+        raise ValueError("trusted RecallOps immutable read configuration digest mismatch")
+    if type(expected_config_digest) is not str or not hmac.compare_digest(
+        config.digest,
+        expected_config_digest,
+    ):
+        raise ValueError("trusted RecallOps build-time read configuration digest mismatch")
     if config.transport == "direct":
         if (
             config.python_executable is not None
@@ -486,9 +498,6 @@ def _validate_read_config(config: _ReadConfig) -> None:
             raise ValueError("trusted RecallOps stdio read configuration is invalid")
     else:
         raise ValueError("trusted RecallOps immutable read transport is invalid")
-    expected_digest = _read_config_digest(config)
-    if not hmac.compare_digest(config.digest, expected_digest):
-        raise ValueError("trusted RecallOps immutable read configuration digest mismatch")
 
 
 def _close_read_gateway(
@@ -766,10 +775,14 @@ async def _invoke_stdio_read(
 
 async def _invoke_trusted_read(
     config: _ReadConfig,
+    expected_config_digest: str,
     tool_name: str,
     payload: dict[str, Any],
 ) -> Any:
-    _validate_read_config(config)
+    _validate_read_config(
+        config,
+        expected_config_digest=expected_config_digest,
+    )
     if type(tool_name) is not str or tool_name not in _TRUSTED_READ_TOOL_NAMES:
         raise ValueError("trusted RecallOps read capability is invalid")
     if config.transport == "direct":
@@ -783,15 +796,22 @@ def _trusted_read_tools(
     if gateway is None:
         return {}, {}
     read_config = _close_read_gateway(gateway)
+    expected_config_digest = read_config.digest
 
     async def search_recalls(query: str) -> Any:
         """Search official recall registry evidence."""
-        return await _invoke_trusted_read(read_config, "search_recalls", {"query": query})
+        return await _invoke_trusted_read(
+            read_config,
+            expected_config_digest,
+            "search_recalls",
+            {"query": query},
+        )
 
     async def get_recall(recall_number: str) -> Any:
         """Get one official recall record by recall number."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "get_recall",
             {"recall_number": recall_number},
         )
@@ -800,6 +820,7 @@ def _trusted_read_tools(
         """Get official product metadata by UPC."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "get_product_metadata",
             {"upc": upc},
         )
@@ -808,6 +829,7 @@ def _trusted_read_tools(
         """Find synthetic retailer product candidates for a recall predicate."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "find_candidate_products",
             {"predicate": predicate},
         )
@@ -816,6 +838,7 @@ def _trusted_read_tools(
         """Match synthetic retailer lots to a recall predicate."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "match_lots",
             {"predicate": predicate},
         )
@@ -824,6 +847,7 @@ def _trusted_read_tools(
         """Trace a synthetic lot forward through the facility network."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "trace_forward",
             {"lot_id": lot_id},
         )
@@ -832,6 +856,7 @@ def _trusted_read_tools(
         """Trace a synthetic lot backward to its receiving root."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "trace_backward",
             {"lot_id": lot_id},
         )
@@ -840,6 +865,7 @@ def _trusted_read_tools(
         """Read synthetic retailer inventory positions."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "get_inventory",
             {"lot_id": lot_id},
         )
@@ -848,6 +874,7 @@ def _trusted_read_tools(
         """Read synthetic retailer sale events for a lot."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "get_sales",
             {"lot_id": lot_id},
         )
@@ -856,6 +883,7 @@ def _trusted_read_tools(
         """Read evidence-backed synthetic unit reconciliation for a lot."""
         return await _invoke_trusted_read(
             read_config,
+            expected_config_digest,
             "reconcile_units",
             {"lot_id": lot_id},
         )
@@ -886,7 +914,7 @@ def _trusted_read_tools(
     if read_config.transport == "direct":
         identities = {
             name: (
-                f"direct:reconstructed:immutable:config-sha256={read_config.digest}:"
+                f"direct:reconstructed:immutable:config-sha256={expected_config_digest}:"
                 f"{'RecallRegistryService' if name in _REGISTRY_READ_TOOL_NAMES else 'TraceabilityService'}.{name}"
             )
             for name in tools
@@ -896,7 +924,7 @@ def _trusted_read_tools(
             name: (
                 f"stdio:reconstructed:immutable:"
                 f"{'registry' if name in _REGISTRY_READ_TOOL_NAMES else 'traceability'}:"
-                f"config-sha256={read_config.digest}:{name}"
+                f"config-sha256={expected_config_digest}:{name}"
             )
             for name in tools
         }

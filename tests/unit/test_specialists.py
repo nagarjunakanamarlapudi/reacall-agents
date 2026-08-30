@@ -1071,10 +1071,15 @@ def test_compiled_read_coroutines_capture_only_deeply_immutable_configuration(
                     continue
                 assert_deeply_immutable(value)
             config = closure.nonlocals["read_config"]
+            expected_digest = closure.nonlocals["expected_config_digest"]
             captured_configs.append(config)
             with pytest.raises(AttributeError):
                 config.digest = "0" * 64
-            assert f"config-sha256={config.digest}" in supervisor.capability_manifest[tool.name]
+            assert type(expected_digest) is str
+            assert expected_digest == config.digest
+            assert (
+                f"config-sha256={expected_digest}" in supervisor.capability_manifest[tool.name]
+            )
 
     assert captured_configs
     assert len({id(config) for config in captured_configs}) == 1
@@ -1123,6 +1128,154 @@ async def test_compiled_read_rejects_tampered_immutable_config_digest(
     monkeypatch.setattr(RecallRegistryService, "__init__", track_init)
 
     with pytest.raises(ValueError, match="immutable read configuration digest"):
+        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transport", "replacement"),
+    [
+        ("direct", "source_mode"),
+        ("direct", "data_dir"),
+        ("stdio", "transport"),
+        ("stdio", "python_executable"),
+    ],
+)
+async def test_compiled_read_rejects_self_consistent_post_build_config_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    transport: str,
+    replacement: str,
+) -> None:
+    """A replacement cannot become trusted by recomputing its own embedded digest."""
+    from pathlib import Path
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    storage_path = (tmp_path / "self-consistent.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    gateway: Any
+    if transport == "direct":
+        gateway = DirectGateway(operations=OperationsService(storage_path=storage_path))
+    else:
+        gateway = StdioMCPGateway()
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=gateway,
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    freevars = dict(
+        zip(
+            get_recall.coroutine.__code__.co_freevars,
+            get_recall.coroutine.__closure__,
+            strict=True,
+        )
+    )
+    config = freevars["read_config"].cell_contents
+    if replacement == "source_mode":
+        replacement_config = config._replace(source_mode="live", digest="")
+    elif replacement == "data_dir":
+        replacement_config = config._replace(
+            data_dir=(tmp_path / "attacker-data").resolve(),
+            digest="",
+        )
+    elif replacement == "transport":
+        replacement_config = config._replace(
+            transport="direct",
+            python_executable=None,
+            cwd=None,
+            environment=(),
+            servers=(),
+            digest="",
+        )
+    else:
+        replacement_config = config._replace(
+            python_executable=Path("/bin/sh"),
+            digest="",
+        )
+    replacement_config = replacement_config._replace(
+        digest=module._read_config_digest(replacement_config)
+    )
+    freevars["read_config"].cell_contents = replacement_config
+
+    constructed: list[str] = []
+
+    def reject_registry_construction(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        constructed.append("registry")
+        raise AssertionError("registry construction preceded build-time digest validation")
+
+    def reject_stdio_construction(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        constructed.append("stdio")
+        raise AssertionError("stdio construction preceded build-time digest validation")
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", reject_registry_construction)
+    monkeypatch.setattr(StdioMCPGateway, "__init__", reject_stdio_construction)
+
+    with pytest.raises(ValueError, match="build-time read configuration digest"):
+        await get_recall.ainvoke({"recall_number": "H-1230-2026"})
+    assert constructed == []
+
+
+@pytest.mark.asyncio
+async def test_compiled_read_uses_separate_build_time_digest_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """The manifest authority is a separate scalar, not derived from config at invocation."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as module
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+    from recallops.services.recall_registry import RecallRegistryService
+
+    storage_path = (tmp_path / "expected-digest.sqlite3").resolve()
+    monkeypatch.setenv("RECALLOPS_OPERATIONS_DB", str(storage_path))
+    supervisor = module.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter(["not invoked"])),
+        read_gateway=DirectGateway(operations=OperationsService(storage_path=storage_path)),
+    )
+    get_recall = (
+        module._compiled_subagent_graphs(supervisor.graph)["recall-intelligence"]
+        .nodes["tools"]
+        .bound._tools_by_name["get_recall"]
+    )
+    freevars = dict(
+        zip(
+            get_recall.coroutine.__code__.co_freevars,
+            get_recall.coroutine.__closure__,
+            strict=True,
+        )
+    )
+    config = freevars["read_config"].cell_contents
+    expected_digest = freevars["expected_config_digest"].cell_contents
+    assert type(expected_digest) is str
+    assert expected_digest == config.digest
+    assert f"config-sha256={expected_digest}" in supervisor.capability_manifest["get_recall"]
+
+    freevars["expected_config_digest"].cell_contents = "0" * 64
+    constructed: list[RecallRegistryService] = []
+    original_init = RecallRegistryService.__init__
+
+    def track_init(self: RecallRegistryService, *args: Any, **kwargs: Any) -> None:
+        constructed.append(self)
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(RecallRegistryService, "__init__", track_init)
+
+    with pytest.raises(ValueError, match="build-time read configuration digest"):
         await get_recall.ainvoke({"recall_number": "H-1230-2026"})
     assert constructed == []
 
