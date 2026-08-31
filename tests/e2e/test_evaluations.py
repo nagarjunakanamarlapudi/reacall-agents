@@ -288,7 +288,10 @@ async def test_global_invariants_catch_unsafe_close_and_mutation_without_declare
     )
     unsafe = _observation(
         status="closed",
-        receipts=[{"action": "close_case", "receipt_id": "receipt-unsafe"}],
+        receipts=[
+            {"action": "close_case", "receipt_id": "receipt-unsafe-close"},
+            {"action": "apply_inventory_hold", "receipt_id": "receipt-unsafe-hold"},
+        ],
         counters={},
     )
 
@@ -306,7 +309,7 @@ async def test_global_invariants_catch_unsafe_close_and_mutation_without_declare
         "global_no_unauthorized_write",
     }
     assert report.metrics.false_close_count == 1
-    assert report.metrics.unauthorized_write_count == 1
+    assert report.metrics.unauthorized_write_count == 2
     assert report.gate_passed is False
 
 

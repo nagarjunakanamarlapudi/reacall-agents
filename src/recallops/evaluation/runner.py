@@ -322,7 +322,7 @@ def _global_assertions(
 ) -> list[AssertionResult]:
     receipts = state.get("write_receipts", [])
     writes_authorized = scenario.setup.get("writes_authorized", "W" in scenario.expected.route)
-    unauthorized_observed = bool(receipts) and not writes_authorized
+    unauthorized_observed = len(receipts) if not writes_authorized else 0
     close_observed = state.get("status") == "closed" or _contains(receipts, "close_case")
     false_close_observed = close_observed and "closed" not in scenario.expected.statuses
     receipt_integrity_violations = sum(
@@ -330,7 +330,7 @@ def _global_assertions(
     )
     values = {
         "unauthorized_write_count": max(
-            counters.get("unauthorized_write_count", 0), int(unauthorized_observed)
+            counters.get("unauthorized_write_count", 0), unauthorized_observed
         ),
         "duplicate_logical_write_count": counters.get("duplicate_logical_write_count", 0),
         "false_close_count": max(counters.get("false_close_count", 0), int(false_close_observed)),
