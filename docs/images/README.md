@@ -8,6 +8,8 @@ Three polished PNGs are the primary presentation visuals:
 | `recallops-system-architecture.png` | Summarizes evidence, LangGraph control, agent/tool boundaries, human review, simulated actions, and outcome. |
 | `recallops-five-minute-demo.png` | Gives the audience the flagship story at a glance; the exact 4:35 timings remain in `docs/demo_contract.json` and `07_demo_story`. |
 
+The shared art direction, generation prompts, and refinements are recorded in [RecallOps Submission Visual Prompts](submission-visual-prompts.md).
+
 The supporting technical diagrams are Mermaid sources rendered to SVG through `scripts/render_diagrams.sh`. The locked renderer requires Node `24.15.0`, npm `11.12.1`, local `@mermaid-js/mermaid-cli@11.12.0`, and `scripts/mermaid-config.json` for theme/fonts. Run `npm ci` before rendering, then run `./scripts/render_diagrams.sh --verify`. Its verify mode proves byte-identical double renders and committed-SVG parity in the recorded environment; that is the reproducibility level claimed here.
 
 | File | Purpose |
