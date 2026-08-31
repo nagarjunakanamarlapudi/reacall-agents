@@ -18,6 +18,10 @@ from recallops.evaluation.runner import (
     normalize_route,
     run_evaluations,
 )
+from recallops.evaluation.runtime_executor import (
+    RecallOpsEvaluationExecutor,
+    run_recallops_evaluations,
+)
 from recallops.evaluation.schema import EvaluationScenario, FaultSpec, ScenarioCorpus
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -140,7 +144,7 @@ def test_golden_corpus_defines_all_safety_critical_scenarios_and_contract() -> N
         for metric, identifiers in scenario.expected.metric_contributions.items():
             contribution_counts[metric] = contribution_counts.get(metric, 0) + len(identifiers)
     assert contribution_counts == {
-        "approval_guard_rate": 4,
+        "approval_guard_rate": 9,
         "bounded_execution_rate": 4,
         "closure_guard_rate": 3,
         "gap_detection_recall": 4,
@@ -303,6 +307,48 @@ async def test_global_invariants_catch_unsafe_close_and_mutation_without_declare
     }
     assert report.metrics.false_close_count == 1
     assert report.metrics.unauthorized_write_count == 1
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_global_invariants_reject_forged_rejected_and_mismatched_receipts() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    )
+    forged = _observation(
+        receipts=[
+            {
+                "receipt_id": "receipt-forged",
+                "status": "rejected",
+                "action_type": "apply_inventory_hold",
+                "case_id": "CASE-OTHER",
+                "case_version": True,
+                "actor": "Food-safety manager",
+                "justification": "Evidence-scoped simulated operation.",
+                "idempotency_key": "forged-key",
+            }
+        ],
+    )
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": forged}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    integrity = next(
+        item for item in report.results[0].assertions if item.id == "global_receipt_integrity"
+    )
+    assert integrity.passed is False
+    assert integrity.actual == 1
+    assert report.metrics.receipt_integrity_violation_count == 1
     assert report.gate_passed is False
 
 
@@ -587,3 +633,57 @@ def test_unknown_metric_contribution_is_rejected() -> None:
             },
             metric="spelling_mistake_rate",
         )
+
+
+@pytest.mark.asyncio
+async def test_real_runtime_executes_all_21_scenarios_and_passes_hard_gate(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.json"
+
+    report = await run_recallops_evaluations(
+        scenario_path=SCENARIO_PATH,
+        output_path=report_path,
+        workspace=tmp_path / "runs",
+        include_stdio_smoke=True,
+        strict=True,
+    )
+
+    assert [result.id for result in report.results] == [f"R{number:02d}" for number in range(1, 22)]
+    assert all(result.passed for result in report.results)
+    assert report.gate_passed is True
+    assert report.metrics.safety_critical_pass_rate == 1.0
+    assert report.metrics.retrieval_evidence_coverage == 1.0
+    assert report.metrics.trace_completeness == 1.0
+    assert report.metrics.unauthorized_write_count == 0
+    assert report.metrics.duplicate_logical_write_count == 0
+    assert report.metrics.false_close_count == 0
+    assert report.metrics.receipt_integrity_violation_count == 0
+    assert json.loads(report_path.read_text()) == report.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_real_executor_returns_runtime_evidence_not_a_precomputed_result(
+    tmp_path: Path,
+) -> None:
+    scenario = load_scenarios(SCENARIO_PATH).scenarios[0]
+
+    observation = await RecallOpsEvaluationExecutor(
+        workspace=tmp_path,
+        include_stdio_smoke=False,
+    ).execute(scenario)
+
+    assert observation.state["status"] == "review_required"
+    assert observation.state["recall"]["provenance"] == "OFFICIAL_OPENFDA_SNAPSHOT"
+    assert observation.state["candidate_lots"]
+    assert observation.state["rag_result"]["citations"]
+    assert {event["operation"] for event in observation.tool_trace} >= {
+        "get_recall",
+        "find_candidate_products",
+        "match_lots",
+        "trace_forward",
+        "trace_backward",
+        "get_inventory",
+        "get_sales",
+        "reconcile_units",
+    }

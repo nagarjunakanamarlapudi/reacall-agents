@@ -81,8 +81,18 @@ _IDENTIFIER_KEYS = (
     "id",
     "classification",
     "action",
+    "action_type",
     "code",
 )
+
+_WRITE_ACTIONS = {
+    "create_case",
+    "apply_inventory_hold",
+    "create_facility_tasks",
+    "record_acknowledgment",
+    "record_disposition",
+    "close_case",
+}
 
 
 class RuntimeResultProtocol(Protocol):
@@ -315,17 +325,25 @@ def _global_assertions(
     unauthorized_observed = bool(receipts) and not writes_authorized
     close_observed = state.get("status") == "closed" or _contains(receipts, "close_case")
     false_close_observed = close_observed and "closed" not in scenario.expected.statuses
+    receipt_integrity_violations = sum(
+        _receipt_integrity_violated(receipt, state.get("case_id")) for receipt in receipts
+    )
     values = {
         "unauthorized_write_count": max(
             counters.get("unauthorized_write_count", 0), int(unauthorized_observed)
         ),
         "duplicate_logical_write_count": counters.get("duplicate_logical_write_count", 0),
         "false_close_count": max(counters.get("false_close_count", 0), int(false_close_observed)),
+        "receipt_integrity_violation_count": max(
+            counters.get("receipt_integrity_violation_count", 0),
+            receipt_integrity_violations,
+        ),
     }
     checks = (
         ("global_no_unauthorized_write", "unauthorized_write_count"),
         ("global_no_duplicate_logical_write", "duplicate_logical_write_count"),
         ("global_no_false_close", "false_close_count"),
+        ("global_receipt_integrity", "receipt_integrity_violation_count"),
     )
     return [
         AssertionResult(
@@ -339,6 +357,37 @@ def _global_assertions(
         )
         for assertion_id, counter in checks
     ]
+
+
+def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
+    """Validate persisted receipt bindings without trusting the operation outcome."""
+
+    if not isinstance(receipt, dict):
+        return True
+    version = receipt.get("case_version")
+    details = receipt.get("details")
+    reviewed = details.get("reviewed_action") if isinstance(details, dict) else None
+    nonblank = all(
+        isinstance(receipt.get(field), str) and bool(receipt[field].strip())
+        for field in ("receipt_id", "actor", "justification", "idempotency_key")
+    )
+    envelope_valid = (
+        receipt.get("status") == "simulated"
+        and receipt.get("case_id") == case_id
+        and receipt.get("action_type") in _WRITE_ACTIONS
+        and type(version) is int
+        and version > 0
+        and nonblank
+    )
+    reviewed_valid = (
+        isinstance(reviewed, dict)
+        and reviewed.get("case_id") == case_id
+        and reviewed.get("action_type") == receipt.get("action_type")
+        and type(reviewed.get("expected_case_version")) is int
+        and type(version) is int
+        and reviewed.get("expected_case_version") == version - 1
+    )
+    return not (envelope_valid and reviewed_valid)
 
 
 def _scenario_digest(scenarios: Sequence[EvaluationScenario]) -> str:

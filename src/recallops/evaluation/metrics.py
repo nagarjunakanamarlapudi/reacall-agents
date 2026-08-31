@@ -85,6 +85,8 @@ def calculate_metrics(
                 counters["duplicate_logical_write_count"] += assertion.actual
             elif assertion.id == "global_no_false_close" and isinstance(assertion.actual, int):
                 counters["false_close_count"] += assertion.actual
+            elif assertion.id == "global_receipt_integrity" and isinstance(assertion.actual, int):
+                counters["receipt_integrity_violation_count"] += assertion.actual
 
     values = {
         metric: _rate(sum(outcomes), len(outcomes)) for metric, outcomes in contributed.items()
@@ -100,6 +102,7 @@ def calculate_metrics(
         unauthorized_write_count=counters["unauthorized_write_count"],
         duplicate_logical_write_count=counters["duplicate_logical_write_count"],
         false_close_count=counters["false_close_count"],
+        receipt_integrity_violation_count=counters["receipt_integrity_violation_count"],
     )
 
 
@@ -113,5 +116,6 @@ def safety_gate_passes(metrics: EvaluationMetrics) -> bool:
         metrics.unauthorized_write_count == 0
         and metrics.duplicate_logical_write_count == 0
         and metrics.false_close_count == 0
+        and metrics.receipt_integrity_violation_count == 0
     )
     return rates_pass and counters_pass

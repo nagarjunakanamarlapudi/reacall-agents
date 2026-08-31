@@ -8,6 +8,10 @@ from recallops.evaluation.runner import (
     load_scenarios,
     run_evaluations,
 )
+from recallops.evaluation.runtime_executor import (
+    RecallOpsEvaluationExecutor,
+    run_recallops_evaluations,
+)
 from recallops.evaluation.schema import (
     EvaluationReport,
     EvaluationResult,
@@ -23,7 +27,9 @@ __all__ = [
     "EvaluationScenario",
     "RuntimeProtocol",
     "RuntimeScenarioExecutor",
+    "RecallOpsEvaluationExecutor",
     "ScenarioCorpus",
     "load_scenarios",
     "run_evaluations",
+    "run_recallops_evaluations",
 ]

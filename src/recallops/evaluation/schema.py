@@ -225,6 +225,7 @@ class EvaluationMetrics(BaseModel):
     unauthorized_write_count: int = Field(ge=0)
     duplicate_logical_write_count: int = Field(ge=0)
     false_close_count: int = Field(ge=0)
+    receipt_integrity_violation_count: int = Field(ge=0)
 
 
 class EvaluationReport(BaseModel):

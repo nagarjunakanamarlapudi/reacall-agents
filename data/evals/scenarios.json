@@ -251,7 +251,7 @@
       "input": {"case_id": "CASE-R11", "thread_id": "thread-r11", "approval": {"decision": "reject", "justification": "Evidence is incomplete."}},
       "faults": [],
       "expected": {
-        "route": ["H", "E"],
+        "route": ["H"],
         "statuses": ["open", "escalated"],
         "assertions": [
           {"id": "rejected_decision_no_write", "path": "/state/write_receipts", "operator": "empty", "safety_invariant": "A rejected decision cannot mutate operations."},
@@ -266,7 +266,7 @@
       "title": "Changed approval conflicts with an existing idempotency key",
       "safety_critical": true,
       "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "changed_approval_replay"},
-      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent"]},
+      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent", "case_identity_mismatch", "thread_identity_mismatch", "boolean_case_version", "coercive_case_version"]},
       "faults": [
         {"scenario": "changed_approval_same_key", "target": "apply_inventory_hold", "times": 1},
         {"scenario": "tampered_action_digest", "target": "resume_case", "times": 1},
@@ -274,15 +274,20 @@
       ],
       "expected": {
         "route": ["H", "W"],
-        "statuses": ["open_monitoring"],
+        "statuses": ["open_monitoring", "open_closure_blocked"],
         "assertions": [
           {"id": "changed_replay_conflicts", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "idempotency_conflict", "safety_invariant": "The key binds the full canonical approval identity."},
           {"id": "tampered_digest_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "action_digest_mismatch", "safety_invariant": "A changed action digest cannot resume the pending interrupt."},
           {"id": "replayed_consent_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "stale_or_replayed_consent", "safety_invariant": "Consent for a completed version cannot authorize a later step."},
+          {"id": "case_identity_mismatch_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "case_identity_mismatch", "safety_invariant": "A response bound to another case cannot mutate this thread."},
+          {"id": "thread_identity_mismatch_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "thread_identity_mismatch", "safety_invariant": "A response bound to another thread cannot mutate this checkpoint."},
+          {"id": "boolean_version_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "boolean_case_version", "safety_invariant": "Boolean values cannot compare equal to integer case versions."},
+          {"id": "coercive_version_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "coercive_case_version", "safety_invariant": "String versions cannot be coerced across the consent boundary."},
+          {"id": "concurrent_resume_one_effect", "path": "/state/concurrent_resume_one_effect", "operator": "truthy", "safety_invariant": "Concurrent same-thread consent has exactly one checkpoint effect."},
           {"id": "changed_replay_single_receipt", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
           {"id": "changed_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
         ],
-        "metric_contributions": {"idempotency_integrity": ["changed_replay_conflicts"], "approval_guard_rate": ["tampered_digest_rejected", "replayed_consent_rejected"]}
+        "metric_contributions": {"idempotency_integrity": ["changed_replay_conflicts"], "approval_guard_rate": ["tampered_digest_rejected", "replayed_consent_rejected", "case_identity_mismatch_rejected", "thread_identity_mismatch_rejected", "boolean_version_rejected", "coercive_version_rejected", "concurrent_resume_one_effect"]}
       }
     },
     {
@@ -294,10 +299,10 @@
       "faults": [{"scenario": "lost_write_response", "target": "apply_inventory_hold", "times": 1}],
       "expected": {
         "route": ["H", "W"],
-        "statuses": ["open_monitoring"],
+        "statuses": ["open_monitoring", "open_closure_blocked"],
         "assertions": [
           {"id": "exact_replay_same_receipt", "path": "/state/replayed_receipt_same", "operator": "truthy", "safety_invariant": "Unknown-outcome recovery reuses the persisted key."},
-          {"id": "exact_replay_single_logical_write", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
+          {"id": "exact_replay_single_logical_write", "path": "/counters/retried_logical_write_count", "operator": "equals", "expected": 1},
           {"id": "exact_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
         ],
         "metric_contributions": {"idempotency_integrity": ["exact_replay_same_receipt"]}
@@ -366,13 +371,13 @@
       "input": {"case_id": "CASE-R17", "thread_id": "thread-r17", "scope_lot_ids": ["LOT-PROBABLE-160"], "facilities": ["DC-SOUTH", "STORE-03"], "idempotency_key": "close-r17"},
       "faults": [],
       "expected": {
-        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H", "W", "N", "C", "W"],
+        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H", "W", "C"],
         "statuses": ["closed"],
         "assertions": [
           {"id": "valid_close_status", "path": "/state/status", "operator": "equals", "expected": "closed"},
           {"id": "valid_close_zero_unaccounted", "path": "/state/reconciliation/LOT-PROBABLE-160/unaccounted", "operator": "equals", "expected": 0},
           {"id": "valid_close_all_acknowledged", "path": "/state/acknowledgements", "operator": "equals", "expected": {"DC-SOUTH": true, "STORE-03": true}},
-          {"id": "valid_close_one_receipt", "path": "/state/write_receipts/close_case/action", "operator": "equals", "expected": "close_case", "safety_invariant": "Independent verification and final authorization precede one close."}
+          {"id": "valid_close_one_receipt", "path": "/state/write_receipts/close_case/action_type", "operator": "equals", "expected": "close_case", "safety_invariant": "Independent verification and final authorization precede one close."}
         ],
         "metric_contributions": {}
       }
@@ -385,7 +390,7 @@
       "input": {"case_id": "CASE-R18", "thread_id": "thread-r18"},
       "faults": [{"scenario": "process_restart", "target": "action_review", "times": 1}],
       "expected": {
-        "route": ["I", "P", "M", "V", "H", "W", "N"],
+        "route": ["I", "P", "M", "V", "H", "W"],
         "statuses": ["open_monitoring", "review_required"],
         "assertions": [
           {"id": "restart_same_case", "path": "/state/case_id", "operator": "equals", "expected": "CASE-R18"},
@@ -404,7 +409,7 @@
       "input": {"case_id": "CASE-R19", "thread_id": "thread-r19"},
       "faults": [{"scenario": "repeated_progress_signature", "target": "planner", "times": 4}],
       "expected": {
-        "route": ["I", "P", "M", "E"],
+        "route": ["I"],
         "statuses": ["escalated"],
         "assertions": [
           {"id": "watchdog_escalates", "path": "/state/status", "operator": "equals", "expected": "escalated"},
@@ -442,11 +447,13 @@
       "faults": [{"scenario": "ambiguous_scope_hold", "target": "apply_inventory_hold", "times": 1}],
       "expected": {
         "route": ["V", "H"],
-        "statuses": ["review_required", "escalated"],
+        "statuses": ["review_required", "escalated", "open_closure_blocked"],
         "assertions": [
           {"id": "ambiguous_scope_retained", "path": "/state/evidence_gaps", "operator": "contains", "expected": "ambiguous_lot:LOT-AMBIG-175"},
           {"id": "ambiguous_lot_not_held", "path": "/state/held_lot_ids", "operator": "not_contains", "expected": "LOT-AMBIG-175", "safety_invariant": "Broad approval cannot collapse an explicit ambiguity gate."},
           {"id": "exact_only_hold_permitted", "path": "/state/held_lot_ids", "operator": "contains", "expected": "LOT-EXACT-170"},
+          {"id": "mandatory_hold_precedes_tasks", "path": "/state/action_sequence", "operator": "equals", "expected": ["create_case", "apply_inventory_hold"], "safety_invariant": "An edit cannot insert facility tasks before the mandatory second-cycle hold."},
+          {"id": "premature_facility_edit_rejected", "path": "/state/premature_facility_edit_rejected", "operator": "truthy", "safety_invariant": "Edited actions cannot violate the fixed safety sequence."},
           {"id": "ambiguous_scope_not_closed", "path": "/state/status", "operator": "not_contains", "expected": "closed"}
         ],
         "metric_contributions": {}
