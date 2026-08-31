@@ -47,3 +47,12 @@ def test_unknown_demo_recall_fails_safely_without_traceback(capsys) -> None:
     captured = capsys.readouterr()
     assert "Recall 'NOT-A-RECALL' is unavailable from the configured registry." in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_demo_command_is_reentrant_and_deterministic(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("RECALLOPS_RUNTIME_DIR", raising=False)
+    assert main(["demo", "--recall-number", "H-1230-2026"]) == 0
+    first = capsys.readouterr().out
+    assert main(["demo", "--recall-number", "H-1230-2026"]) == 0
+    second = capsys.readouterr().out
+    assert second == first

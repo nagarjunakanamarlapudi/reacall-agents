@@ -7,12 +7,13 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot, validate_manifest
-from recallops.paths import DATA_DIR, PROJECT_ROOT
+from recallops.paths import DATA_DIR
 from recallops.ui.adapter import DurableRuntimeAdapter
 from recallops.ui.presenters import APPROVAL_JUSTIFICATION
 
@@ -46,13 +47,14 @@ def _data_validate() -> int:
     return 0
 
 
-async def _run_demo(recall_number: str) -> int:
-    runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
+async def _run_demo(recall_number: str, runtime_dir: Path) -> int:
     adapter = DurableRuntimeAdapter(
         checkpoint_path=runtime_dir / "checkpoints.sqlite3",
         operations_path=runtime_dir / "operations.sqlite3",
     )
     case = await adapter.open_case(recall_number)
+    case["case_id"] = f"CASE-DEMO-{recall_number}"
+    case["thread_id"] = f"THREAD-DEMO-{recall_number}"
     print("RecallOps Command Center")
     print(f"Recall number: {recall_number}")
     print("OFFICIAL — openFDA snapshot | Cached/frozen fallback")
@@ -87,6 +89,14 @@ async def _run_demo(recall_number: str) -> int:
         print(f"BLOCKER: {blocker}")
     print("Final closure remains a separate human-reviewed, version-bound action.")
     return 0
+
+
+def _demo(recall_number: str) -> int:
+    configured_runtime_dir = os.environ.get("RECALLOPS_RUNTIME_DIR")
+    if configured_runtime_dir:
+        return asyncio.run(_run_demo(recall_number, Path(configured_runtime_dir)))
+    with tempfile.TemporaryDirectory(prefix="recallops-demo-") as temporary:
+        return asyncio.run(_run_demo(recall_number, Path(temporary)))
 
 
 def _eval(report_path: Path) -> int:
@@ -127,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "data-validate":
             return _data_validate()
         if args.command == "demo":
-            return asyncio.run(_run_demo(args.recall_number))
+            return _demo(args.recall_number)
         if args.command == "eval":
             return _eval(args.report)
         if args.command == "mcp-config":

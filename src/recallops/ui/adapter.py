@@ -43,12 +43,17 @@ FAILURE_SCENARIOS = (
 _RUNTIME_FAILURES = {
     FAILURE_SCENARIOS[0]: "registry_transient_failure",
     FAILURE_SCENARIOS[1]: "registry_transient_failure",
-    FAILURE_SCENARIOS[2]: "changed_action_digest",
-    FAILURE_SCENARIOS[3]: "unavailable_evidence",
     FAILURE_SCENARIOS[5]: "lost_write_response",
     FAILURE_SCENARIOS[6]: "stale_decision_version",
     FAILURE_SCENARIOS[7]: "repeated_progress_signature",
     FAILURE_SCENARIOS[8]: "model_failure",
+}
+_RUNTIME_FAILURE_STAGES = {
+    "registry_transient_failure": "run",
+    "repeated_progress_signature": "run",
+    "model_failure": "run",
+    "stale_decision_version": "review",
+    "lost_write_response": "simulate",
 }
 
 
@@ -197,7 +202,7 @@ class DurableRuntimeAdapter:
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
         ) as runtime:
-            self._arm_failure(runtime, current)
+            applied = self._arm_failure(runtime, current, stage="run")
             result = await runtime.start_case(
                 recall_number=current["recall_number"],
                 question=str(current.get("question") or "Investigate the recall safely."),
@@ -205,7 +210,7 @@ class DurableRuntimeAdapter:
                 thread_id=current["thread_id"],
                 scope_lot_ids=current.get("scope_lot_ids") or None,
             )
-        return normalize_runtime_result(result)
+        return self._project_failure(normalize_runtime_result(result), current, applied)
 
     async def load_case(self, thread_id: str) -> dict[str, Any]:
         async with RecallOpsRuntime.open(
@@ -237,13 +242,22 @@ class DurableRuntimeAdapter:
             # UI edit is deliberately rationale-only; action ordering/scope cannot be changed.
             edited["rationale"] = edited_action.strip()
             response["edited_action"] = edited
-        async with RecallOpsRuntime.open(
-            checkpoint_path=self.checkpoint_path,
-            operations_path=self.operations_path,
-        ) as runtime:
-            self._arm_failure(runtime, current)
-            result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
-        return normalize_runtime_result(result)
+        applied = False
+        try:
+            async with RecallOpsRuntime.open(
+                checkpoint_path=self.checkpoint_path,
+                operations_path=self.operations_path,
+            ) as runtime:
+                applied = self._arm_failure(runtime, current, stage="review")
+                result = await runtime.resume_case(
+                    thread_id=current["thread_id"], response=response
+                )
+        except ValueError as error:
+            if applied and current.get("ui_failure_request") == "stale_decision_version":
+                restored = await self.load_case(current["thread_id"])
+                return self._project_failure(restored, current, True, observed_detail=str(error))
+            raise
+        return self._project_failure(normalize_runtime_result(result), current, applied)
 
     async def simulate_approved_actions(self, case: Mapping[str, Any]) -> dict[str, Any]:
         current = self._bound_copy(case)
@@ -256,9 +270,9 @@ class DurableRuntimeAdapter:
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
         ) as runtime:
-            self._arm_failure(runtime, current)
+            applied = self._arm_failure(runtime, current, stage="simulate")
             result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
-        return normalize_runtime_result(result)
+        return self._project_failure(normalize_runtime_result(result), current, applied)
 
     async def request_closure(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Reload authoritative checkpoint state and present its closure gates read-only."""
@@ -357,10 +371,43 @@ class DurableRuntimeAdapter:
         return copy.deepcopy(dict(pending))
 
     @staticmethod
-    def _arm_failure(runtime: RecallOpsRuntime, current: Mapping[str, Any]) -> None:
+    def _arm_failure(runtime: RecallOpsRuntime, current: Mapping[str, Any], *, stage: str) -> bool:
         scenario = current.get("ui_failure_request")
-        if isinstance(scenario, str) and scenario:
+        if (
+            isinstance(scenario, str)
+            and scenario
+            and _RUNTIME_FAILURE_STAGES.get(scenario) == stage
+        ):
             runtime.inject_failure(scenario)
+            return True
+        return False
+
+    @staticmethod
+    def _project_failure(
+        projected: dict[str, Any],
+        current: Mapping[str, Any],
+        applied: bool,
+        *,
+        observed_detail: str | None = None,
+    ) -> dict[str, Any]:
+        scenario = current.get("ui_failure_request")
+        previous = current.get("failure_result")
+        if not isinstance(scenario, str) or not scenario:
+            return projected
+        if not applied:
+            projected["ui_failure_request"] = scenario
+            if isinstance(previous, Mapping):
+                projected["failure_result"] = copy.deepcopy(dict(previous))
+            return projected
+        projected["failure_result"] = {
+            **(copy.deepcopy(dict(previous)) if isinstance(previous, Mapping) else {}),
+            "status": "observed",
+            "safe_outcome": observed_detail
+            or "The durable runtime returned the bounded failure/recovery state.",
+            "mode": DurableRuntimeAdapter.runtime_label,
+        }
+        projected.pop("ui_failure_request", None)
+        return projected
 
 
 class DeterministicDemoAdapter:

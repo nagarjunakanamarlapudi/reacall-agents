@@ -103,3 +103,50 @@ async def test_durable_adapter_rejects_coercive_case_and_thread_bindings(tmp_pat
                 "case_version": 0,
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_durable_lost_response_is_observed_then_recovers_with_same_key(
+    tmp_path: Path,
+) -> None:
+    operations = tmp_path / "operations.sqlite3"
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations,
+    )
+    reviewed = await adapter.run_investigation(await adapter.open_case("H-1230-2026"))
+    approved = await adapter.resume_review(
+        reviewed,
+        decision="approve",
+        actor="Food-safety manager",
+        justification=APPROVAL_JUSTIFICATION,
+        edited_action="",
+    )
+    original_key = approved["pending_interrupt"]["idempotency_key"]
+    armed = await adapter.inject_failure(approved, "lost write response → same-key replay")
+    unknown = await adapter.simulate_approved_actions(armed)
+    assert unknown["status"] == "write_outcome_unknown"
+    assert unknown["pending_interrupt"]["kind"] == "write_outcome_recovery"
+    assert unknown["pending_interrupt"]["idempotency_key"] == original_key
+    assert unknown["failure_result"]["status"] == "observed"
+    assert _receipt_count(operations) == 1
+
+    recovered = await adapter.simulate_approved_actions(unknown)
+    assert recovered["case_version"] == 1
+    assert recovered["receipts"][0]["idempotency_key"] == original_key
+    assert _receipt_count(operations) == 1
+
+
+@pytest.mark.asyncio
+async def test_durable_repeated_progress_surfaces_fail_closed_state(tmp_path: Path) -> None:
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    armed = await adapter.inject_failure(opened, "repeated graph progress → watchdog escalation")
+    escalated = await adapter.run_investigation(armed)
+    assert escalated["status"] == "escalated"
+    assert escalated["pending_interrupt"] is None
+    assert escalated["failure_result"]["status"] == "observed"
+    assert escalated["watchdog"]["repeat_count"] == 2
