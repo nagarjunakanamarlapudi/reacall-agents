@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import sqlite3
 import sys
@@ -10,12 +11,13 @@ import weakref
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 from recallops.agents.policies import strict_json_value
 from recallops.agents.workflow import (
@@ -27,20 +29,87 @@ from recallops.agents.workflow import (
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.paths import DATA_DIR, PROJECT_ROOT
 from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
-from recallops.services.operations import OperationsService
+from recallops.services.operations import INITIAL_CHECKPOINT_HEAD, OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
+
+
+class FrozenSequence(tuple[Any, ...]):
+    """Tuple-backed JSON sequence with ergonomic equality against other sequences."""
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (list, tuple)):
+            return tuple(self) == tuple(other)
+        return False
+
+    __hash__ = tuple.__hash__
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> list[Any]:
+        return [_thaw_json(item, memo=memo) for item in self]
+
+
+class FrozenDict(Mapping[str, Any]):
+    """JSON-compatible mapping that rejects every normal mutation surface."""
+
+    __slots__ = ("_data",)
+
+    def __init__(self, value: Mapping[str, Any]) -> None:
+        object.__setattr__(self, "_data", MappingProxyType(dict(value)))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise TypeError("RuntimeResult mappings are immutable")
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return repr(dict(self._data))
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Mapping):
+            return dict(self.items()) == dict(other.items())
+        return False
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> dict[str, Any]:
+        return {key: _thaw_json(value, memo=memo) for key, value in self.items()}
+
+
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return FrozenDict({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return FrozenSequence(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: Any, *, memo: dict[int, Any] | None = None) -> Any:
+    memo = memo or {}
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item, memo=memo) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item, memo=memo) for item in value]
+    return copy.deepcopy(value, memo)
 
 
 class RuntimeResult(BaseModel):
     """Detached JSON view of a durable workflow checkpoint."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    case: dict[str, Any]
-    pending_interrupt: dict[str, Any] | None
+    case: FrozenDict
+    pending_interrupt: FrozenDict | None
     next_nodes: tuple[str, ...]
     checkpoint_id: str | None
+
+    @field_serializer("case", "pending_interrupt")
+    def serialize_frozen_mapping(self, value: FrozenDict | None) -> Any:
+        return None if value is None else _thaw_json(value)
 
 
 _RUNTIME_WORKFLOWS: weakref.WeakKeyDictionary[Any, ReadOnlyWorkflow] = weakref.WeakKeyDictionary()
@@ -56,6 +125,12 @@ def _checkpoint_store_owner(path: Path) -> str:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS recallops_runtime_metadata "
             "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS recallops_mutation_attempts "
+            "(case_id TEXT NOT NULL, thread_id TEXT NOT NULL, attempt_token TEXT NOT NULL, "
+            "expected_checkpoint_head TEXT NOT NULL, state TEXT NOT NULL, "
+            "PRIMARY KEY (case_id, thread_id))"
         )
         row = connection.execute(
             "SELECT value FROM recallops_runtime_metadata WHERE key='checkpoint_store_id'"
@@ -73,6 +148,82 @@ def _checkpoint_store_owner(path: Path) -> str:
                 raise ValueError("checkpoint store identity must be a canonical random UUID")
         connection.execute("COMMIT")
         return owner_token
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
+def _load_checkpoint_attempt(
+    path: Path,
+    case_id: str,
+    thread_id: str,
+) -> tuple[str, str] | None:
+    with sqlite3.connect(path, timeout=5) as connection:
+        connection.execute("PRAGMA busy_timeout=5000")
+        row = connection.execute(
+            "SELECT attempt_token, expected_checkpoint_head FROM recallops_mutation_attempts "
+            "WHERE case_id=? AND thread_id=?",
+            (case_id, thread_id),
+        ).fetchone()
+    return (str(row[0]), str(row[1])) if row else None
+
+
+def _prepare_checkpoint_attempt(
+    path: Path,
+    case_id: str,
+    thread_id: str,
+    expected_checkpoint_head: str,
+) -> str:
+    connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+    try:
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT attempt_token, expected_checkpoint_head FROM recallops_mutation_attempts "
+            "WHERE case_id=? AND thread_id=?",
+            (case_id, thread_id),
+        ).fetchone()
+        if row is not None:
+            if row[1] != expected_checkpoint_head:
+                raise RuntimeError("checkpoint mutation marker belongs to another head")
+            attempt_token = str(row[0])
+        else:
+            attempt_token = str(uuid4())
+            connection.execute(
+                "INSERT INTO recallops_mutation_attempts "
+                "(case_id, thread_id, attempt_token, expected_checkpoint_head, state) "
+                "VALUES (?, ?, ?, ?, 'prepared')",
+                (case_id, thread_id, attempt_token, expected_checkpoint_head),
+            )
+        connection.execute("COMMIT")
+        return attempt_token
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
+def _clear_checkpoint_attempt(
+    path: Path,
+    case_id: str,
+    thread_id: str,
+    attempt_token: str,
+) -> None:
+    connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+    try:
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM recallops_mutation_attempts "
+            "WHERE case_id=? AND thread_id=? AND attempt_token=?",
+            (case_id, thread_id, attempt_token),
+        )
+        connection.execute("COMMIT")
     except BaseException:
         if connection.in_transaction:
             connection.execute("ROLLBACK")
@@ -243,7 +394,7 @@ class RecallOpsRuntime:
                 )
 
     @staticmethod
-    def _pending(snapshot: Any) -> dict[str, Any] | None:
+    def _pending(snapshot: Any) -> FrozenDict | None:
         interruptions = tuple(snapshot.interrupts or ())
         if not interruptions:
             return None
@@ -253,7 +404,7 @@ class RecallOpsRuntime:
         normalized = strict_json_value(value)
         if not isinstance(normalized, dict):
             raise RuntimeError("pending interrupt payload must be a JSON object")
-        return normalized
+        return _freeze_json(normalized)
 
     @classmethod
     def _result(cls, snapshot: Any) -> RuntimeResult:
@@ -261,7 +412,7 @@ class RecallOpsRuntime:
         if not isinstance(case, dict):
             raise RuntimeError("workflow checkpoint values must be a JSON object")
         return RuntimeResult(
-            case=case,
+            case=_freeze_json(case),
             pending_interrupt=cls._pending(snapshot),
             next_nodes=tuple(snapshot.next or ()),
             checkpoint_id=cls._checkpoint_id(snapshot),
@@ -328,18 +479,77 @@ class RecallOpsRuntime:
                     generated_thread,
                     self._checkpoint_owner_token,
                 )
+                checkpoint_path = Path(self._checkpoint_key)
+                attempt_token = _prepare_checkpoint_attempt(
+                    checkpoint_path,
+                    generated_case,
+                    generated_thread,
+                    INITIAL_CHECKPOINT_HEAD,
+                )
+                claimed = False
                 try:
+                    self._operations_service.claim_workflow_mutation(
+                        generated_case,
+                        generated_thread,
+                        self._checkpoint_owner_token,
+                        INITIAL_CHECKPOINT_HEAD,
+                        attempt_token,
+                    )
+                    claimed = True
                     await _execute_workflow(workflow, initial, config)
+                    created = await workflow.aget_state(config)
+                    created_checkpoint_id = self._checkpoint_id(created)
+                    if created_checkpoint_id is None:
+                        raise RuntimeError("workflow start completed without a durable checkpoint")
+                    self._operations_service.advance_workflow_mutation(
+                        generated_case,
+                        generated_thread,
+                        self._checkpoint_owner_token,
+                        INITIAL_CHECKPOINT_HEAD,
+                        created_checkpoint_id,
+                        attempt_token,
+                    )
+                    _clear_checkpoint_attempt(
+                        checkpoint_path,
+                        generated_case,
+                        generated_thread,
+                        attempt_token,
+                    )
                 except BaseException:
                     created = await workflow.aget_state(config)
-                    if reserved and self._checkpoint_id(created) is None:
+                    created_checkpoint_id = self._checkpoint_id(created)
+                    if claimed:
+                        if created_checkpoint_id is None:
+                            self._operations_service.release_workflow_mutation(
+                                generated_case,
+                                generated_thread,
+                                self._checkpoint_owner_token,
+                                INITIAL_CHECKPOINT_HEAD,
+                                attempt_token,
+                            )
+                        else:
+                            self._operations_service.advance_workflow_mutation(
+                                generated_case,
+                                generated_thread,
+                                self._checkpoint_owner_token,
+                                INITIAL_CHECKPOINT_HEAD,
+                                created_checkpoint_id,
+                                attempt_token,
+                            )
+                        _clear_checkpoint_attempt(
+                            checkpoint_path,
+                            generated_case,
+                            generated_thread,
+                            attempt_token,
+                        )
+                    if reserved and created_checkpoint_id is None:
                         self._operations_service.release_workflow_identity(
                             generated_case,
                             generated_thread,
                             self._checkpoint_owner_token,
                         )
                     raise
-                return self._result(await workflow.aget_state(config))
+                return self._result(created)
 
     @staticmethod
     def _require_equal(response: Mapping[str, Any], pending: Mapping[str, Any], key: str) -> None:
@@ -405,20 +615,106 @@ class RecallOpsRuntime:
                 checkpoint_thread_id=checkpoint_thread_id,
                 checkpoint_id=before_checkpoint_id,
             )
-            if self._failures.consume("stale_decision_version"):
-                raise ValueError("injected stale decision/version rejected before resume")
-            if self._failures.consume("changed_action_digest"):
-                raise ValueError("injected changed action digest rejected before resume")
-            normalized = self._validate_resume_binding(
-                thread_id=thread_id,
-                response=response,
-                pending=pending,
+            checkpoint_path = Path(self._checkpoint_key)
+            marker = _load_checkpoint_attempt(
+                checkpoint_path,
+                checkpoint_case_id,
+                thread_id,
             )
-            current = await workflow.aget_state(config)
-            if self._checkpoint_id(current) != before_checkpoint_id:
-                raise RuntimeError("checkpoint changed during resume binding validation")
-            await _execute_workflow(workflow, Command(resume=normalized), config)
-            return self._result(await workflow.aget_state(config))
+            if marker is not None and marker[1] != before_checkpoint_id:
+                self._operations_service.recover_workflow_mutation(
+                    checkpoint_case_id,
+                    thread_id,
+                    self._checkpoint_owner_token,
+                    marker[1],
+                    before_checkpoint_id,
+                    marker[0],
+                )
+                _clear_checkpoint_attempt(
+                    checkpoint_path,
+                    checkpoint_case_id,
+                    thread_id,
+                    marker[0],
+                )
+            attempt_token = _prepare_checkpoint_attempt(
+                checkpoint_path,
+                checkpoint_case_id,
+                thread_id,
+                before_checkpoint_id,
+            )
+            claimed = False
+            try:
+                self._operations_service.claim_workflow_mutation(
+                    checkpoint_case_id,
+                    thread_id,
+                    self._checkpoint_owner_token,
+                    before_checkpoint_id,
+                    attempt_token,
+                )
+                claimed = True
+                if self._failures.consume("stale_decision_version"):
+                    raise ValueError("injected stale decision/version rejected before resume")
+                if self._failures.consume("changed_action_digest"):
+                    raise ValueError("injected changed action digest rejected before resume")
+                normalized = self._validate_resume_binding(
+                    thread_id=thread_id,
+                    response=response,
+                    pending=pending,
+                )
+                current = await workflow.aget_state(config)
+                if self._checkpoint_id(current) != before_checkpoint_id:
+                    raise RuntimeError("checkpoint changed during resume binding validation")
+                await _execute_workflow(workflow, Command(resume=normalized), config)
+                after = await workflow.aget_state(config)
+                after_checkpoint_id = self._checkpoint_id(after)
+                if after_checkpoint_id is None:
+                    raise RuntimeError("workflow resume completed without a durable checkpoint")
+                self._operations_service.advance_workflow_mutation(
+                    checkpoint_case_id,
+                    thread_id,
+                    self._checkpoint_owner_token,
+                    before_checkpoint_id,
+                    after_checkpoint_id,
+                    attempt_token,
+                )
+                _clear_checkpoint_attempt(
+                    checkpoint_path,
+                    checkpoint_case_id,
+                    thread_id,
+                    attempt_token,
+                )
+                return self._result(after)
+            except BaseException:
+                if claimed:
+                    after = await workflow.aget_state(config)
+                    after_checkpoint_id = self._checkpoint_id(after)
+                    if (
+                        after_checkpoint_id is not None
+                        and after_checkpoint_id != before_checkpoint_id
+                    ):
+                        self._operations_service.advance_workflow_mutation(
+                            checkpoint_case_id,
+                            thread_id,
+                            self._checkpoint_owner_token,
+                            before_checkpoint_id,
+                            after_checkpoint_id,
+                            attempt_token,
+                        )
+                    else:
+                        self._operations_service.release_workflow_mutation(
+                            checkpoint_case_id,
+                            thread_id,
+                            self._checkpoint_owner_token,
+                            before_checkpoint_id,
+                            attempt_token,
+                        )
+                    _clear_checkpoint_attempt(
+                        checkpoint_path,
+                        checkpoint_case_id,
+                        thread_id,
+                        attempt_token,
+                    )
+                raise
 
     async def get_case(self, *, thread_id: str) -> RuntimeResult | None:
         snapshot = await _RUNTIME_WORKFLOWS[self].aget_state(self._config(thread_id))

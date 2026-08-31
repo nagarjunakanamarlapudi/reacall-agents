@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
@@ -37,6 +38,53 @@ def _case_count(path: Path) -> int:
         return int(connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0])
     finally:
         connection.close()
+
+
+def _durable_confirmation_records(history) -> tuple[dict, ...]:
+    """Extract only adjacent pending-confirmation -> execute-ready audit transitions."""
+    records = []
+    for confirmed, pending in zip(history, history[1:], strict=False):
+        request = pending.pending_interrupt
+        if (
+            confirmed.case.get("status") != "approved_pending_execution"
+            or confirmed.pending_interrupt is not None
+            or confirmed.next_nodes != ("execute_one_operation",)
+            or not confirmed.checkpoint_id
+            or request is None
+            or request.get("kind") != "execution_confirmation"
+            or pending.next_nodes != ("execution_confirmation",)
+            or not pending.checkpoint_id
+        ):
+            continue
+        binding = {
+            "case_id": request["case_id"],
+            "thread_id": request["thread_id"],
+            "case_version": request["case_version"],
+            "action_id": request["action_id"],
+            "action_digest": request["action_digest"],
+            "execution_id": request["execution_id"],
+            "idempotency_key": request["idempotency_key"],
+            "action": request["action"],
+            "approval": confirmed.case["approval"],
+        }
+        confirmed_binding = {
+            "case_id": confirmed.case["case_id"],
+            "thread_id": confirmed.case["thread_id"],
+            "case_version": confirmed.case["case_version"],
+            "action_id": confirmed.case["current_action"]["action_id"],
+            "action_digest": confirmed.case["action_digest"],
+            "execution_id": confirmed.case["execution_id"],
+            "idempotency_key": confirmed.case["idempotency_key"],
+            "action": confirmed.case["current_action"],
+            "approval": confirmed.case["approval"],
+        }
+        if binding == confirmed_binding:
+            assert pending.case["execution_request"] == request
+            assert confirmed.case["execution_request"] == request
+            assert len(confirmed.case["write_receipts"]) == len(pending.case["write_receipts"])
+            assert confirmed.checkpoint_id != pending.checkpoint_id
+            records.append(binding)
+    return tuple(records)
 
 
 def _bound_response(
@@ -116,7 +164,7 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
         "prepare_action_review",
         "action_review",
     ]
-    assert json.loads(json.dumps(result.case)) == result.case
+    assert json.loads(json.dumps(result.model_dump(mode="json")["case"])) == result.case
     assert _operation_count(operations_path) == 0
     assert _case_count(operations_path) == 0
 
@@ -670,6 +718,312 @@ async def test_legacy_resume_wins_against_concurrent_replacement_store_start(
 
 
 @pytest.mark.asyncio
+async def test_copied_checkpoint_heads_have_one_fenced_mutation_winner(tmp_path: Path) -> None:
+    """Break caught: copied stores sharing one UUID can both fork the same paused head."""
+    from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
+
+    first_checkpoint = tmp_path / "first-checkpoints.sqlite3"
+    copied_checkpoint = tmp_path / "copied-checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=first_checkpoint,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Fence every mutation from this copied checkpoint head.",
+            case_id="CASE-COPIED-HEAD",
+            thread_id="THREAD-COPIED-HEAD",
+        )
+
+    shutil.copy2(first_checkpoint, copied_checkpoint)
+    async with (
+        RecallOpsRuntime.open(
+            checkpoint_path=first_checkpoint,
+            operations_path=operations_path,
+        ) as first,
+        RecallOpsRuntime.open(
+            checkpoint_path=copied_checkpoint,
+            operations_path=operations_path,
+        ) as copied,
+    ):
+        outcomes = await asyncio.gather(
+            first.resume_case(
+                thread_id="THREAD-COPIED-HEAD",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            ),
+            copied.resume_case(
+                thread_id="THREAD-COPIED-HEAD",
+                response=_bound_response(review.pending_interrupt, decision="reject"),
+            ),
+            return_exceptions=True,
+        )
+
+    assert sum(isinstance(item, RuntimeResult) for item in outcomes) == 1
+    assert sum(isinstance(item, ValueError) for item in outcomes) == 1
+    winner_index = next(
+        index for index, item in enumerate(outcomes) if isinstance(item, RuntimeResult)
+    )
+    winner_path = (first_checkpoint, copied_checkpoint)[winner_index]
+    stale_path = (copied_checkpoint, first_checkpoint)[winner_index]
+    winning_result = outcomes[winner_index]
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=stale_path,
+        operations_path=operations_path,
+    ) as stale:
+        stale_before = await stale.get_case_history(thread_id="THREAD-COPIED-HEAD")
+        with pytest.raises(ValueError, match="checkpoint|head|stale|mutation"):
+            await stale.resume_case(
+                thread_id="THREAD-COPIED-HEAD",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            )
+        assert await stale.get_case_history(thread_id="THREAD-COPIED-HEAD") == stale_before
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=winner_path,
+        operations_path=operations_path,
+    ) as winner:
+        assert await winner.get_case(thread_id="THREAD-COPIED-HEAD") == winning_result
+
+
+@pytest.mark.asyncio
+async def test_winning_store_recovers_crash_between_checkpoint_and_head_advance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a crash after checkpoint commit strands the winning lease forever."""
+    from recallops.agents.runtime import RecallOpsRuntime
+    from recallops.services.operations import OperationsService
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Recover only the store carrying the durable attempt token.",
+            case_id="CASE-CRASH-FENCE",
+            thread_id="THREAD-CRASH-FENCE",
+        )
+
+        with monkeypatch.context() as crash:
+            crash.setattr(
+                OperationsService,
+                "advance_workflow_mutation",
+                lambda *args, **kwargs: (_ for _ in ()).throw(
+                    SystemExit("simulated process death after checkpoint commit")
+                ),
+            )
+            with pytest.raises(SystemExit, match="simulated process death"):
+                await runtime.resume_case(
+                    thread_id="THREAD-CRASH-FENCE",
+                    response=_bound_response(review.pending_interrupt, decision="approve"),
+                )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        confirmation = await runtime.get_case(thread_id="THREAD-CRASH-FENCE")
+        assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+        created = await runtime.resume_case(
+            thread_id="THREAD-CRASH-FENCE",
+            response=_bound_response(confirmation.pending_interrupt, decision="confirm"),
+        )
+
+    assert created.case["case_version"] == 1
+    assert _operation_count(operations_path) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_unchanged_resume_releases_fence_for_immediate_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: cancellation before checkpoint mutation leaves an immortal lease."""
+    import recallops.agents.runtime as runtime_module
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Release an unchanged mutation fence after cancellation.",
+            case_id="CASE-CANCELLED-FENCE",
+            thread_id="THREAD-CANCELLED-FENCE",
+        )
+
+        async def cancel_before_mutation(*args, **kwargs):
+            raise asyncio.CancelledError
+
+        with monkeypatch.context() as cancellation:
+            cancellation.setattr(runtime_module, "_execute_workflow", cancel_before_mutation)
+            with pytest.raises(asyncio.CancelledError):
+                await runtime.resume_case(
+                    thread_id="THREAD-CANCELLED-FENCE",
+                    response=_bound_response(review.pending_interrupt, decision="approve"),
+                )
+
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-CANCELLED-FENCE",
+            response=_bound_response(review.pending_interrupt, decision="approve"),
+        )
+
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: lease expiry lets a copied store fork an uncertain attempt."""
+    import recallops.agents.runtime as runtime_module
+    from recallops.agents.runtime import RecallOpsRuntime
+    from recallops.services.operations import OperationsService
+
+    original_path = tmp_path / "original-checkpoints.sqlite3"
+    copied_path = tmp_path / "copied-checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=original_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Only the prepared store may recover an expired uncertain lease.",
+            case_id="CASE-EXPIRED-FENCE",
+            thread_id="THREAD-EXPIRED-FENCE",
+        )
+
+    shutil.copy2(original_path, copied_path)
+
+    async def die_before_mutation(*args, **kwargs):
+        raise SystemExit("simulated death before checkpoint mutation")
+
+    def die_before_release(*args, **kwargs):
+        raise SystemExit("simulated death before fence release")
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=original_path,
+        operations_path=operations_path,
+    ) as original:
+        with monkeypatch.context() as crash:
+            crash.setattr(runtime_module, "_execute_workflow", die_before_mutation)
+            crash.setattr(OperationsService, "release_workflow_mutation", die_before_release)
+            with pytest.raises(SystemExit, match="fence release"):
+                await original.resume_case(
+                    thread_id="THREAD-EXPIRED-FENCE",
+                    response=_bound_response(review.pending_interrupt, decision="approve"),
+                )
+
+    with sqlite3.connect(operations_path) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET attempt_expires_at=0 WHERE case_id=?",
+            ("CASE-EXPIRED-FENCE",),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=copied_path,
+        operations_path=operations_path,
+    ) as copied:
+        with pytest.raises(ValueError, match="active|uncertain|mutation"):
+            await copied.resume_case(
+                thread_id="THREAD-EXPIRED-FENCE",
+                response=_bound_response(review.pending_interrupt, decision="reject"),
+            )
+
+    with sqlite3.connect(operations_path) as connection:
+        state = connection.execute(
+            "SELECT attempt_state FROM workflow_identities WHERE case_id=?",
+            ("CASE-EXPIRED-FENCE",),
+        ).fetchone()[0]
+    assert state == "uncertain"
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=original_path,
+        operations_path=operations_path,
+    ) as original:
+        confirmation = await original.resume_case(
+            thread_id="THREAD-EXPIRED-FENCE",
+            response=_bound_response(review.pending_interrupt, decision="approve"),
+        )
+
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a losing runtime deletes the active winner's crash-recovery proof."""
+    from recallops.agents.runtime import (
+        RecallOpsRuntime,
+        _clear_checkpoint_attempt,
+        _load_checkpoint_attempt,
+        _prepare_checkpoint_attempt,
+    )
+    from recallops.services.operations import OperationsService
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Preserve the live winner's recovery proof.",
+            case_id="CASE-LIVE-MARKER",
+            thread_id="THREAD-LIVE-MARKER",
+        )
+        token = _prepare_checkpoint_attempt(
+            checkpoint_path,
+            "CASE-LIVE-MARKER",
+            "THREAD-LIVE-MARKER",
+            review.checkpoint_id,
+        )
+        operations = OperationsService(storage_path=operations_path)
+        operations.claim_workflow_mutation(
+            "CASE-LIVE-MARKER",
+            "THREAD-LIVE-MARKER",
+            runtime._checkpoint_owner_token,
+            review.checkpoint_id,
+            token,
+        )
+
+        with pytest.raises(ValueError, match="active|uncertain"):
+            await runtime.resume_case(
+                thread_id="THREAD-LIVE-MARKER",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            )
+
+        assert _load_checkpoint_attempt(
+            checkpoint_path,
+            "CASE-LIVE-MARKER",
+            "THREAD-LIVE-MARKER",
+        ) == (token, review.checkpoint_id)
+        operations.release_workflow_mutation(
+            "CASE-LIVE-MARKER",
+            "THREAD-LIVE-MARKER",
+            runtime._checkpoint_owner_token,
+            review.checkpoint_id,
+            token,
+        )
+        _clear_checkpoint_attempt(
+            checkpoint_path,
+            "CASE-LIVE-MARKER",
+            "THREAD-LIVE-MARKER",
+            token,
+        )
+
+
+@pytest.mark.asyncio
 async def test_concurrent_checkpoint_stores_have_one_exact_identity_winner(tmp_path: Path) -> None:
     """Break caught: two stores concurrently create independent graphs for one identity."""
     from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
@@ -751,11 +1105,16 @@ async def test_real_stdio_runtime_reaches_one_approved_mcp_write(tmp_path: Path)
             thread_id="THREAD-STDIO-RUNTIME",
             response=_bound_response(restored.pending_interrupt, decision="retry"),
         )
+        stdio_confirmation_records = _durable_confirmation_records(
+            await runtime.get_case_history(thread_id="THREAD-STDIO-RUNTIME")
+        )
 
     assert created.case["case_version"] == 1
     assert created.pending_interrupt["action"]["action_type"] == "apply_inventory_hold"
     assert _operation_count(operations_path) == 1
     assert created.case["write_receipts"][0]["idempotency_key"] == original_key
+    assert len(stdio_confirmation_records) == 1
+    assert stdio_confirmation_records[0]["idempotency_key"] == original_key
     persisted = OperationsService(storage_path=operations_path).get_case("CASE-STDIO-RUNTIME")
     assert persisted is not None
     assert persisted.thread_id == "THREAD-STDIO-RUNTIME"
@@ -1008,9 +1367,14 @@ async def test_lost_write_response_recovers_with_same_key_and_one_logical_receip
             thread_id="THREAD-UNKNOWN",
             response=_bound_response(restored.pending_interrupt, decision="retry"),
         )
+        confirmation_records = _durable_confirmation_records(
+            await runtime.get_case_history(thread_id="THREAD-UNKNOWN")
+        )
 
     assert recovered.case["case_version"] == 1
     assert recovered.case["write_receipts"][0]["idempotency_key"] == original_key
+    assert len(confirmation_records) == 1
+    assert confirmation_records[0]["idempotency_key"] == original_key
     assert _operation_count(operations_path) == 1
 
 
@@ -1210,6 +1574,12 @@ async def test_dual_consent_executes_one_create_then_one_hold_version(
         assert approved.pending_interrupt["kind"] == "execution_confirmation"
         assert approved.case["status"] == "approved_pending_execution"
         assert _operation_count(operations_path) == 0
+        assert (
+            _durable_confirmation_records(
+                await runtime.get_case_history(thread_id="THREAD-CONSENT")
+            )
+            == ()
+        )
 
         created = await runtime.resume_case(
             thread_id="THREAD-CONSENT",
@@ -1220,6 +1590,47 @@ async def test_dual_consent_executes_one_create_then_one_hold_version(
         assert created.pending_interrupt["action"]["action_type"] == "apply_inventory_hold"
         assert [item["action_type"] for item in created.case["write_receipts"]] == ["create_case"]
         assert _operation_count(operations_path) == 1
+        create_records = _durable_confirmation_records(
+            await runtime.get_case_history(thread_id="THREAD-CONSENT")
+        )
+        assert create_records == (
+            {
+                key: approved.pending_interrupt[key]
+                for key in (
+                    "case_id",
+                    "thread_id",
+                    "case_version",
+                    "action_id",
+                    "action_digest",
+                    "execution_id",
+                    "idempotency_key",
+                )
+            }
+            | {
+                "action": approved.pending_interrupt["action"],
+                "approval": approved.case["approval"],
+            },
+        )
+        assert (
+            created.case["write_receipts"][0]["idempotency_key"]
+            == create_records[0]["idempotency_key"]
+        )
+        assert created.case["write_receipts"][0]["case_version"] == (
+            create_records[0]["case_version"] + 1
+        )
+        assert (
+            created.case["write_receipts"][0]["details"]["reviewed_action"]["action_id"]
+            == create_records[0]["action_id"]
+        )
+        assert (
+            created.case["write_receipts"][0]["details"]["reviewed_action"]
+            == (create_records[0]["action"])
+        )
+        assert created.case["write_receipts"][0]["actor"] == create_records[0]["approval"]["actor"]
+        assert (
+            created.case["write_receipts"][0]["justification"]
+            == create_records[0]["approval"]["justification"]
+        )
 
         hold_approved = await runtime.resume_case(
             thread_id="THREAD-CONSENT",
@@ -1230,6 +1641,14 @@ async def test_dual_consent_executes_one_create_then_one_hold_version(
             response=_bound_response(hold_approved.pending_interrupt, decision="confirm"),
         )
 
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as restarted:
+        durable_records = _durable_confirmation_records(
+            await restarted.get_case_history(thread_id="THREAD-CONSENT")
+        )
+
     assert held.pending_interrupt is None
     assert held.case["case_version"] == 2
     assert held.case["status"] == "open_closure_blocked"
@@ -1238,6 +1657,19 @@ async def test_dual_consent_executes_one_create_then_one_hold_version(
         "apply_inventory_hold",
     ]
     assert _operation_count(operations_path) == 2
+    assert len(durable_records) == 2
+    assert {record["idempotency_key"] for record in durable_records} == {
+        receipt["idempotency_key"] for receipt in held.case["write_receipts"]
+    }
+    for receipt in held.case["write_receipts"]:
+        record = next(
+            item
+            for item in durable_records
+            if item["idempotency_key"] == receipt["idempotency_key"]
+        )
+        assert record["case_version"] + 1 == receipt["case_version"]
+        assert record["action"] == receipt["details"]["reviewed_action"]
+        assert record["action"]["action_type"] == receipt["action_type"]
 
 
 @pytest.mark.asyncio
@@ -1469,6 +1901,50 @@ async def test_runtime_exposes_detached_checkpoint_history_without_a_runner(tmp_
     assert history[0] == review
     assert all(isinstance(item, RuntimeResult) for item in history)
     assert all(item.model_config["frozen"] for item in history)
+
+
+@pytest.mark.asyncio
+async def test_runtime_results_are_recursively_immutable_and_json_presentable(
+    tmp_path: Path,
+) -> None:
+    """Break caught: frozen result models still expose mutable nested dicts and lists."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Return an immutable audit view without losing JSON ergonomics.",
+            case_id="CASE-IMMUTABLE-RESULT",
+            thread_id="THREAD-IMMUTABLE-RESULT",
+        )
+        history = await runtime.get_case_history(thread_id="THREAD-IMMUTABLE-RESULT")
+
+        with pytest.raises(TypeError):
+            result.case["status"] = "forged"
+        with pytest.raises(TypeError):
+            dict.__setitem__(result.case, "status", "base-class-forged")
+        with pytest.raises(TypeError):
+            result.case["rag_state"]["read_count"] = 999
+        with pytest.raises((AttributeError, TypeError)):
+            result.case["node_trace"].append("forged")
+        with pytest.raises(TypeError):
+            result.pending_interrupt["action"]["rationale"] = "forged"
+        with pytest.raises(TypeError):
+            history[0].case["status"] = "forged-history"
+
+        presented = result.model_dump(mode="json")
+        json_case = json.loads(json.dumps(presented["case"]))
+        assert json_case == presented["case"]
+        assert json_case["status"] == "review_required"
+        presented["case"]["status"] = "presentation-only"
+        fresh = await runtime.get_case(thread_id="THREAD-IMMUTABLE-RESULT")
+
+    assert isinstance(result.case["node_trace"], tuple)
+    assert fresh == result
+    assert fresh.case["status"] == "review_required"
 
 
 @pytest.mark.asyncio

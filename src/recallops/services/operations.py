@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -25,6 +26,9 @@ from recallops.models import (
     validate_case_version,
 )
 from recallops.services.traceability import TraceabilityService
+
+INITIAL_CHECKPOINT_HEAD = "__recallops_initial_checkpoint__"
+WORKFLOW_MUTATION_LEASE_SECONDS = 30.0
 
 
 class ApprovalRequiredError(PermissionError):
@@ -83,7 +87,9 @@ class OperationsService:
                       thread_id TEXT NOT NULL UNIQUE);
                     CREATE TABLE IF NOT EXISTS workflow_identities (
                       case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
-                      owner_token TEXT);
+                      owner_token TEXT, checkpoint_head TEXT, attempt_token TEXT,
+                      attempt_expected_head TEXT, attempt_state TEXT,
+                      attempt_expires_at REAL);
                     CREATE TABLE IF NOT EXISTS receipts (
                       receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
                       case_id TEXT NOT NULL REFERENCES cases(case_id), action_type TEXT NOT NULL,
@@ -133,6 +139,17 @@ class OperationsService:
             }
             if "owner_token" not in identity_columns:
                 connection.execute("ALTER TABLE workflow_identities ADD COLUMN owner_token TEXT")
+            for column, declaration in (
+                ("checkpoint_head", "TEXT"),
+                ("attempt_token", "TEXT"),
+                ("attempt_expected_head", "TEXT"),
+                ("attempt_state", "TEXT"),
+                ("attempt_expires_at", "REAL"),
+            ):
+                if column not in identity_columns:
+                    connection.execute(
+                        f"ALTER TABLE workflow_identities ADD COLUMN {column} {declaration}"
+                    )
             rows = connection.execute("SELECT case_id, state_json FROM cases").fetchall()
             for row in rows:
                 state = RecallCaseState.model_validate_json(row["state_json"])
@@ -408,9 +425,9 @@ class OperationsService:
                         )
                     return False
                 conn.execute(
-                    "INSERT INTO workflow_identities (case_id, thread_id, owner_token) "
-                    "VALUES (?, ?, ?)",
-                    (case_id, thread_id, owner_token),
+                    "INSERT INTO workflow_identities "
+                    "(case_id, thread_id, owner_token, checkpoint_head) VALUES (?, ?, ?, ?)",
+                    (case_id, thread_id, owner_token, INITIAL_CHECKPOINT_HEAD),
                 )
                 return True
         except ValueError:
@@ -491,6 +508,255 @@ class OperationsService:
             raise
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to validate workflow identity: {error}") from error
+
+    def claim_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+        expected_checkpoint_head: str,
+        attempt_token: str,
+        *,
+        lease_seconds: float = WORKFLOW_MUTATION_LEASE_SECONDS,
+    ) -> None:
+        """Atomically fence one mutation attempt at the exact durable checkpoint head."""
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("owner_token", owner_token),
+            ("expected_checkpoint_head", expected_checkpoint_head),
+            ("attempt_token", attempt_token),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)):
+            raise TypeError("lease_seconds must be a positive number")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        conflict: str | None = None
+        try:
+            with self._transaction() as conn:
+                row = conn.execute(
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
+                    "attempt_expected_head, attempt_state, attempt_expires_at "
+                    "FROM workflow_identities "
+                    "WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                if row is None or row["thread_id"] != thread_id:
+                    raise ValueError("workflow mutation identity is not reserved exactly")
+                if row["owner_token"] != owner_token:
+                    raise ValueError("workflow mutation is owned by another checkpoint store")
+                checkpoint_head = row["checkpoint_head"]
+                if checkpoint_head is None:
+                    checkpoint_head = expected_checkpoint_head
+                    conn.execute(
+                        "UPDATE workflow_identities SET checkpoint_head=? WHERE case_id=?",
+                        (checkpoint_head, case_id),
+                    )
+                if checkpoint_head != expected_checkpoint_head:
+                    raise ValueError(
+                        "checkpoint head is stale and cannot fork the durable workflow"
+                    )
+                expires_at = time.time() + float(lease_seconds)
+                if row["attempt_token"] is None:
+                    conn.execute(
+                        "UPDATE workflow_identities SET attempt_token=?, "
+                        "attempt_expected_head=?, attempt_state='active', attempt_expires_at=? "
+                        "WHERE case_id=? AND thread_id=? AND owner_token=?",
+                        (
+                            attempt_token,
+                            expected_checkpoint_head,
+                            expires_at,
+                            case_id,
+                            thread_id,
+                            owner_token,
+                        ),
+                    )
+                elif (
+                    row["attempt_token"] == attempt_token
+                    and row["attempt_expected_head"] == expected_checkpoint_head
+                ):
+                    if (
+                        row["attempt_state"] == "active"
+                        and (row["attempt_expires_at"] or 0) > time.time()
+                    ):
+                        conflict = "workflow mutation is already active or uncertain"
+                    else:
+                        conn.execute(
+                            "UPDATE workflow_identities SET attempt_state='active', "
+                            "attempt_expires_at=? WHERE case_id=? AND attempt_token=?",
+                            (expires_at, case_id, attempt_token),
+                        )
+                else:
+                    if (row["attempt_expires_at"] or 0) <= time.time():
+                        conn.execute(
+                            "UPDATE workflow_identities SET attempt_state='uncertain' "
+                            "WHERE case_id=?",
+                            (case_id,),
+                        )
+                    conflict = "workflow mutation is already active or uncertain"
+            if conflict is not None:
+                raise ValueError(conflict)
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to claim workflow mutation: {error}") from error
+
+    def advance_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+        expected_checkpoint_head: str,
+        new_checkpoint_head: str,
+        attempt_token: str,
+    ) -> None:
+        """Atomically bind the successful checkpoint head and close its fencing attempt."""
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("owner_token", owner_token),
+            ("expected_checkpoint_head", expected_checkpoint_head),
+            ("new_checkpoint_head", new_checkpoint_head),
+            ("attempt_token", attempt_token),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        try:
+            with self._transaction() as conn:
+                row = conn.execute(
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
+                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                if row is None or row["thread_id"] != thread_id:
+                    raise ValueError("workflow mutation identity is not reserved exactly")
+                if row["owner_token"] != owner_token:
+                    raise ValueError("workflow mutation is owned by another checkpoint store")
+                if row["checkpoint_head"] == new_checkpoint_head and row["attempt_token"] is None:
+                    return
+                if (
+                    row["checkpoint_head"] != expected_checkpoint_head
+                    or row["attempt_token"] != attempt_token
+                    or row["attempt_expected_head"] != expected_checkpoint_head
+                ):
+                    raise ValueError("workflow mutation fence no longer matches this attempt")
+                conn.execute(
+                    "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
+                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "WHERE case_id=?",
+                    (new_checkpoint_head, case_id),
+                )
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to advance workflow mutation: {error}") from error
+
+    def release_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+        expected_checkpoint_head: str,
+        attempt_token: str,
+    ) -> None:
+        """Release an attempt only while its checkpoint head is provably unchanged."""
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("owner_token", owner_token),
+            ("expected_checkpoint_head", expected_checkpoint_head),
+            ("attempt_token", attempt_token),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        try:
+            with self._transaction() as conn:
+                row = conn.execute(
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
+                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                if row is None or row["thread_id"] != thread_id:
+                    raise ValueError("workflow mutation identity is not reserved exactly")
+                if row["owner_token"] != owner_token:
+                    raise ValueError("workflow mutation is owned by another checkpoint store")
+                if (
+                    row["attempt_token"] is None
+                    and row["checkpoint_head"] == expected_checkpoint_head
+                ):
+                    return
+                if (
+                    row["checkpoint_head"] != expected_checkpoint_head
+                    or row["attempt_token"] != attempt_token
+                    or row["attempt_expected_head"] != expected_checkpoint_head
+                ):
+                    raise ValueError("workflow mutation cannot be released after its head changed")
+                conn.execute(
+                    "UPDATE workflow_identities SET attempt_token=NULL, "
+                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "WHERE case_id=?",
+                    (case_id,),
+                )
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to release workflow mutation: {error}") from error
+
+    def recover_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+        expected_checkpoint_head: str,
+        recovered_checkpoint_head: str,
+        attempt_token: str,
+    ) -> None:
+        """Finish an uncertain attempt only for the store carrying its persisted token."""
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("owner_token", owner_token),
+            ("expected_checkpoint_head", expected_checkpoint_head),
+            ("recovered_checkpoint_head", recovered_checkpoint_head),
+            ("attempt_token", attempt_token),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        try:
+            with self._transaction() as conn:
+                row = conn.execute(
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
+                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                if row is None or row["thread_id"] != thread_id:
+                    raise ValueError("workflow mutation identity is not reserved exactly")
+                if row["owner_token"] != owner_token:
+                    raise ValueError("workflow mutation is owned by another checkpoint store")
+                if (
+                    row["checkpoint_head"] == recovered_checkpoint_head
+                    and row["attempt_token"] is None
+                ):
+                    return
+                if (
+                    row["checkpoint_head"] != expected_checkpoint_head
+                    or row["attempt_token"] != attempt_token
+                    or row["attempt_expected_head"] != expected_checkpoint_head
+                    or recovered_checkpoint_head == expected_checkpoint_head
+                ):
+                    raise ValueError("workflow mutation recovery proof does not match")
+                conn.execute(
+                    "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
+                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "WHERE case_id=?",
+                    (recovered_checkpoint_head, case_id),
+                )
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to recover workflow mutation: {error}") from error
 
     def release_workflow_identity(
         self,

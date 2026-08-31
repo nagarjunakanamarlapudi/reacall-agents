@@ -170,10 +170,55 @@ def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_pat
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(workflow_identities)")}
         mapping = connection.execute(
-            "SELECT case_id, thread_id, owner_token FROM workflow_identities"
+            "SELECT case_id, thread_id, owner_token, checkpoint_head, attempt_token, "
+            "attempt_expected_head, attempt_state, attempt_expires_at FROM workflow_identities"
         ).fetchone()
-    assert columns == {"case_id", "thread_id", "owner_token"}
-    assert mapping == ("CASE-LEGACY", "THREAD-LEGACY", None)
+    assert columns == {
+        "case_id",
+        "thread_id",
+        "owner_token",
+        "checkpoint_head",
+        "attempt_token",
+        "attempt_expected_head",
+        "attempt_state",
+        "attempt_expires_at",
+    }
+    assert mapping == ("CASE-LEGACY", "THREAD-LEGACY", None, None, None, None, None, None)
+
+
+def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path: Path) -> None:
+    """Break caught: two live clones reuse one persisted attempt token concurrently."""
+    database = tmp_path / "active-fence.sqlite3"
+    service = OperationsService(storage_path=database)
+    service.reserve_workflow_identity("CASE-FENCE", "THREAD-FENCE", "OWNER-FENCE")
+    service.claim_workflow_mutation(
+        "CASE-FENCE",
+        "THREAD-FENCE",
+        "OWNER-FENCE",
+        "__recallops_initial_checkpoint__",
+        "ATTEMPT-FENCE",
+    )
+
+    with pytest.raises(ValueError, match="active|uncertain"):
+        service.claim_workflow_mutation(
+            "CASE-FENCE",
+            "THREAD-FENCE",
+            "OWNER-FENCE",
+            "__recallops_initial_checkpoint__",
+            "ATTEMPT-FENCE",
+        )
+
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET attempt_expires_at=0 WHERE case_id='CASE-FENCE'"
+        )
+    service.claim_workflow_mutation(
+        "CASE-FENCE",
+        "THREAD-FENCE",
+        "OWNER-FENCE",
+        "__recallops_initial_checkpoint__",
+        "ATTEMPT-FENCE",
+    )
 
 
 def test_legacy_create_hash_replays_once_then_migrates_to_thread_bound_hash(
