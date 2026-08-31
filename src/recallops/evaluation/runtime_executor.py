@@ -157,7 +157,10 @@ def _capture_service_authorization(
             "actor": approval.actor,
             "justification": approval.justification,
             "idempotency_key": idempotency_key,
+            "evidence_kind": "operation_call_observed",
+            "authorization_scope": "approval_bound_service_invocation",
             "operation_call_observed": True,
+            "execution_confirmation_observed": False,
         }
     )
 
@@ -422,7 +425,7 @@ def _observed_fault(
     return fault.model_dump(mode="json")
 
 
-def _receipts_match_authorization_evidence(
+def _receipts_match_approval_bound_service_calls(
     receipts: list[Any], evidence: list[dict[str, Any]]
 ) -> bool:
     if len(receipts) != len(evidence):
@@ -446,7 +449,10 @@ def _receipts_match_authorization_evidence(
             and binding["actor"] == receipt.get("actor")
             and binding["justification"] == receipt.get("justification")
             and binding["idempotency_key"] == receipt.get("idempotency_key")
+            and binding["evidence_kind"] == "operation_call_observed"
+            and binding["authorization_scope"] == "approval_bound_service_invocation"
             and binding["operation_call_observed"] is True
+            and binding["execution_confirmation_observed"] is False
         ):
             return False
     return True
@@ -1335,8 +1341,10 @@ class RecallOpsEvaluationExecutor:
                     "error_code": error_code,
                     "action_sequence": [receipt.action_type for receipt in state.write_receipts],
                     "authorization_evidence": authorization_evidence,
-                    "receipts_authorized": _receipts_match_authorization_evidence(
-                        state.write_receipts, authorization_evidence
+                    "approval_bound_service_invocations_observed": (
+                        _receipts_match_approval_bound_service_calls(
+                            state.write_receipts, authorization_evidence
+                        )
                     ),
                 },
                 "disposition_lifecycle": disposition_lifecycle,
@@ -1455,8 +1463,10 @@ class RecallOpsEvaluationExecutor:
                     ],
                     "error_code": error_code,
                     "authorization_evidence": authorization_evidence,
-                    "receipts_authorized": _receipts_match_authorization_evidence(
-                        state.write_receipts, authorization_evidence
+                    "approval_bound_service_invocations_observed": (
+                        _receipts_match_approval_bound_service_calls(
+                            state.write_receipts, authorization_evidence
+                        )
                     ),
                 },
                 "concurrency_probe": {

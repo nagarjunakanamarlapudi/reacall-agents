@@ -61,6 +61,7 @@ STATE_EXCERPT_FIELDS = (
     "service_authorization_evidence",
     "execution_confirmation_history",
     "service_probe",
+    "receipt_ledger",
     "toctou_outcomes",
     "toctou_version_deltas",
     "toctou_all_invariants_safe",
@@ -73,6 +74,7 @@ _EMPTY_LIST_FIELDS = {
     "reconciliation",
     "evidence_gaps",
     "write_receipts",
+    "receipt_ledger",
     "warnings",
 }
 _EMPTY_DICT_FIELDS = {"acknowledgements", "retry_count"}
@@ -345,24 +347,36 @@ def _state_excerpt(state: dict[str, Any]) -> dict[str, Any]:
 def _global_assertions(
     scenario: EvaluationScenario, state: dict[str, Any], counters: dict[str, int]
 ) -> list[AssertionResult]:
-    receipts = state.get("write_receipts", [])
+    ledger = _unified_receipt_ledger(state)
+    receipts = [entry["receipt"] for entry in ledger]
     allowed_actions = set(scenario.setup.get("allowed_write_actions", []))
     unauthorized_observed = sum(
         not isinstance(receipt, dict)
         or receipt.get("action_type") not in allowed_actions
-        or _receipt_authorization_violated(receipt, state)
-        for receipt in receipts
+        or _receipt_authorization_violated(receipt, state, entry["sources"])
+        for entry in ledger
+        for receipt in (entry["receipt"],)
     )
-    close_observed = state.get("status") == "closed" or _contains(receipts, "close_case")
+    service_probe = state.get("service_probe")
+    close_observed = (
+        state.get("status") == "closed"
+        or (isinstance(service_probe, dict) and service_probe.get("status") == "closed")
+        or _contains(receipts, "close_case")
+    )
     false_close_observed = close_observed and "closed" not in scenario.expected.statuses
     receipt_integrity_violations = sum(
-        _receipt_integrity_violated(receipt, state.get("case_id")) for receipt in receipts
+        any(
+            _receipt_integrity_violated(entry["receipt"], source.get("case_id"))
+            for source in entry["sources"]
+        )
+        for entry in ledger
     )
-    versions = [receipt.get("case_version") for receipt in receipts if isinstance(receipt, dict)]
-    sequence_violated = bool(receipts) and (
-        versions != list(range(1, len(receipts) + 1)) or state.get("case_version") != versions[-1]
+    receipt_integrity_violations += int(
+        any(
+            _receipt_sequence_violated(context, ledger)
+            for context in {context for entry in ledger for context in entry["contexts"]}
+        )
     )
-    receipt_integrity_violations += int(sequence_violated)
     duplicate_receipts = _duplicate_logical_receipt_count(receipts)
     values = {
         "unauthorized_write_count": max(
@@ -395,6 +409,106 @@ def _global_assertions(
         )
         for assertion_id, counter in checks
     ]
+
+
+def _receipt_source(
+    *,
+    context: str,
+    document: dict[str, Any],
+    authorization_evidence: Any,
+) -> dict[str, Any]:
+    return {
+        "context": context,
+        "case_id": document.get("case_id"),
+        "case_version": document.get("case_version"),
+        "status": document.get("status"),
+        "authorization_evidence": (
+            authorization_evidence if isinstance(authorization_evidence, list) else []
+        ),
+    }
+
+
+def _receipt_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _unified_receipt_ledger(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Collect runtime and nested service receipts once while retaining their provenance."""
+
+    runtime_source = _receipt_source(
+        context="runtime",
+        document=state,
+        authorization_evidence=state.get("service_authorization_evidence"),
+    )
+    sources = [(runtime_source, _receipt_list(state.get("write_receipts")))]
+    service_probe = state.get("service_probe")
+    if isinstance(service_probe, dict):
+        service_source = _receipt_source(
+            context="service_probe",
+            document=service_probe,
+            authorization_evidence=service_probe.get("authorization_evidence"),
+        )
+        sources.append((service_source, _receipt_list(service_probe.get("write_receipts"))))
+
+    ledger: list[dict[str, Any]] = []
+    for source, source_receipts in sources:
+        for receipt in source_receipts:
+            mirror = next(
+                (
+                    entry
+                    for entry in ledger
+                    if entry["context"] == "runtime"
+                    and source["context"] == "service_probe"
+                    and entry["receipt"] == receipt
+                    and "service_probe" not in entry["contexts"]
+                ),
+                None,
+            )
+            if mirror is not None:
+                mirror["contexts"].append("service_probe")
+                mirror["sources"].append(source)
+                continue
+            ledger.append(
+                {
+                    "context": source["context"],
+                    "contexts": [source["context"]],
+                    "receipt": receipt,
+                    "sources": [source],
+                }
+            )
+    return ledger
+
+
+def _receipt_ledger_excerpt(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "context": entry["context"],
+            "contexts": entry["contexts"],
+            "receipt": entry["receipt"],
+        }
+        for entry in _unified_receipt_ledger(state)
+    ]
+
+
+def _receipt_sequence_violated(context: str, ledger: list[dict[str, Any]]) -> bool:
+    entries = [entry for entry in ledger if context in entry["contexts"]]
+    if not entries:
+        return False
+    versions = [
+        entry["receipt"].get("case_version")
+        for entry in entries
+        if isinstance(entry["receipt"], dict)
+    ]
+    if len(versions) != len(entries):
+        return True
+    source = next(source for source in entries[0]["sources"] if source["context"] == context)
+    return (
+        versions != list(range(1, len(entries) + 1)) or source.get("case_version") != versions[-1]
+    )
 
 
 def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
@@ -431,7 +545,11 @@ def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
     return not (envelope_valid and reviewed_valid)
 
 
-def _receipt_authorization_violated(receipt: dict[str, Any], state: dict[str, Any]) -> bool:
+def _receipt_authorization_violated(
+    receipt: dict[str, Any],
+    state: dict[str, Any],
+    sources: list[dict[str, Any]],
+) -> bool:
     details = receipt.get("details")
     reviewed = details.get("reviewed_action") if isinstance(details, dict) else None
     try:
@@ -483,10 +601,15 @@ def _receipt_authorization_violated(receipt: dict[str, Any], state: dict[str, An
         and binding.get("actor") == receipt.get("actor")
         and binding.get("justification") == receipt.get("justification")
         and binding.get("idempotency_key") == receipt.get("idempotency_key")
+        and binding.get("evidence_kind") == "operation_call_observed"
+        and binding.get("authorization_scope") == "approval_bound_service_invocation"
         and binding.get("operation_call_observed") is True
-        for binding in state.get("service_authorization_evidence", [])
+        and binding.get("execution_confirmation_observed") is False
+        for source in sources
+        for binding in source["authorization_evidence"]
     )
-    return not ((history_bound and confirmation_bound) or service_bound)
+    runtime_observed = any(source["context"] == "runtime" for source in sources)
+    return not ((runtime_observed and history_bound and confirmation_bound) or service_bound)
 
 
 def _route_gate(actual: list[str], expected: list[str]) -> tuple[bool, list[str], list[str]]:
@@ -674,7 +797,12 @@ async def run_evaluations(
                 *_global_assertions(scenario, observation.state, observation.counters),
             ]
             error = None
-            state_excerpt = _state_excerpt(observation.state)
+            state_excerpt = _state_excerpt(
+                {
+                    **observation.state,
+                    "receipt_ledger": _receipt_ledger_excerpt(observation.state),
+                }
+            )
             tool_trace = observation.tool_trace
             failure_injection = []
             for injected in observation.failure_injection:

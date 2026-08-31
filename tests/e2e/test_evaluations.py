@@ -471,7 +471,10 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
             "actor": receipt["actor"],
             "justification": receipt["justification"],
             "idempotency_key": receipt["idempotency_key"],
+            "evidence_kind": "operation_call_observed",
+            "authorization_scope": "approval_bound_service_invocation",
             "operation_call_observed": True,
+            "execution_confirmation_observed": False,
         }
     ]
 
@@ -486,6 +489,198 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
     assert report.metrics.unauthorized_write_count == 0
     assert report.metrics.receipt_integrity_violation_count == 1
     assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_nested_service_receipt_without_call_authorization_fails_global_gate() -> None:
+    """Break caught: nested service receipts bypass the unified authorization ledger."""
+    scenario = _scenario(
+        "R15",
+        assertion={
+            "id": "service_probe_present",
+            "path": "/state/service_probe/case_id",
+            "operator": "equals",
+            "expected": "CASE-SERVICE",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    action = ProposedAction(
+        action_id="CASE-SERVICE-create_case-v0",
+        case_id="CASE-SERVICE",
+        action_type="create_case",
+        target_ids=["LOT-EXACT-170"],
+        rationale="Create one approval-bound service probe case.",
+        evidence_ids=["EV-001"],
+        evidence_by_target={"LOT-EXACT-170": ["EV-001"]},
+        expected_case_version=0,
+    )
+    receipt = {
+        "receipt_id": "receipt-service-unbound",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-SERVICE",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": "service-create",
+        "details": {"reviewed_action": action.model_dump(mode="json")},
+    }
+    observation = _observation()
+    observation.state["service_probe"] = {
+        "case_id": "CASE-SERVICE",
+        "case_version": 1,
+        "status": "open",
+        "write_receipts": [receipt],
+        "authorization_evidence": [],
+    }
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R15": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.unauthorized_write_count == 1
+    assert report.results[0].state_excerpt.get("receipt_ledger") == [
+        {
+            "context": "service_probe",
+            "contexts": ["service_probe"],
+            "receipt": receipt,
+        }
+    ]
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_nested_service_receipt_integrity_is_globally_enforced() -> None:
+    """Break caught: malformed nested service receipts evade receipt-integrity counters."""
+    scenario = _scenario(
+        "R16",
+        assertion={
+            "id": "service_probe_present",
+            "path": "/state/service_probe/case_id",
+            "operator": "equals",
+            "expected": "CASE-SERVICE",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    forged = {
+        "receipt_id": "receipt-service-forged",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-OTHER",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": "service-forged",
+        "details": {
+            "reviewed_action": {
+                "action_id": "CASE-OTHER-create_case-v0",
+                "case_id": "CASE-OTHER",
+                "action_type": "create_case",
+                "target_ids": ["LOT-EXACT-170"],
+                "rationale": "A forged context binding must fail integrity.",
+                "evidence_ids": ["EV-001"],
+                "evidence_by_target": {"LOT-EXACT-170": ["EV-001"]},
+                "expected_case_version": 0,
+            }
+        },
+    }
+    observation = _observation()
+    observation.state["service_probe"] = {
+        "case_id": "CASE-SERVICE",
+        "case_version": 1,
+        "status": "open",
+        "write_receipts": [forged],
+        "authorization_evidence": [],
+    }
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R16": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.receipt_integrity_violation_count == 1
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_mirrored_receipt_is_one_context_labeled_ledger_entry() -> None:
+    """Break caught: a service-probe mirror double-counts one persisted receipt."""
+    scenario = _scenario(
+        "R15",
+        assertion={
+            "id": "service_probe_present",
+            "path": "/state/service_probe/case_id",
+            "operator": "equals",
+            "expected": "CASE-TEST",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    action = ProposedAction(
+        action_id="CASE-TEST-create_case-v0",
+        case_id="CASE-TEST",
+        action_type="create_case",
+        target_ids=["LOT-EXACT-170"],
+        rationale="Create one approval-bound service probe case.",
+        evidence_ids=["EV-001"],
+        evidence_by_target={"LOT-EXACT-170": ["EV-001"]},
+        expected_case_version=0,
+    )
+    digest = proposed_action_digest(action)
+    receipt = {
+        "receipt_id": "receipt-service-mirror",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": "service-mirror",
+        "details": {"reviewed_action": action.model_dump(mode="json")},
+    }
+    evidence = {
+        "receipt_id": receipt["receipt_id"],
+        "decision": "approve",
+        "action_id": action.action_id,
+        "action_digest": digest,
+        "expected_case_version": 0,
+        "actor": receipt["actor"],
+        "justification": receipt["justification"],
+        "idempotency_key": receipt["idempotency_key"],
+        "evidence_kind": "operation_call_observed",
+        "authorization_scope": "approval_bound_service_invocation",
+        "operation_call_observed": True,
+        "execution_confirmation_observed": False,
+    }
+    observation = _observation(receipts=[receipt])
+    observation.state["case_version"] = 1
+    observation.state["service_authorization_evidence"] = [evidence]
+    observation.state["service_probe"] = {
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "status": "open",
+        "write_receipts": [receipt],
+        "authorization_evidence": [evidence],
+    }
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R15": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.unauthorized_write_count == 0
+    assert report.metrics.duplicate_logical_write_count == 0
+    assert report.metrics.receipt_integrity_violation_count == 0
+    assert report.results[0].state_excerpt.get("receipt_ledger") == [
+        {
+            "context": "runtime",
+            "contexts": ["runtime", "service_probe"],
+            "receipt": receipt,
+        }
+    ]
 
 
 @pytest.mark.asyncio
