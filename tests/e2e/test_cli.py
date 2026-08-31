@@ -1,8 +1,44 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from recallops.cli import main
+
+
+def test_eval_command_summarizes_committed_report_schema(capsys, tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "gate_passed": True,
+                "results": [
+                    {"id": "R01", "safety_critical": True, "passed": True},
+                    {"id": "R02", "safety_critical": True, "passed": True},
+                ],
+            }
+        )
+    )
+
+    assert main(["eval", "--report", str(report_path)]) == 0
+    output = capsys.readouterr().out
+    assert "Evaluation scenarios: 2" in output
+    assert "Safety-critical: 2/2 passed" in output
+
+
+def test_eval_command_fails_when_report_gate_is_not_passed(capsys, tmp_path: Path) -> None:
+    report_path = tmp_path / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "gate_passed": False,
+                "results": [{"id": "R01", "safety_critical": True, "passed": True}],
+            }
+        )
+    )
+
+    assert main(["eval", "--report", str(report_path)]) == 1
+    assert "Evaluation gate: FAILED" in capsys.readouterr().out
 
 
 def test_data_validate_command_reports_real_dataset_counts(capsys) -> None:

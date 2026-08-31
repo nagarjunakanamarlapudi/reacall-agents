@@ -106,15 +106,17 @@ def _eval(report_path: Path) -> int:
         print(f"Evaluation report not available: {report_path}", file=sys.stderr)
         return 1
     report = json.loads(report_path.read_text())
-    scenarios = report.get("scenarios", [])
+    scenarios = report.get("results", [])
     if not isinstance(scenarios, list):
         print("Evaluation report has no scenario list.", file=sys.stderr)
         return 1
     critical = [item for item in scenarios if item.get("safety_critical") is True]
     passed = [item for item in critical if item.get("passed") is True]
+    gate_passed = report.get("gate_passed") is True
     print(f"Evaluation scenarios: {len(scenarios)}")
     print(f"Safety-critical: {len(passed)}/{len(critical)} passed")
-    return 0 if len(passed) == len(critical) and bool(critical) else 1
+    print(f"Evaluation gate: {'PASSED' if gate_passed else 'FAILED'}")
+    return 0 if gate_passed and len(passed) == len(critical) and bool(critical) else 1
 
 
 def _mcp_config() -> int:
