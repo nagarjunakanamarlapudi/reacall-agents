@@ -1,35 +1,36 @@
-# AI Coding Log
+# AI Coding and Coordination Log
 
-## Purpose and accuracy boundary
+## Accuracy boundary
 
-This log records the AI-assisted workflow for the RecallOps documentation pass. It distinguishes a coordination plan from tools actually invoked. All activity statements are **author-reported pending Task 11 verification**; it does not claim that a CLI, model, or reviewer was used when it was not.
+This log separates authorized tools from tools with recorded invocation evidence. It does not attribute work to Claude Code, Grok, or a model alias merely because the user made them available.
 
-## Coordinated workflow
+## Recorded coordination
 
-| Tool/workflow | Role in the coordinated plan | What this documentation pass records |
-|---|---|---|
-| Codex coordinator | Repository coordination, documentation authoring, test-first contract, Mermaid rendering/inspection, and commit preparation | **Codex (GPT-5 family; exact host alias not surfaced to this task)** is the accurate coordinator attribution. |
-| Codex documentation/foundation workers | Bounded documentation/foundation workstreams | Known delegated worker model identifier: `gpt-5.6-terra`. |
-| Codex notebook worker | Bounded notebook workstream | Known delegated worker model identifier: `gpt-5.6-luna`. |
-| Claude Code | Potential peer implementation/review workflow for other repository work | Not invoked by this documentation agent; no Claude Code CLI use is claimed here. |
-| Grok | Optional bounded clarity/diagram reviewer available at `/Users/nagarjuna/.grok/bin/grok` | Not invoked in this pass; no Grok CLI review result is claimed here. |
+| Tool/workflow | Recorded role |
+|---|---|
+| Codex coordinator | End-to-end design, worktree orchestration, integration decisions, runtime/evaluator/UI coordination, review loops, and final verification coordination |
+| Codex delegated workers | Data scale, foundation/MCP, notebooks, middleware, RAG, specialists/Deep Agents, business docs, durable workflow, evaluator, UI/CLI, and final docs |
+| Mermaid CLI 11.12.0 | Pinned local diagram rendering and byte-parity verification |
+| Claude Code | Available to the user; no invocation evidence is claimed in this log |
+| Grok CLI | Available to the user; no invocation evidence is claimed in this log |
 
-The broader project may include contributions from other coordinated workstreams. These model attributions are the exact known delegated identifiers supplied to this task; this document makes no stronger model or tool-use attribution.
+Coordinator attribution: **Codex (GPT-5 family; exact host alias not surfaced to this task)**. Known delegated worker identifiers include `gpt-5.6-terra` and `gpt-5.6-luna`. Exact model aliases are reported only where the task environment exposed them.
 
-## Human-authored constraints retained
+## Human-authored constraints preserved
 
-The product brief and task instructions required: strict official-versus-synthetic provenance, an explicit LangGraph lifecycle, MCP safety boundaries, no A2A, no direct agent writes, approval-gated simulated actions, closure blocking, a reproducible renderer, and no invented verification results. These constraints were treated as acceptance criteria, not suggestions.
+The user required a new genuine domain, reasonable data volume, `uv`, self-contained notebooks, business-first documentation and diagrams, LangGraph orchestration, planning, multi-agent/Deep Agents, MCP, middleware around model/agent/tool boundaries, HITL, hybrid sparse+dense retrieval with fusion/reranking, agentic RAG, full backend/frontend/tests, Git-ready history, and an exact video script. They also asked whether web search/You.com was needed; the recorded decision was no general search dependency, with only an allowlisted openFDA lookup plus frozen/committed evidence.
 
-## Documentation implementation record
+## Iteration record
 
-1. Read the Task 10 brief, approved design specification, implementation plan, and prior-project documentation examples.
-2. Wrote `tests/docs/test_documentation.py` before the documentation artifacts; executed it and observed missing-artifact failures.
-3. Wrote Markdown product docs and seven Mermaid source diagrams.
-4. Added a renderer that pins Mermaid CLI `11.12.0`; rendered SVGs and structurally/visually reviewed them.
-5. Re-ran the documentation contract and committed this isolated documentation branch.
-
-The final two lines are only complete after the commands have actually been run in this worktree; the accompanying Task 10 report records the observed command evidence and any concern.
+1. Converted the project handout/course concepts into a business-domain design and implementation plan.
+2. Built source/MCP/operations foundations and expanded the digital twin while retaining hand-auditable anchors.
+3. Added policy/synthetic corpus generation, hybrid retrieval, then a bounded agentic evidence loop.
+4. Built fixed specialists and a real optional Deep Agents graph; repeatedly tightened capability and configuration sealing.
+5. Added middleware and durable LangGraph HITL; review identified that approval must not execute, leading to dual consent and one-write-per-version transitions.
+6. Hardened cross-store resume against stale/concurrent/copied state with checkpoint-owner, head, and request fencing.
+7. Built the evaluator and UI/CLI in isolated worktrees, then reconciled product docs with actual behavior and machine-readable contracts.
+8. Rendered canonical diagrams from source, ran double-render parity, and retained only evidence actually executed in [Verification](VERIFICATION.md).
 
 ## Review discipline
 
-AI assistance was used to draft and organize content under explicit constraints. A human reviewer should still compare final docs with the integrated code, confirm actual CLI/UI strings, inspect SVG labels/arrows, and record final verification output. The documentation intentionally avoids test counts, successful-run claims, or production capability claims until evidence exists. The transitive Puppeteer deprecation warning emitted by the pinned renderer is retained for the final verification record.
+Feature work used test-first cycles where behavior changed, followed by focused tests, full-suite integration, and adversarial review/fix rounds. Documentation checks validate artifact/data/demo contracts and rendered diagram structure; prose remains subject to human review for clarity and domain accuracy. Generated evaluation timing is treated as a run-specific observation rather than a reproducible performance claim.

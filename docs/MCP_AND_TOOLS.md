@@ -1,23 +1,85 @@
-# MCP and Tool Safety
-
-**Status:** approved MCP/tool-safety contract pending Task 11 runtime integration and protocol smoke evidence.
+# MCP Servers and Tool Safety
 
 ![MCP/tool safety boundary](images/04_mcp_tool_safety.svg)
 
-MCP is the vertical boundary between reasoning and information/actions. LangGraph coordinates agents; MCP does not create agent-to-agent communication, and RecallOps uses no A2A protocol.
+MCP is RecallOps’ vertical integration boundary; it is not agent-to-agent communication. LangGraph owns coordination and state. The same typed gateway contract supports direct in-process calls for fast deterministic runs and actual stdio FastMCP subprocesses through `MultiServerMCPClient`.
 
-| Server | Tools | Access | Guardrail |
-|---|---|---|---|
-| Recall Registry MCP | `search_recalls`, `get_recall`, `get_product_metadata` | Read-only | Source and snapshot provenance returned with observations |
-| Traceability MCP | `find_candidate_products`, `match_lots`, `trace_forward`, `trace_backward`, `get_inventory`, `get_sales`, `reconcile_units` | Read-only | Synthetic provenance, typed schema, bounded searches |
-| Recall Operations MCP | `create_case`, `apply_inventory_hold`, `create_facility_tasks`, `record_acknowledgment`, `record_disposition`, `close_case` | Simulated write-sensitive | Approval, actor, justification, expected version, idempotency key, durable receipt |
+## Server inventory
 
-The application supports a direct gateway for fast deterministic tests and a stdio gateway using `MultiServerMCPClient` for protocol demonstrations. The gateway interface is the same; a different transport cannot weaken authorization.
+### Recall Registry MCP — read-only
+
+| Tool/resource | Purpose |
+|---|---|
+| `search_recalls(query)` | Search the configured recall source |
+| `get_recall(recall_number)` | Return one typed recall record or `None` |
+| `get_product_metadata(upc)` | Extract UPC metadata from the configured recall evidence |
+| `search_regulatory_evidence(query, top_k, record_types)` | Hybrid-search only official recall/policy documents |
+| `recallops://policy/provenance` | State the frozen-source/checksum rule |
+
+### Traceability MCP — read-only
+
+| Tool/resource | Purpose |
+|---|---|
+| `find_candidate_products(predicate)` | Score synthetic product candidates |
+| `match_lots(predicate)` | Classify exact/probable/ambiguous/rejected lots |
+| `trace_forward(lot_id)` / `trace_backward(lot_id)` | Follow causal EPCIS-like lineage |
+| `get_inventory(lot_id)` / `get_sales(lot_id)` | Return synthetic inventory/sale evidence |
+| `reconcile_units(lot_id)` | Return all seven quantity components and evidence IDs |
+| `search_operational_evidence(query, top_k, record_types)` | Hybrid-search only synthetic documents |
+| `recallops://policy/synthetic-boundary` | State the fictional-data boundary |
+
+### Recall Operations MCP — simulated write-sensitive
+
+| Tool | State transition |
+|---|---|
+| `create_case` | Persist the first simulated case and authoritative evidence; v0→v1 |
+| `apply_inventory_hold` | Record a reviewed simulated hold for confirmed lots |
+| `record_disposition` | Resolve a specifically evidenced lot-level quantity gap |
+| `create_facility_tasks` | Create tasks for every authoritatively required facility |
+| `record_acknowledgment` | Record one facility acknowledgement |
+| `close_case` | Revalidate every closure predicate and record simulated internal closure |
+
+All tools return JSON-shaped typed results. Operation tools return an `AuditReceipt` with case/action/version, status `simulated`, actor, justification, idempotency key, timestamp, reviewed action, and action-specific details.
+
+## Transport parity
+
+`DirectGateway` constructs trusted local services. `StdioMCPGateway` launches three Python modules and calls tools by server/name. `ClosedRetrievalGateway` uses two sealed read capabilities—regulatory and operational—over direct or stdio transport. The evaluator exercises direct/stdio tool parity and a complete stdio investigation path.
+
+Generate a safe MCP client configuration with:
+
+```bash
+uv run recallops mcp-config
+```
+
+Demonstrate the product through real stdio MCP subprocesses with:
+
+```bash
+RECALLOPS_MCP_TRANSPORT=stdio uv run recallops demo --recall-number H-1230-2026
+```
+
+## Read contract
+
+Read middleware applies a budget, circuit breaker, bounded transient retry, typed validation, provenance checks, masking, and structured telemetry. The graph can use the frozen recall after a simulated registry outage but labels the fallback. Missing or malformed required evidence stops fail-closed before operational writes.
+
+Hybrid search preserves source routing. Registry retrieval accepts only official origins; Traceability retrieval accepts only `SYNTHETIC_RETAILER_DIGITAL_TWIN`. Retrieved citations contain record identity, source URL, content hash, and origin.
 
 ## Write contract
 
-An operation write is rejected unless it supplies a matching approved decision, actor, justification, expected case version, and idempotency key. Stale versions are rejected. Lost responses are replayed with the same key. Tools return a receipt rather than silently mutating state. Agents may draft actions but cannot invoke writes directly; only an approved graph node uses the operations gateway after resume.
+Agents cannot see or invoke Operations tools. The trusted graph node may call one Operations tool only after:
 
-## Tool observation contract
+1. the pending review exactly matches case/thread/version/action/action digest;
+2. a human `approve` decision supplies actor and justification;
+3. the graph records zero writes and raises a distinct execution-confirmation interrupt;
+4. the user confirms the persisted execution ID and idempotency key;
+5. `ApprovalGuard` revalidates the action binding and expected version;
+6. the Operations transaction revalidates request hash, approval, authoritative evidence, current case version, and action-specific predicates.
 
-Tool results are structured observations with source identity, provenance, timestamps/receipt where applicable, citations, status, and errors. Schema and provenance middleware reject unlabelled observations. Read permissions prevent specialist roles from seeing write tools.
+There is no automatic write retry. If a response is lost after commit, the graph checkpoints `write_outcome_unknown` and asks a human whether to retry with the exact same persisted key. Exact replay returns the original receipt; a changed request under that key is an idempotency conflict.
+
+## Closure authority
+
+`close_case` never trusts RAG or a model conclusion. In one transaction, Operations checks that the case exists and is open, the expected version is current, every required task/facility is covered and acknowledged, reconciliation is complete, ambiguity/evidence gaps are resolved, and approval binds the exact close action. Internal Northstar closure remains separate from FDA recall termination.
+
+## Explicit exclusions
+
+There is no A2A, agent-to-database edge, general web-search tool, You.com integration, arbitrary URL fetcher, real notification, or production action connector.

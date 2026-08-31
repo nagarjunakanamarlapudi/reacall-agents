@@ -1,4 +1,4 @@
-%%{init: {"flowchart": {"rankSpacing": 30, "nodeSpacing": 24, "subGraphTitleMargin": {"top": 0, "bottom": 20}}}}%%
+%%{init: {"flowchart": {"rankSpacing": 22, "nodeSpacing": 24, "subGraphTitleMargin": {"top": 0, "bottom": 24}}}}%%
 flowchart TB
   classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
   classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
@@ -13,14 +13,17 @@ flowchart TB
     direction TB
     TRACE["Recall coordinator<br/>Verify official scope; request evidence from<br/>Supplier + DC / store"]:::synthetic
     ACTION_REVIEW["Food-safety manager<br/>First human action review<br/>Exact proposed action + case version<br/>predicate • targets • evidence • one version truth"]:::review
-    ACTION_GATE{"Authorize the exact simulated action<br/>at this case version?"}:::review
+    ACTION_GATE{"Approve the exact proposed action<br/>at this case version?<br/>Approval records no operation"}:::review
+    EXEC_CONFIRM["Food-safety manager<br/>Separate execution confirmation<br/>exact action + execution key"]:::review
     RECORD["DC / store<br/>Record authorized simulated action"]:::synthetic
-    EVIDENCE["Operation receipt • disposition evidence<br/>Unit reconciliation • Every facility acknowledgement"]:::synthetic
+    EVIDENCE["Operation receipt • disposition evidence<br/>Create facility tasks • repeated acknowledgements<br/>Unit reconciliation • Every facility acknowledgement<br/>Each action separately authorized at one version"]:::synthetic
     ACTION_HOLD["Keep open / edit / reject / escalate<br/>No simulated write"]:::blocked
 
     TRACE --> ACTION_REVIEW --> ACTION_GATE
-    ACTION_GATE -->|authorize exact action| RECORD
+    ACTION_GATE -->|approve exact action| EXEC_CONFIRM
+    EXEC_CONFIRM -->|confirm execution| RECORD
     ACTION_GATE -->|not authorized| ACTION_HOLD
+    EXEC_CONFIRM -->|cancel| ACTION_HOLD
     RECORD --> EVIDENCE
   end
 

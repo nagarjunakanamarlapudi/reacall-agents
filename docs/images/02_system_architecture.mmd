@@ -1,28 +1,62 @@
 flowchart TB
-  classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
   classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef action fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef safety fill:#fee2e2,stroke:#dc2626,color:#111827
-  subgraph DATA["Provenance-aware data"]
-    O["official openFDA H-1230-2026<br/>or frozen snapshot"]
-    S["Northstar Grocers<br/>SYNTHETIC — ACADEMIC DEMO"]
+  classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef action fill:#ffedd5,stroke:#ea580c,color:#111827
+  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
+
+  subgraph INPUTS["PROVENANCE-AWARE INPUTS"]
+    direction LR
+    O["official openFDA H-1230-2026<br/>snapshot or allowlisted api.fda.gov"]:::official
+    P["Five FDA / GS1 references<br/>paraphrased + checksummed"]:::official
+    S["Northstar Grocers<br/>SYNTHETIC — ACADEMIC DEMO"]:::synthetic
   end
-  subgraph CONTROL["Control plane"]
-    G["LangGraph StateGraph<br/>state • routes • checkpoint • interrupt/resume"]:::control
+
+  subgraph READS["READ-ONLY MCP + AGENTIC RETRIEVAL"]
+    direction LR
+    RR["Recall Registry MCP<br/>official evidence"]:::official
+    RAG["Agentic RAG<br/>BM25 + LSA → RRF → rerank<br/>critic • rewrite • hard budgets"]:::reason
+    TM["Traceability MCP<br/>synthetic evidence"]:::synthetic
+    RR --> RAG
+    TM --> RAG
   end
-  subgraph REASON["Reasoning plane"]
-    D["Deterministic planner<br/>or optional Deep Agent supervisor"]:::reason
-    X["Specialists + independent critic"]:::reason
+
+  subgraph CONTROL["LANGGRAPH CONTROL + REASONING"]
+    direction LR
+    G["LangGraph StateGraph<br/>JSON state • routes • interrupt/resume"]:::official
+    DP["Deterministic default planner"]:::official
+    DA["Optional Deep Agent supervisor<br/>fixed read-only specialists"]:::reason
+    SP["Intake • Match • Trace • Containment"]:::reason
+    VC["Independent Verification / Critic<br/>structured controls authoritative"]:::verify
+    G --> DP --> SP --> VC
+    G -. optional live reasoning .-> DA --> SP
   end
-  subgraph ACTION["Action plane"]
-    R["Read-only Recall Registry MCP"]:::action
-    T["Read-only Traceability MCP"]:::action
-    W["Approval-gated simulated Operations MCP"]:::action
+
+  subgraph CONSENT["DUAL HUMAN CONSENT + ONE WRITE"]
+    direction LR
+    HR["Human action review<br/>exact action + digest + version"]:::human
+    EC["Execution confirmation<br/>persisted execution ID + key"]:::human
+    GN["Approved graph node<br/>one write / version"]:::official
+    OM["Recall Operations MCP<br/>simulated writes only"]:::action
+    HR --> EC --> GN --> OM
   end
-  O --> R --> G
-  S --> T --> G
-  G <--> D <--> X
-  G --> W
-  SAFE["No A2A<br/>No direct agent writes<br/>Agents have no raw database access"]:::safety
-  SAFE --- G
-  SAFE --- W
+
+  subgraph DURABLE["DURABLE STATE + OUTCOME"]
+    direction LR
+    CP["Checkpoint SQLite<br/>owner UUID • checkpoint ID • request/head marker"]:::state
+    OP["Operations SQLite<br/>case/version • tasks • acks • receipts"]:::state
+    OUT["Fresh reviewed action<br/>or Close / Open — blocked / Escalate"]:::verify
+    CP -. exact head/request fence .- OP --> OUT
+  end
+
+  O --> RR
+  P --> RR
+  S --> TM
+  RAG --> G
+  VC --> HR
+  OM --> OP
+  G --> CP
+  SP -. "BLOCKED direct-write attempt" .-> X["X"]:::human
+  SAFE["No A2A • No direct agent writes<br/>No raw agent database access"]:::human --- G

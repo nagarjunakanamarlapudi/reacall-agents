@@ -1,6 +1,6 @@
 # Backlog and Explicit Non-Goals
 
-**Final-verification note:** the current pinned Mermaid renderer emits a transitive Puppeteer deprecation warning. It is non-blocking for the rendered SVG review, and Task 11 should retain it with the command evidence or revisit the dependency during hardening.
+**Dependency note:** the pinned Mermaid renderer emits a transitive Puppeteer deprecation warning. The documentation worktree recorded that warning, five high-severity development-tree audit findings, successful SVG rendering, and stable committed-SVG parity in [Verification](VERIFICATION.md). No forced npm remediation was applied because it could change the locked renderer; dependency hardening remains future work.
 
 ## Future work after the academic demo
 

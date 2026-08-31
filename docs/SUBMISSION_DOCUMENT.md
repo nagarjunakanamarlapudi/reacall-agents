@@ -1,79 +1,116 @@
 # RecallOps Command Center — Submission Handout
 
-**Audience orientation:** begin with the [business-domain guide](BUSINESS_DOMAIN.md), then show the [business recall lifecycle](images/08_business_recall_lifecycle.svg) and [domain evidence model](images/09_domain_evidence_model.svg). They explain the real operational problem, ownership, evidence, and internal-closure boundary before the agentic implementation.
-
 ## Project overview
 
-RecallOps is an evidence-first academic food-recall response command center. It converts a public recall notice into an auditable case: extract the scope, match internal products/lots, trace units and facilities, reconcile quantity, propose containment, pause for human authorization, simulate approved actions, and block closure while risk remains.
+RecallOps is an evidence-first, human-governed food-recall response command center. It turns official notice `H-1230-2026` into a durable simulated retailer case: agentic retrieval, bounded planning, product/lot classification, forward/backward trace, quantity reconciliation, human-reviewed containment, one simulated operation per version, acknowledgements, audit, and safe closure gating.
 
-The product is intentionally decision support. It does not notify regulators or consumers, place real holds, access production inventory systems, handle real customer PII, or make autonomous public-health decisions. LangGraph owns the case lifecycle. MCP supplies narrow information and action interfaces. There is no A2A and agents do not directly write operational data.
+The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) explain the real operating problem. The presentation visuals below lead with the honest data boundary and then show the AI implementation.
+
+![Official openFDA evidence and synthetic retailer data remain visibly separate](images/recallops-data-boundary.png)
+
+![RecallOps architecture: evidence, approval, and safe closure](images/recallops-system-architecture.png)
+
+The source-controlled [provenance](images/01_data_provenance.svg) and [technical architecture](images/02_system_architecture.svg) diagrams are the reproducible detail views.
+
+The differentiator is inspectable authority: RAG is advisory; structured evidence and transactions are authoritative; agents draft; the human approves one action; a second confirmation permits one approved graph-node write; Operations rechecks the request in SQLite.
 
 ## Datasets used
 
-| Dataset | How it is used | Boundary |
+| Dataset | Actual scale/use | Boundary |
 |---|---|---|
-| official openFDA `H-1230-2026` | Authoritative recall predicate and public notice evidence | Live lookup with frozen snapshot for reproducible offline demonstration |
-| FDA traceability guidance | Recall/traceability policy context | Official reference, not retailer data |
-| GS1 EPCIS 2.0 | Event-semantics reference | Official semantic reference |
-| USDA FoodData Central | Optional product enrichment | Not required on the critical path |
-| Northstar Grocers records | Products, lots, events, inventory, acknowledgements, tasks, receipts | `SYNTHETIC — ACADEMIC DEMO`; fictional digital twin, not connected to the public recall |
+| Frozen openFDA response | Five enforcement records; flagship recall predicate/citations | Official snapshot, SHA-256 pinned |
+| Optional openFDA lookup | Exact Food Enforcement endpoint on `api.fda.gov` | Allowlisted host; bounded timeout; labelled fallback |
+| FDA/GS1 policy corpus | Five paraphrased reference documents | Official context; not a compliance ruling |
+| Northstar digital twin | 48 products, 144 lots, 18 facilities, 577 events, 216 positions, 144 shipments, 18 acknowledgement seeds | `SYNTHETIC — ACADEMIC DEMO`; fictional |
+| Hybrid knowledge corpus | 1,175 documents: 10 official, 1,165 synthetic | Per-record origin, URL, timestamp, hash, citation ID |
 
-The essential provenance statement is: openFDA is the public source that defines recall scope; Northstar is a controlled fictional dataset used to demonstrate operations. A public notice never proves the fictional retailer was involved.
+No You.com or general web search is used. A public recall does not establish that Northstar is involved.
+
+## Technical architecture
+
+- **Control:** LangGraph `StateGraph`, immutable public results, JSON-only typed state, conditional routes, `interrupt()`, `Command(resume=...)`, SQLite checkpointing.
+- **Retrieval:** BM25 sparse + local TF-IDF/SVD LSA dense → reciprocal-rank fusion → deterministic rerank → evidence critic; source routing and 2-hop/4-query/8-read bounds.
+- **Agents:** deterministic planner; Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, Containment; independent verifier; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
+- **MCP:** Recall Registry, Traceability, and Recall Operations FastMCP servers; direct and stdio parity.
+- **Middleware:** context, structured output, retry, circuit breaker, budgets, provenance, masking, approval, version, idempotency, receipt validation, progress watchdog, telemetry, checkpoint-owner/head/request fencing.
+- **Product:** five Streamlit views, CLI, failure injection, 21-scenario evaluator, six notebooks, nine source-controlled diagrams.
+
+There is no A2A. LangGraph coordinates all agents; MCP is the vertical data/action interface.
+
+## Human and action contract
+
+Human Review exposes **Review required** and the exact action, digest, current version, evidence, gaps, and remaining lifecycle. The form uses **Decision**, **Actor**, and **Justification** with decisions `approve`, `edit`, `reject`, `escalate`. The visible controls are **Approve**, **Edit**, **Reject**, and **Escalate**.
+
+Approval performs zero writes. A separate execution-confirmation interrupt enables **Simulate approved actions**. The flagship records `create_case` v0→v1, then requires a fresh review/confirmation for `apply_inventory_hold` v1→v2. Each successful receipt shows **Simulated action recorded**. Later safe cases use the same loop for disposition, tasks, repeated acknowledgements, closure review, and `close_case`.
+
+For the recovery proof, use a separate fresh runtime: approve `create_case`, select **lost write response → same-key replay** in **Audit & Evaluation**, click **Run failure fixture**, execute with **Simulate approved actions**, then use **Recover recorded outcome (same key)**. The visible invariant is one logical receipt and one version increment.
+
+Copy/paste values:
+
+- **Recall number:** `H-1230-2026`
+- **Decision:** `approve`
+- **Actor:** `Food-safety manager`
+- **Justification:** `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.`
+- Escalation alternative: `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.`
+
+## Evaluation design
+
+R01–R21 are all safety-critical and cover source fallback, four-way matching, causal lineage, seven-component reconciliation, missing evidence, retries/circuit, model fallback, no-approval writes, changed/exact idempotent replay, stale version, task/ack coverage, positive closure, restart, watchdog, closure race, ambiguous hold, and direct/stdio parity. The hard gate requires every rate to be 1.0 and unsafe/duplicate/false-close/receipt-integrity counters to be zero. The pinned integrated report passes 21/21 scenarios and 320 assertions, with every required rate at 1.0 and all four unsafe counters at zero. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
 
 ## Vibe-coding prompts and briefs
 
-The following are verbatim project instructions, quoted from the approved design/specification and Task 10 brief. They are user-authored project text, not synthesized prompts.
+The build was coordinated from explicit acceptance briefs rather than an open-ended “make an agent” prompt. Representative user constraints were: use the Week 2 project structure and `uv`; make notebooks self-contained; document the business domain with diagrams; use LangGraph, planning, multi-agent/Deep Agents, MCP, middleware, HITL, RAG with sparse+dense fusion and reranking; provide reasonable data volume; build backend/frontend/tests; and provide an exact demo. Runtime/UI/evaluator briefs converted those constraints into immutable action/version, screen-literal, and 21-scenario contracts.
 
-> An explicit outer `StateGraph` owns the operational lifecycle: `intake → plan → specialist fan-out → reconcile → verify → human review → execute approved writes → monitor → close or escalate`
->
-> The graph is the authority for state, branch decisions, retry bounds, interrupt/resume, and side effects. Each node returns typed state updates. A SQLite checkpointer preserves case state by `thread_id` so review can resume after process restart.
-
-> ### Task 10: Product documentation and reproducible diagrams
->
-> **Files:** `README.md`, `PROPOSAL.md`, `docs/{ARCHITECTURE,DATA_SOURCES,MCP_AND_TOOLS,MIDDLEWARE_AND_HITL,OPERATIONS,EVALUATION,DEMO_WALKTHROUGH,SUBMISSION_CHECKLIST,BACKLOG}.md`, `docs/images/*.mmd`, `docs/images/*.svg`, `scripts/render_diagrams.sh`, `tests/docs/test_documentation.py`
->
-> **Produces:** Source-boundary, system architecture, orchestration, MCP/tool safety, middleware lifecycle, HITL lifecycle, and demo-story diagrams plus exact narration and copy-paste prompts.
->
-> - [ ] Test that every promised artifact exists, diagrams contain scope-critical labels, docs contain no placeholder language, and demo commands/inputs match the CLI/UI.
-> - [ ] Write Mermaid sources, render SVG with pinned Mermaid CLI, and visually inspect every SVG.
-> - [ ] Write docs from implemented behavior, including honest limitations and evaluator Q&A; run tests and commit.
-
-**Tool/model and iteration attribution:** the coordinator is **Codex (GPT-5 family; exact host alias not surfaced to this task)**. Known delegated documentation/foundation workers used `gpt-5.6-terra`; the notebook worker used `gpt-5.6-luna`. This documentation pass used the Codex desktop task environment and Mermaid CLI `11.12.0`. Claude Code and the Grok CLI were not invoked by this documentation agent; no invocation evidence is recorded in the Task 10 report. The initial source/label contract, direct render, visual-layout review, and double-render stability check are the recorded iterations; runtime integration remains an approved contract pending Task 11.
+Tool/model attribution is documented in [AI Coding Log](AI_CODING_LOG.md). **Codex (GPT-5 family; exact host alias not surfaced to this task)** coordinated the work; known delegated workers used `gpt-5.6-terra` and `gpt-5.6-luna`. Claude Code and Grok were available but are not claimed as executed where no invocation evidence exists.
 
 ## Iterations tried
 
-1. **Architecture-first pass:** organized the product into control, reasoning, and action planes so orchestration does not blur into tool access.
-2. **Provenance pass:** added exact public/synthetic labels in the source register and every source-boundary diagram.
-3. **Safety pass:** made “no A2A” and “no direct agent writes” visible in diagrams and documentation rather than leaving them implicit.
-4. **Demo pass:** turned the flow into presenter narration with role, decisions, and safe closure-blocking outcome rather than a generic feature tour.
-5. **Documentation-contract pass:** wrote a test before the artifacts and added contract coverage for artifact names, labels, placeholders, and demo inputs.
+1. Business-domain-first scope: separate official recall scope, fictional retailer operations, internal closure, and FDA termination.
+2. Larger deterministic twin: expand beyond six anchors while preserving exact/probable/ambiguous/rejected and gap/zero-gap controls.
+3. Hybrid-to-agentic RAG: add BM25 + LSA, RRF/reranking, then source routing, critic, rewrite, citations, and restartable budgets.
+4. Multi-agent boundary hardening: fixed specialists, context quarantine, optional Deep Agents, independent verifier, no Operations capability.
+5. Durable two-stage consent: split approve from execute, one action/version, exact pending binding, cross-store head/request fencing, same-key recovery.
+6. Product/evaluation closure: implement five UI views and pressure-test 21 safety-critical routes including restart and concurrency.
+7. Documentation/diagram contract: derive commands, labels, data counts, and demo from machine-readable artifacts and render SVGs twice.
 
 ## Learnings and observations
 
-- Provenance must be designed into every view; one disclaimer at the start does not stop a reader from mistaking synthetic activity for a real recall response.
-- A graph and MCP solve different problems. The graph controls lifecycle and review pauses; MCP narrows capability and makes tool activity inspectable.
-- A deterministic path is essential for a short, credential-free evaluation. Live-model orchestration is valuable as an optional contrast, not as the only way the demo works.
-- Human review is most persuasive when the review packet contains the reconciliation equation, source citations, gaps, and the exact action proposed.
-- Closure is a better safety demonstration than a successful write: refusing to close with ambiguity, missing acknowledgement, or missing units explains the system’s operational discipline.
+- Agentic RAG is safer when retrieved context is visibly advisory and deterministic data controls remain authoritative.
+- Sparse and dense retrieval solve different misses; preserving their component ranks makes fusion explainable.
+- Human approval is too broad unless it binds action digest, case/version, actor, and justification—and approval should still not execute.
+- A task is not an acknowledgement; an acknowledgement is not disposition evidence; an internal close is not FDA termination.
+- SQLite persistence alone is insufficient for safe resume. The checkpoint and Operations heads must bind one exact human command across both stores.
+- A blocked closure is a stronger flagship than a happy path because it proves the system will preserve inconvenient evidence.
 
-## Video walkthrough: 4 minutes 20 seconds
-
-Contracted commands and complete review vocabulary (also defined in [`demo_contract.json`](demo_contract.json)):
+## Reproduce
 
 ```bash
+uv sync --locked --all-groups
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
+uv run streamlit run src/recallops/ui/app.py
 ```
 
-For **Command Center**, **Investigation**, **Reconciliation**, **Human Review**, and **Audit & Evaluation**, the contracted controls are **Open case**, **Run investigation**, **Approve**, **Edit**, **Reject**, **Escalate**, **Simulate approved actions**, and **Request closure**. The review fields are **Recall number**, **Decision**, **Actor**, and **Justification**. Copy/paste `H-1230-2026`, actor `Food-safety manager`, `approve`/`edit`/`reject`/`escalate`, `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.`, and `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` exactly as specified by the contract.
+## Timed video walkthrough
+
+![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
+
+The visual is the presentation overview. [`demo_contract.json`](demo_contract.json), the table below, and the [reproducible demo diagram](images/07_demo_story.svg) define the exact 4:35 sequence.
 
 | Time | Presenter narration | Screen/action |
 |---|---|---|
-| 00:00 | “I am opening official openFDA recall H-1230-2026. Northstar Grocers is fictional training data, not a participant in this public recall.” | Command Center: **Open case** with **Recall number** `H-1230-2026`. |
-| 00:35 | “LangGraph runs bounded investigation work; specialists return evidence and the critic verifies it. There is no A2A and agents cannot write records.” | Investigation: **Run investigation**, plan, outputs, sources, tool trace. |
-| 01:20 | “This equation makes every unit visible. An unaccounted unit is a closure blocker.” | Reconciliation: lot/facility quantity view and gaps. |
-| 02:00 | “The ambiguous lot pauses for the Food-safety manager.” | Human Review: **Review required**; **Decision** `approve`, **Actor** `Food-safety manager`, and the contract **Justification**. |
-| 03:10 | “Only the approved graph node makes a simulated write.” | **Approve**, **Simulate approved actions**, receipt, and **Simulated action recorded**. |
-| 04:20 | “Closure is separate and stays blocked while risk remains.” | Audit & Evaluation: **Request closure** and **Open — closure blocked**. |
+| 00:00 | “Official scope and fictional operations are visibly separate; no public record proves Northstar involvement.” | **Command Center** → **Open case** for `H-1230-2026`. |
+| 00:35 | “Bounded agentic RAG and four specialists return cited evidence; the independent critic verifies it.” | **Investigation** → **Run investigation**; retrieval/specialist/tool trace. |
+| 01:20 | “The seven-part equation retains 50 unaccounted exact-lot units and ambiguity.” | **Reconciliation** → equation, rows, gaps. |
+| 02:00 | “The first packet proposes only `create_case` at version zero.” | **Human Review** → **Review required**; exact form values. |
+| 02:35 | “Approve writes nothing; separate confirmation records one case receipt.” | **Approve** → **Simulate approved actions** → **Simulated action recorded**, v1. |
+| 03:05 | “The new version invalidates approval and requires a fresh confirmed-only hold review.” | Second `apply_inventory_hold` packet at v1. |
+| 03:40 | “A second review/confirmation records exactly one simulated hold and reaches v2.” | **Approve** → **Simulate approved actions** → second receipt. |
+| 04:10 | “Audit and evaluation show decisions, receipts, restart, stale rejection, and same-key recovery.” | **Audit & Evaluation** → timeline/report/recovery evidence. |
+| 04:35 | “Containment does not imply closure; unresolved evidence keeps this case open.” | **Request closure** → **Open — closure blocked**. |
 
-The total is four minutes twenty seconds. [`demo_contract.json`](demo_contract.json) is the approved contract pending Task 11 runtime integration; the final integration test must compare it with runtime CLI/UI behavior before recording.
+The full click-by-click script and optional R17 positive-close proof are in [Demo Walkthrough](DEMO_WALKTHROUGH.md).
+
+## Scope and limitations
+
+RecallOps is an academic simulation. It has no real ERP/WMS/POS access, real hold/notification, production identity control, real customer PII, autonomous public-health authority, deployment, 24/7 monitoring, A2A, You.com, or general web-search dependency. It is not legal or food-safety advice.

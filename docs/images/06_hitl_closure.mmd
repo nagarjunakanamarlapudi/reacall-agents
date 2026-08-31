@@ -1,19 +1,24 @@
 flowchart TB
   classDef statefill fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
-  classDef write fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
-  START["Evidence, reconciliation, proposed actions"]:::statefill --> INT["interrupt()<br/>ambiguous lot or pre-action review"]:::human
-  INT --> PACKET["Review packet<br/>scope • rationale • equation • gaps • citations"]:::human
-  PACKET --> DEC{"Reviewer decision"}:::human
-  DEC -->|approve| RES["Command(resume=...)<br/>same thread_id"]:::statefill
-  DEC -->|edit| RECHECK["Re-verify edited proposal"]:::statefill
-  DEC -->|reject / escalate| OPEN["Keep case open"]:::block
-  RECHECK --> INT
-  RES --> WRITE["Approved simulated write<br/>idempotency key + receipt"]:::write
-  WRITE --> MON["Monitor acknowledgements and quantities"]:::statefill
-  MON --> GATE{"All closure gates pass?"}:::statefill
-  GATE -->|yes| CINT["interrupt()<br/>final closure review"]:::human
-  CINT --> CLOSED["Close case after approval"]:::write
-  GATE -->|no: unaccounted, ambiguity,<br/>or missing acknowledgement| BLOCK["Closure blocked"]:::block
-  BLOCK --> OPEN
+  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef write fill:#ffedd5,stroke:#ea580c,color:#111827
+  classDef safe fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef block fill:#f3f4f6,stroke:#6b7280,color:#111827
+
+  EVIDENCE["Evidence + reconciliation + one ProposedAction"]:::statefill --> AR["interrupt()<br/>Human action review"]:::human
+  AR --> DEC{"approve • edit • reject • escalate"}:::human
+  DEC -->|edit| REVERIFY["Re-verify rationale-only edit"]:::statefill --> AR
+  DEC -->|reject| OPEN["Keep open • no write"]:::block
+  DEC -->|escalate| ESC["Escalate • no write"]:::block
+  DEC -->|approve| RES["Command(resume=...)<br/>approval recorded • zero writes"]:::statefill
+  RES --> EXEC["interrupt()<br/>Execution confirmation"]:::human
+  EXEC -->|cancel| OPEN
+  EXEC -->|confirm exact execution ID + key| NODE["Approved graph node<br/>one write / version"]:::statefill
+  NODE --> MCP["Recall Operations MCP<br/>simulated write"]:::write
+  MCP --> RCPT["Durable receipt<br/>version +1 • approval invalidated"]:::safe
+  RCPT --> NEXT{"Next action from authoritative state?"}:::statefill
+  NEXT -->|action remains| AR
+  NEXT -->|lost response| UNKNOWN["write_outcome_unknown<br/>human retry • exact same key"]:::human --> NODE
+  NEXT -->|gap / ambiguity| BLOCK["Closure blocked<br/>Open — closure blocked"]:::human
+  NEXT -->|all action predicates complete| CLOSURE["interrupt()<br/>separate closure review"]:::human
+  CLOSURE --> CEXEC["Execution confirmation<br/>close_case only"]:::human --> NODE

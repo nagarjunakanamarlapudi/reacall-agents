@@ -1,42 +1,119 @@
-# Operations Runbook
+# Local Operations and Reproducibility Runbook
 
-**Status:** approved operations contract pending Task 11 runtime integration. Commands and outcomes below are contract values until captured verification confirms them.
+All default product paths are credential-free and offline. Commands below are run from the repository root.
 
-This runbook documents the intended final command surface. Run each command only after the integrated repository exposes it, and capture exact output in the final verification report.
-
-## Local setup and checks
+## Install
 
 ```bash
-uv sync --all-groups
+uv sync --locked --all-groups
+npm ci
+```
+
+The Python range is `>=3.12,<3.13`. Diagram rendering is pinned to Node `24.15.0`, npm `11.12.1`, and Mermaid CLI `11.12.0`.
+
+## Validate data and run the flagship CLI
+
+```bash
 uv run recallops data-validate
+uv run recallops demo --recall-number H-1230-2026
+uv run recallops mcp-config
+uv run recallops eval
+```
+
+`recallops demo` creates temporary checkpoint/Operations databases unless `RECALLOPS_RUNTIME_DIR` is set. It demonstrates the first consent/write cycle and reports authoritative closure blockers; the Streamlit walkthrough shows both flagship action cycles.
+
+## Run the five-view command center
+
+Durable runtime with direct MCP gateway:
+
+```bash
+uv run streamlit run src/recallops/ui/app.py
+```
+
+Durable runtime with three actual stdio MCP subprocesses:
+
+```bash
+RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py
+```
+
+To isolate a recording run, use an explicit recoverable directory:
+
+```bash
+RECALLOPS_RUNTIME_DIR=.recallops-runtime-demo uv run streamlit run src/recallops/ui/app.py
+```
+
+The default `RECALLOPS_UI_MODE=durable` uses LangGraph plus two SQLite files. `RECALLOPS_UI_MODE=demo` is a deterministic presentation fixture and must be labelled as such; use durable mode for the submission demo.
+
+## Optional live public lookup
+
+```bash
+RECALLOPS_SOURCE_MODE=live uv run streamlit run src/recallops/ui/app.py
+```
+
+Only the hard-coded `https://api.fda.gov/food/enforcement.json` host is contacted. Failure or a mismatched/malformed record returns the labelled frozen snapshot. The durable investigation graph stays snapshot-bound for reproducibility. There is no You.com/general web search.
+
+## Regenerate and validate deterministic artifacts
+
+```bash
+uv run python scripts/generate_demo_data.py
+uv run python scripts/build_notebooks.py
+uv run pytest -q tests/notebooks/test_notebooks.py
+./scripts/render_diagrams.sh --verify
+```
+
+`build_notebooks.py` recreates six executed self-contained notebooks. Each notebook contains embedded teaching data, does not import the product package, and requires no network/key.
+
+## Run the evaluator
+
+Regenerate the complete report with the real offline runtime:
+
+```bash
+uv run python -c 'import asyncio; from recallops.evaluation.runtime_executor import run_recallops_evaluations; asyncio.run(run_recallops_evaluations(scenario_path="data/evals/scenarios.json", output_path="data/evals/report.json"))'
+uv run recallops eval --report data/evals/report.json
+```
+
+The first command runs R01–R21 against fresh runtime/Operations workspaces and exits non-zero through an exception if the hard safety gate fails. The second command is a compact report summary; it does not regenerate the report.
+
+## Test and static checks
+
+```bash
 uv run pytest -q
 uv run ruff format --check .
 uv run ruff check .
+uv lock --check
+uv pip check
 ```
 
-## Demonstration and evaluation
+## Security checks
 
 ```bash
-uv run recallops demo --recall-number H-1230-2026
-uv run recallops eval
-uv run recallops mcp-config
+uvx --from pip-audit pip-audit
+uvx --from bandit bandit -q -r src
+npm audit --omit=dev
+npm audit
 ```
 
-The default offline path uses the frozen openFDA snapshot and seeded `SYNTHETIC — ACADEMIC DEMO` data. Live model use is optional and must visibly identify the model mode. The displayed Streamlit views are Command Center, Investigation, Reconciliation, Human Review, and Audit & Evaluation; final integration confirmation should verify labels and invocation details before a recorded demo.
+Mermaid CLI is a development-only diagram renderer. Record npm’s production-dependency result separately from transitive development-tool findings; do not imply that a clean Python audit clears Node tooling.
 
-## Failure response
+## Failure and recovery runbook
 
-| Condition | Operator-visible response |
+| Condition | Safe operator response |
 |---|---|
-| openFDA unavailable | Continue from labelled frozen snapshot. |
-| Read timeout or rate limit | Bounded retry, then circuit-open failure / fallback. |
-| Ambiguous lot | Pause for review; do not auto-hold. |
-| Missing event or quantity discrepancy | Retain a gap and block closure. |
-| Unacknowledged facility | Keep case open and create a simulated follow-up after approval. |
-| Lost write response | Retry only with the same idempotency key. |
-| Stale version | Refresh/review; do not overwrite. |
-| Repeated graph progress | Escalate through watchdog instead of continuing the loop. |
+| openFDA unavailable | Continue only with the visible frozen/cached label |
+| Read timeout/429 | Observe bounded retry/circuit outcome; do not invent evidence |
+| Malformed/missing evidence | Investigation escalates before any operation |
+| Ambiguous lot | Retain ambiguity; confirmed-only hold may proceed after review |
+| Quantity gap | Record a disposition only with exact evidence; otherwise stay open |
+| Missing facility acknowledgement | Create/acknowledge tasks one version at a time; do not close |
+| Lost write response | Use the pending recovery control and exact same key |
+| Stale decision/version/digest | Reload the current packet and review again |
+| Repeated progress | Preserve state and escalate after watchdog threshold |
+| Copied/mismatched checkpoint store | Use the original paired checkpoint and Operations databases |
+
+## Resetting a local demonstration
+
+Runtime files under `.recallops-runtime` or a directory explicitly supplied through `RECALLOPS_RUNTIME_DIR` are generated academic state. Stop Streamlit before moving that exact directory aside. Do not delete a broad workspace path or an unknown Operations database. Starting with a fresh explicit directory produces a new checkpoint-store UUID and empty simulated Operations store.
 
 ## Observability
 
-The audit view should expose source mode, state/node trace, tool sequence, duration, warnings, review decision, acknowledgement state, evaluation output, and operation receipts. Logs and artefacts must preserve labels and mask customer-like values.
+The UI’s Audit & Evaluation view shows the normalized node/tool timeline, human decision history, receipts, source/model/runtime/transport modes, failure fixture result, and closure gates. In durable mode it loads the committed evaluator artifacts through cwd-independent repository paths and shows 21 compact rows plus rate/counter summaries only after schema, digest, result-set, assertion, metric, and gate checks pass. Missing, invalid, or stale artifacts never display a success claim; the presentation fixture is labelled `demo_only`. Display output is masked and never exposes hidden reasoning.

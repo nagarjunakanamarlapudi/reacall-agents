@@ -1,49 +1,70 @@
-# RecallOps Command Center — Proposal
+# RecallOps Command Center — Project Proposal
 
 **Submission:** GenAI Academy, Mastering Agentic AI — Week 3  
-**Product:** evidence-first food-recall response decision support
+**Domain:** food-recall response and traceability
+**Product:** evidence-first, human-governed simulated operations
 
-**Reviewer orientation:** read the [food-recall business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg) before the AI design. They separate FDA termination from fictional retailer case closure and assign every risk-bearing decision to a human.
+Read the [business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg) first. They distinguish an FDA recall from a fictional retailer’s internal case and make human authority explicit.
 
-## Executive summary
+## Problem worth solving
 
-Food recalls demand fast but accountable action. A coordinator must translate a notice into a precise predicate, locate the affected inventory, account for every unit, organize containment, and retain an explanation for each action. RecallOps demonstrates that workflow without pretending to operate a real retailer.
+A recall coordinator must turn an imperfect notice into a precise predicate, locate potentially affected products and lots, reconstruct where units moved, reconcile quantities, contain confirmed scope, collect facility acknowledgements, and preserve an audit trail. Speed matters, but an unsupported match, lost unit, stale action, or premature closure can create more risk than delay.
 
-The system combines **official openFDA H-1230-2026** with a frozen reproducible snapshot and fictional Northstar Grocers records labelled **SYNTHETIC — ACADEMIC DEMO**. Public notice data defines the recall scope; synthetic records only exercise matching, tracing, reconciliation, approvals, and closure. The two sources remain visibly separate in data, UI, documentation, and diagrams.
+RecallOps makes that work inspectable. It starts from official openFDA evidence, retrieves only cited policy and synthetic operational context, delegates bounded analysis to specialists, and keeps structured matching/reconciliation and transactional Operations checks authoritative. Agents draft; humans authorize; an approved graph node records simulated effects.
+
+## Why this is a strong Week 3 project
+
+| Course concept | Product evidence |
+|---|---|
+| State and agent loop | Explicit LangGraph nodes, conditional routes, JSON-only state, SQLite checkpoints, `thread_id`, and durable resume. |
+| Planning and multi-agent work | Deterministic bounded plan, four specialists, optional real Deep Agents supervisor, and an independent verifier. |
+| Agentic RAG | Source-aware planning, BM25 + local LSA retrieval, RRF, reranking, evidence critique, one rewrite, and hard budgets. |
+| MCP | Three real FastMCP stdio servers plus an equivalent direct gateway. |
+| Middleware | Retry, circuit breaker, budgets, structured validation, provenance, masking, approval, version, idempotency, fencing, telemetry, and watchdog. |
+| Human in the loop | Action review and separate execution confirmation for each version; closure has its own human review. |
+| Recovery | Frozen fallback, restart-safe interrupts, same-key unknown-write recovery, stale/digest rejection, and fail-closed evidence handling. |
+| Evaluation | Twenty-one fresh, deterministic, safety-critical scenarios with machine-readable hard gates. |
+
+## Data strategy
+
+The official boundary is the checksummed openFDA snapshot for `H-1230-2026` plus four neighboring records and five paraphrased FDA/GS1 reference records. The operational boundary is a seeded Northstar Grocers digital twin with 48 products, 144 lots, 18 facilities, 577 events, 216 inventory positions, 144 supplier shipments, and 18 acknowledgement seeds. Together they create a 1,175-document retrieval corpus: 10 official and 1,165 synthetic.
+
+The frozen case is reproducible offline. An optional allowlisted live lookup calls only `api.fda.gov`, has a two-second default timeout, and labels fallback. There is no You.com or general-search dependency. Public data defines scope; synthetic data exists only to demonstrate internal matching, lineage, reconciliation, and simulated operations. It never establishes retailer involvement.
+
+## Product promise
+
+Given a recall number and question, RecallOps makes five answers reviewable:
+
+1. What product, UPC, plant, Julian-date, geography, and hazard predicate applies?
+2. Which synthetic products/lots are exact, probable, ambiguous, or rejected matches?
+3. Which facilities and events are in each lot’s forward and backward lineage?
+4. Does `received = on_hand + quarantined + sold + returned + disposed + unaccounted` reconcile with source evidence?
+5. What may be simulated now, and which authoritative gate prevents closure?
+
+## Differentiating safety design
+
+- RAG is advisory. Retrieved prose never overrides structured recall fields, lot classifications, reconciliation, or Operations transactions.
+- Deep Agents is a bounded reasoning option, not a write authority. Its fixed specialists have no Operations tools.
+- Approval is not execution. Every write requires action review and a second execution confirmation.
+- One receipt advances exactly one case version. The flagship visibly performs `create_case` v0→v1, then `apply_inventory_hold` v1→v2.
+- Later actions—disposition, facility tasks, one acknowledgement at a time, and closure—use the same review/confirm/write loop.
+- The checkpoint database and Operations database share a persistent owner identity and compare exact checkpoint heads/request digests before a resume can mutate state.
 
 ## Users and retained decisions
 
-| User | What RecallOps provides | Human decision retained |
+| User | RecallOps contribution | Human authority retained |
 |---|---|---|
-| Recall coordinator | Predicate, evidence, matches, and gaps | Accept or edit scope |
-| Food-safety manager | Containment packet and closure evidence | Approve, edit, reject, escalate, or close |
-| Distribution/store operations | Facility impact and simulated tasks | Confirm counts and acknowledgements |
-| Auditor/evaluator | Trace, provenance, approvals, receipts | Judge whether the evidence supports the decision |
+| Recall coordinator | Predicate, matches, trace, reconciliation, and gaps | Review or escalate investigation scope and request closure |
+| Food-safety manager | Evidence packet and scoped proposed action | Approve, edit rationale, reject, escalate, and separately confirm execution |
+| Distribution/store operations | Facility tasks and acknowledgement/disposition evidence | Confirm local observations; no autonomous inference |
+| Auditor/evaluator | Checkpoints, decisions, receipts, routes, citations, and scenario report | Judge evidence and policy compliance |
 
-## Flagship outcome
+## Flagship and positive control
 
-For `H-1230-2026`, the case makes five questions inspectable: what applies, what matched, where units went, what containment is justified, and whether closure is safe. Its non-negotiable accounting control is:
+The flagship mixed-scope case is intentionally not a happy path. `LOT-EXACT-170` retains 50 unaccounted units and `LOT-AMBIG-175` remains ambiguous, so the UI ends **Open — closure blocked** even after two approved simulated writes. The evaluator’s scoped `LOT-PROBABLE-160` positive control has zero unaccounted units and exercises the complete disposition/tasks/acknowledgements/closure-review lifecycle.
 
-`received = on_hand + quarantined + sold + returned + disposed + unaccounted`
+## Scope boundary
 
-Closure remains blocked for unaccounted units, missing facility acknowledgements, ambiguous lots, or an unapproved proposed write.
+Included: offline-first data, allowlisted openFDA lookup/fallback, hybrid and agentic RAG, LangGraph, multi-agent specialists, optional Deep Agents, MCP, middleware, durable HITL, simulated Operations writes, Streamlit, CLI, evaluator, notebooks, diagrams, and reproducible docs.
 
-## Design choices
-
-| Plane | Design | Why it matters |
-|---|---|---|
-| Control | Explicit LangGraph `StateGraph` | State, routes, checkpoints, interrupts, retries, and side-effect order are inspectable. |
-| Reasoning | Deterministic planner plus optional Deep Agent supervisor | The offline demo is credential-free; live mode can demonstrate bounded delegation. |
-| Action | Three narrow FastMCP servers | Agents use typed tools, not raw databases. |
-| Assurance | Separate Verification/Critic node | The supervisor does not assess its own output in the same context. |
-| Governance | Approval, actor, justification, version, idempotency key | Simulated writes are reviewable and replay-safe. |
-
-## Scope
-
-Included: openFDA lookup/frozen fallback; seeded synthetic digital twin; LangGraph; optional Deep Agents; MCP; middleware; durable human review; simulated writes; CLI/UI; evaluations; notebooks; and reproducible diagrams.
-
-Excluded: real operational connectors, real holds or notifications, production authentication, real customer PII, production regulatory decisions, deployment, 24/7 monitoring, FSIS as a critical dependency, and A2A. These exclusions are product safeguards, not hidden omissions.
-
-## Honest implementation note
-
-This document describes the approved product contract while implementation branches are integrating. Final verification evidence, exact command output, and UI labels belong in the coordinator’s final verification pass; this proposal does not claim those runs have already completed.
+Excluded: real ERP/WMS/POS/supplier connections, real inventory action, notifications, real PII, production identity/authorization, deployment, 24/7 monitoring, autonomous health/compliance decisions, A2A, You.com, and general web search.

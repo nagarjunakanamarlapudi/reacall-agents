@@ -39,11 +39,15 @@ flowchart TB
       direction LR
       ACTION["Proposed action<br/>exact scope + case version"]:::review
       APPROVAL["Approval<br/>actor + decision + justification"]:::review
+      CONFIRM["Execution confirmation<br/>exact action + idempotency key"]:::review
       RECEIPT["Operation receipt<br/>simulated effect + idempotency evidence"]:::approved
+      TASK["Facility task + acknowledgement<br/>one reviewed action per version"]:::synthetic
       CLOSURE{"Internal closure decision<br/>all evidence gates pass?"}:::review
       ACTION -->|must bind exactly| APPROVAL
-      APPROVAL -->|authorizes simulation| RECEIPT
-      RECEIPT -->|proves recorded effect| CLOSURE
+      APPROVAL -->|records zero operations| CONFIRM
+      CONFIRM -->|authorizes one simulation| RECEIPT
+      RECEIPT -->|may require next reviewed action| TASK
+      TASK -->|proves facility response| CLOSURE
     end
 
     OPEN["Keep case open<br/>resolve or escalate gap"]:::blocked

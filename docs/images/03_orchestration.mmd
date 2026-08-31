@@ -2,24 +2,38 @@ flowchart TB
   classDef statefill fill:#dbeafe,stroke:#2563eb,color:#111827
   classDef agent fill:#ede9fe,stroke:#7c3aed,color:#111827
   classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
-  I["Intake"]:::statefill --> P["Plan"]:::statefill --> SG["StateGraph<br/>routes and typed updates"]:::statefill
+  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef action fill:#ffedd5,stroke:#ea580c,color:#111827
+
+  START["START"]:::statefill --> I["Intake"]:::statefill --> RAG["Agentic RAG<br/>plan → source route → BM25 + LSA<br/>RRF → rerank → critic → bounded rewrite"]:::agent --> P["Plan"]:::statefill --> SG["StateGraph<br/>routes and typed updates"]:::statefill
+
   SG --> DS["Deterministic default planner<br/>credential-free bounded task plan"]:::statefill
-  SG --> DA["Optional live Deep Agent supervisor<br/>bounded task planning and delegation"]:::agent
+  SG --> DA["Optional live Deep Agent supervisor<br/>write_todos + bounded delegation"]:::agent
   DS --> RI["Regulatory Intake"]:::agent
   DS --> PM["Product & Lot Matching"]:::agent
-  DS --> TR["Traceability"]:::agent
+  DS --> TR["Traceability / Reconciliation"]:::agent
   DS --> CO["Containment draft"]:::agent
-  DA --> RI["Regulatory Intake"]:::agent
-  DA --> PM["Product & Lot Matching"]:::agent
-  DA --> TR["Traceability"]:::agent
-  DA --> CO["Containment draft"]:::agent
-  RI --> REC["Reconcile"]:::statefill
+  DA --> RI
+  DA --> PM
+  DA --> TR
+  DA --> CO
+  RI --> REC["Reconcile authoritative units"]:::statefill
   PM --> REC
   TR --> REC
   CO --> REC
   REC --> VC["Verification / Critic<br/>outside supervisor context"]:::verify
-  VC --> HR["Human review"]:::human
-  HR -->|approved resume| EX["Approved graph node executes simulated write"]:::statefill
-  HR -->|edit, reject, or escalate| SG
-  EX --> MON["Monitor"]:::statefill --> CLOSE["Close or escalate"]:::statefill
+  VC --> AR["Action review interrupt<br/>approve writes zero records"]:::human
+  AR --> EC["Execution confirmation interrupt"]:::human
+  EC --> W["Approved graph node<br/>exactly one Operations call"]:::action
+  W --> RCPT["Receipt + version increment<br/>approval invalidated"]:::verify
+  RCPT --> NEXT{"Next authoritative action?"}:::statefill
+  NEXT -->|first| C1["create_case v0→v1"]:::action
+  NEXT -->|second| C2["apply_inventory_hold v1→v2"]:::action
+  NEXT -->|then if eligible| LATER["record_disposition → create_facility_tasks<br/>→ repeated record_acknowledgment → close_case"]:::action
+  C1 --> AR
+  C2 --> AR
+  LATER --> AR
+  NEXT -->|ambiguity / unresolved gap| BLOCK["Open — closure blocked"]:::human
+  AR -->|edit| REVERIFY["Re-verify rationale-only edit"]:::verify --> AR
+  AR -->|reject| OPEN["Open"]:::human
+  AR -->|escalate| ESC["Escalated"]:::human

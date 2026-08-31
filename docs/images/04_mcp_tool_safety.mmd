@@ -10,10 +10,12 @@ flowchart TB
   TM --> OBS
   AG -. "unauthorized direct-write attempt" .-> BLOCKED["BLOCKED<br/>Agents cannot call Operations MCP"]:::block
   BLOCKED --> DENY["Fail closed"]:::block
-  GR["Approved graph execution node"] --> AP["Approval required<br/>actor • justification • expected version • idempotency key"]:::gate
+  HR["Human action review<br/>approve records zero writes"]:::gate --> EC["Execution confirmation<br/>exact execution ID + persisted key"]:::gate
+  EC --> GR["Approved graph execution node"] --> AP["Approval required<br/>actor • justification • expected version • idempotency key"]:::gate
   AP --> OM["Recall Operations MCP<br/>simulated writes only"]:::write
   OM --> NEW["New approved request<br/>Durable audit receipt"]
   OM --> REPLAY["Same idempotency key replay<br/>Original receipt returned"]:::write
   OM --> DUP["Conflicting duplicate<br/>Fail closed"]:::block
+  NEW --> NEXT["Version +1<br/>fresh review for next action"]:::gate
   BAD["Unapproved, stale, or unlabelled request"]:::block --> DENY
   AP --> BAD

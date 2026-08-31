@@ -1,25 +1,25 @@
 # Week 3 Curriculum Coverage
 
-**Status:** approved curriculum-evidence contract pending Task 11 runtime integration.
+This map points to implemented, demonstrable evidence rather than slide-only terminology.
 
-This map identifies the concrete RecallOps design/demo evidence for each Week 3 topic. Final integration should link each row to the implemented module/test output, but this document does not claim that pending parallel code has already passed.
-
-| Week 3 topic | Concrete RecallOps evidence | Where to show it |
+| Week 3 topic | Concrete RecallOps implementation | Demo/test evidence |
 |---|---|---|
-| Agent loop | Bounded intake → plan → specialists → reconcile → verify → review → monitor routes, each returning typed state updates. | `docs/images/03_orchestration.svg`; Investigation timeline. |
-| Planning | Deterministic bounded task plan with completion criteria; optional Deep Agent supervisor uses bounded delegation. | Planner output in Investigation; Architecture/Proposal. |
-| State and checkpoints | `RecallCaseState`, `StateGraph`, case version, `thread_id`, and SQLite checkpoint/resume design. | `docs/ARCHITECTURE.md`; resume review demonstration. |
-| Memory | In-thread durable case state/checkpoints are working memory for the case; fresh source/tool evidence remains truth. The design does not present cross-case model memory as operational truth. | Architecture and audit trace; explain the boundary in demo Q&A. |
-| HITL | `interrupt()` pauses for ambiguity, pre-action review, edits/disputes, and closure; review packet carries evidence, gaps, equation, and proposed actions. | Human Review view; `06_hitl_closure.svg`. |
-| Supervisor | Optional Deep Agent supervisor plans and delegates to fixed specialists, while an independent critic remains outside its context. | `03_orchestration.svg`; live-mode explanation. |
-| Planner-executor/reflection | Planner generates a bounded task contract; specialists/approved graph node execute scoped work; Verification/Critic checks contradictions, coverage, and proportionality. | Orchestration diagram and tool trace. |
-| MCP | Recall Registry, Traceability, and Operations FastMCP servers; direct and stdio gateways share an interface. | `04_mcp_tool_safety.svg`; MCP discovery smoke. |
-| Middleware | Case context, planning rule, routing, fallback, budgets, structured output, permission/provenance, masking, approval, watchdog, and trace recorder. | `05_middleware_lifecycle.svg`; middleware notebook/test output. |
-| Failures and recovery | Frozen fallback, bounded read retry, circuit breaking, durable resume, stale-version rejection, idempotent replay, gap retention, and escalation on repeated progress. | Operations failure table; injected failure scenarios. |
-| Cost, latency, and reliability | Call/tool budgets, bounded delegation/retries, duration tracing, deterministic credential-free fallback, and fail-closed writes make resource use and reliability observable. | Audit & Evaluation view; telemetry and evaluation report. |
-| Observability and evaluation | Node/tool trace, durations, warnings, source mode, receipts, scenario results, and deterministic safety gates. | Audit & Evaluation view; `docs/EVALUATION.md`. |
-| A2A | **A2A is intentionally excluded.** The case has one explicit LangGraph coordinator; MCP is the vertical data/action interface. Avoiding A2A keeps ownership, state, review, and side-effect order inspectable for this workflow. | System architecture diagram and presenter narration. |
+| Agent loop | Explicit LangGraph investigation nodes plus conditional action/recovery routes | Investigation and Audit timelines; `tests/integration/test_workflow.py` |
+| Planning | Fixed bounded `plan_investigation`; Deep Agents uses real `write_todos` with exactly four delegations | Specialist plan cards; `tests/unit/test_specialists.py` |
+| State and checkpoints | JSON-only `RecallOpsGraphState`, `AsyncSqliteSaver`, immutable `RuntimeResult`, checkpoint ID, `thread_id` | Restart at action/execution/recovery/closure interrupts |
+| Memory | Durable per-case checkpoint state is working memory; source evidence and Operations SQLite remain truth; no cross-case model memory is claimed | Reopen same database paths; `get_case`/history tests |
+| HITL | `interrupt()` action review, separate execution confirmation, write recovery, and closure review; exact `Command(resume=...)` binding | Two consent cycles in **Human Review**; `06_hitl_closure.svg` |
+| Supervisor | Real optional Deep Agents graph with fixed read-only subagents; default deterministic runtime uses same four-role contract | Factory/tool-manifest tests; architecture narration |
+| Multi-agent specialists | Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, Containment; independent verifier outside supervisor | Investigation specialist/critic rows |
+| Planner–executor–reflection | Planner produces bounded tasks; specialists collect structured evidence; verifier/agentic-RAG critic expose gaps; approved graph node executes | `03_orchestration.svg`; workflow/evaluator routes |
+| Agentic RAG | Source-aware plan/route, BM25 + LSA, RRF, rerank, evidence critic, bounded rewrite, serializable cursor | Investigation retrieval trace; retrieval unit/MCP tests |
+| MCP | Three FastMCP servers, resources, direct and stdio adapters, parity tests | `mcp-config`; stdio demo/evaluator R01 |
+| Middleware | Retry, circuit breaker, budgets, structured/provenance validation, masking, approval, idempotency/version, watchdog, telemetry, cross-store fencing | `05_middleware_lifecycle.svg`; unit and red-team probes |
+| Failures and recovery | Snapshot fallback, deterministic model fallback, circuit open, durable restart, stale/digest/key rejection, lost-response same-key recovery | Failure selector; R02/R08–R14/R18–R20 |
+| Cost, latency, and reliability | Two-hop/four-query/eight-read retrieval budget, one-attempt writes, bounded retry/model calls, per-scenario latency budget | RAG bounds, traces, evaluator metrics |
+| Observability and evaluation | Node/tool traces, source/mode, warnings, human history, receipts, 21 scenarios, hard safety rates/counters | **Audit & Evaluation**; `data/evals/report.json` |
+| A2A | Intentionally excluded. LangGraph has one coordinator; MCP is vertical capability access, not peer-agent messaging | Architecture diagram and presenter narration |
 
-## Evidence discipline
+## Core story
 
-The required story is not “an agent did a recall.” It is “an explicit workflow used evidence to recommend an action, stopped for a human, made only an approved simulated change, and refused closure until the case was safe.” This makes the curriculum concepts inspectable rather than decorative.
+The submission story is: an explicit workflow gathered cited evidence, used bounded specialist reasoning, retained uncertainty, paused for one exact human decision, paused again before one simulated write, advanced one version, and refused closure while authoritative gaps remained. That makes state, planning, multi-agent work, agentic RAG, MCP, middleware, HITL, recovery, and evaluation observable in one coherent product.

@@ -1,11 +1,20 @@
 flowchart TB
   classDef step fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef human fill:#fef3c7,stroke:#ca8a04,color:#111827
+  classDef agent fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef action fill:#ffedd5,stroke:#ea580c,color:#111827
   classDef safe fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef block fill:#fee2e2,stroke:#dc2626,color:#111827
-  A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026"]:::step --> B["00:35 Investigation<br/>Run investigation"]:::step
-  B --> C["01:20 Reconciliation<br/>show explicit gaps"]:::step
-  C --> D["02:00 Human Review<br/>Review required • Food-safety manager<br/>Decision • Actor • Justification<br/>Approve • Edit • Reject • Escalate"]:::human
-  D --> E["03:10 Approve + Simulate approved actions<br/>Simulated action recorded"]:::safe
-  E --> F["04:20 Audit & Evaluation<br/>Request closure"]:::step
-  F --> G["Open — closure blocked<br/>separate closure gate"]:::block
+  classDef block fill:#f3f4f6,stroke:#6b7280,color:#111827
+
+  A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026<br/>official + SYNTHETIC — ACADEMIC DEMO"]:::step
+  B["00:35 Investigation<br/>Run investigation<br/>Agentic RAG + planner + four specialists + critic"]:::agent
+  C["01:20 Reconciliation<br/>received = dispositions + unaccounted<br/>gaps stay visible"]:::step
+  D["02:00 Human Review<br/>Review required • create_case at v0<br/>Decision • Actor • Justification<br/>Food-safety manager<br/>Approve • Edit • Reject • Escalate"]:::human
+  E["02:35 Approve writes zero<br/>execution confirm → Simulate approved actions<br/>create_case v0→v1 • Simulated action recorded"]:::action
+  F["03:05 Human Review again<br/>fresh digest + approval<br/>apply_inventory_hold at v1"]:::human
+  G["03:40 Approve + execution confirm<br/>Simulate approved actions<br/>apply_inventory_hold v1→v2 • Simulated action recorded"]:::action
+  H["04:10 Audit & Evaluation<br/>receipts • 21 scenarios • same-key recovery"]:::safe
+  I["04:35 Audit & Evaluation<br/>Request closure<br/>Open — closure blocked"]:::human
+
+  A --> B --> C --> D --> E --> F --> G --> H --> I
+  NOTE["No A2A • agents never write directly<br/>internal closure ≠ FDA termination"]:::block --- H

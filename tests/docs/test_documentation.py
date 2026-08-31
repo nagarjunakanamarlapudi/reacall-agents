@@ -3,6 +3,7 @@
 Run with: python3 -m unittest discover -s tests/docs -p 'test_*.py'
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -27,6 +28,7 @@ REQUIRED_DOCUMENTS = (
     "docs/MIDDLEWARE_AND_HITL.md",
     "docs/OPERATIONS.md",
     "docs/EVALUATION.md",
+    "docs/VERIFICATION.md",
     "docs/DEMO_WALKTHROUGH.md",
     "docs/SUBMISSION_CHECKLIST.md",
     "docs/BACKLOG.md",
@@ -49,12 +51,18 @@ DIAGRAM_LABELS = {
         "No A2A",
         "No direct agent writes",
         "LangGraph",
+        "Agentic RAG",
+        "BM25 + LSA",
+        "Human action review",
+        "Execution confirmation",
     ),
     "03_orchestration": (
         "Deep Agent supervisor",
         "Deterministic default planner",
         "Verification / Critic",
         "StateGraph",
+        "create_case v0→v1",
+        "apply_inventory_hold v1→v2",
     ),
     "04_mcp_tool_safety": (
         "Recall Registry MCP",
@@ -74,11 +82,15 @@ DIAGRAM_LABELS = {
         "interrupt()",
         "Command(resume=...)",
         "Closure blocked",
+        "Execution confirmation",
+        "one write / version",
     ),
     "07_demo_story": (
         "H-1230-2026",
         "Human Review",
         "Open — closure blocked",
+        "create_case v0→v1",
+        "apply_inventory_hold v1→v2",
     ),
     "08_business_recall_lifecycle": (
         "SYNTHETIC — ACADEMIC DEMO",
@@ -89,6 +101,7 @@ DIAGRAM_LABELS = {
         "Food-safety manager",
         "Consumers",
         "First human action review",
+        "Separate execution confirmation",
         "Exact proposed action + case version",
         "Operation receipt",
         "disposition evidence",
@@ -112,10 +125,17 @@ DIAGRAM_LABELS = {
         "Facility",
         "Proposed action",
         "Approval",
+        "Execution confirmation",
         "Operation receipt",
         "Internal closure decision",
     ),
 }
+
+POLISHED_VISUALS = (
+    "recallops-data-boundary.png",
+    "recallops-system-architecture.png",
+    "recallops-five-minute-demo.png",
+)
 
 
 class DocumentationContractTests(unittest.TestCase):
@@ -143,7 +163,36 @@ class DocumentationContractTests(unittest.TestCase):
             for extension in ("mmd", "svg")
             if not (IMAGES / f"{name}.{extension}").is_file()
         ]
+        missing += [
+            f"docs/images/{name}" for name in POLISHED_VISUALS if not (IMAGES / name).is_file()
+        ]
         self.assertEqual(missing, [], f"missing promised documentation artifacts: {missing}")
+
+    def test_polished_visuals_are_primary_in_submission_entrypoints(self) -> None:
+        expected = {
+            ROOT / "README.md": (
+                "docs/images/recallops-data-boundary.png",
+                "docs/images/recallops-system-architecture.png",
+                "docs/images/recallops-five-minute-demo.png",
+            ),
+            DOCS / "BUSINESS_DOMAIN.md": ("images/recallops-data-boundary.png",),
+            DOCS / "ARCHITECTURE.md": ("images/recallops-system-architecture.png",),
+            DOCS / "DEMO_WALKTHROUGH.md": ("images/recallops-five-minute-demo.png",),
+            DOCS / "SUBMISSION_DOCUMENT.md": (
+                "images/recallops-data-boundary.png",
+                "images/recallops-system-architecture.png",
+                "images/recallops-five-minute-demo.png",
+            ),
+            DOCS / "SUBMISSION_CHECKLIST.md": (
+                "images/recallops-data-boundary.png",
+                "images/recallops-system-architecture.png",
+                "images/recallops-five-minute-demo.png",
+            ),
+        }
+        for path, targets in expected.items():
+            content = path.read_text(encoding="utf-8")
+            for target in targets:
+                self.assertIn(target, content, f"{path.name} must feature {target}")
 
     def test_diagrams_preserve_scope_critical_labels(self) -> None:
         for name, labels in DIAGRAM_LABELS.items():
@@ -220,7 +269,8 @@ class DocumentationContractTests(unittest.TestCase):
         diagram = (IMAGES / "08_business_recall_lifecycle.mmd").read_text(encoding="utf-8")
         ordered_nodes = (
             'ACTION_REVIEW["Food-safety manager<br/>First human action review',
-            'ACTION_GATE{"Authorize the exact simulated action<br/>at this case version?"}',
+            'ACTION_GATE{"Approve the exact proposed action<br/>at this case version?',
+            'EXEC_CONFIRM["Food-safety manager<br/>Separate execution confirmation',
             'RECORD["DC / store<br/>Record authorized simulated action"]',
             'EVIDENCE["Operation receipt • disposition evidence',
             'CLOSURE_REQUEST["Recall coordinator<br/>Explicit closure request',
@@ -232,7 +282,8 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         for edge in (
             "ACTION_REVIEW --> ACTION_GATE",
-            "ACTION_GATE -->|authorize exact action| RECORD",
+            "ACTION_GATE -->|approve exact action| EXEC_CONFIRM",
+            "EXEC_CONFIRM -->|confirm execution| RECORD",
             "RECORD --> EVIDENCE",
             "EVIDENCE --> CLOSURE_REQUEST",
             "CLOSURE_REQUEST --> GATE_EVAL",
@@ -331,7 +382,9 @@ class DocumentationContractTests(unittest.TestCase):
             "approve",
             "Food-safety manager",
             "SYNTHETIC — ACADEMIC DEMO",
-            "final integration confirmation",
+            "execution confirmation",
+            "create_case",
+            "apply_inventory_hold",
         ):
             self.assertIn(required, demo, f"demo walkthrough must include {required!r}")
 
@@ -339,7 +392,7 @@ class DocumentationContractTests(unittest.TestCase):
         contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
         self.assertEqual(
             contract["runtime_integration_status"],
-            "approved contract pending Task 11 runtime integration",
+            "implemented durable runtime and five-view UI",
         )
         document_paths = (
             DOCS / "DEMO_WALKTHROUGH.md",
@@ -349,10 +402,65 @@ class DocumentationContractTests(unittest.TestCase):
         for path in document_paths:
             self.assert_demo_artifact_contract(path, contract)
 
+    def test_demo_contract_matches_durable_runtime_and_data_artifacts(self) -> None:
+        contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
+        synthetic = json.loads(
+            (ROOT / "data/synthetic/northstar_demo/manifest.json").read_text(encoding="utf-8")
+        )
+        knowledge = json.loads((ROOT / "data/knowledge/manifest.json").read_text(encoding="utf-8"))
+        public = json.loads((ROOT / "data/public/H-1230-2026.json").read_text(encoding="utf-8"))
+
+        self.assertLessEqual(contract["duration_seconds"], 285)
+        self.assertEqual(
+            contract["action_cycles"],
+            [
+                {
+                    "action": "create_case",
+                    "from_version": 0,
+                    "to_version": 1,
+                },
+                {
+                    "action": "apply_inventory_hold",
+                    "from_version": 1,
+                    "to_version": 2,
+                },
+            ],
+        )
+        self.assertEqual(
+            contract["failure_recovery"],
+            {
+                "scenario": "lost write response → same-key replay",
+                "arm_button": "Run failure fixture",
+                "initial_button": "Simulate approved actions",
+                "recovery_button": "Recover recorded outcome (same key)",
+                "expected_logical_receipts": 1,
+                "expected_version_increments": 1,
+            },
+        )
+        self.assertEqual(contract["data"]["synthetic_record_counts"], synthetic["record_counts"])
+        self.assertEqual(contract["data"]["knowledge_document_count"], knowledge["document_count"])
+        self.assertEqual(contract["data"]["public_snapshot_records"], len(public["results"]))
+        self.assertFalse(contract["dependencies"]["general_web_search"])
+        self.assertFalse(contract["dependencies"]["you_com"])
+        self.assertEqual(contract["dependencies"]["live_public_host_allowlist"], ["api.fda.gov"])
+
+    def test_data_source_register_contains_current_trust_anchor_digests(self) -> None:
+        source_register = (DOCS / "DATA_SOURCES.md").read_text(encoding="utf-8")
+        for relative_path in (
+            "data/public/H-1230-2026.json",
+            "data/public/H-1230-2026.metadata.json",
+            "data/synthetic/northstar_demo/dataset.json",
+            "data/synthetic/northstar_demo/manifest.json",
+        ):
+            digest = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+            self.assertIn(digest, source_register, f"missing current digest for {relative_path}")
+        knowledge = json.loads((ROOT / "data/knowledge/manifest.json").read_text(encoding="utf-8"))
+        self.assertIn(knowledge["corpus_sha256"], source_register)
+
     def test_demo_artifact_contract_rejects_one_missing_timestamp(self) -> None:
         contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
         path = DOCS / "DEMO_WALKTHROUGH.md"
-        omitted_timestamp = "03:10"
+        omitted_timestamp = "03:40"
         fixture = path.read_text(encoding="utf-8").replace(omitted_timestamp, "", 1)
         with self.assertRaises(AssertionError):
             self.assert_demo_artifact_contract(path, contract, fixture)
@@ -396,7 +504,7 @@ class DocumentationContractTests(unittest.TestCase):
             "Iterations tried",
             "Learnings and observations",
             "00:00",
-            "04:20",
+            "04:35",
         ):
             self.assertIn(required, handout)
 
@@ -404,7 +512,7 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("Codex", coding_log)
         self.assertIn("Claude Code", coding_log)
         self.assertIn("Grok", coding_log)
-        self.assertIn("author-reported pending Task 11 verification", coding_log)
+        self.assertIn("no invocation evidence", coding_log)
         for text in (handout, coding_log):
             self.assertIn("Codex (GPT-5 family; exact host alias not surfaced to this task)", text)
             self.assertIn("gpt-5.6-terra", text)

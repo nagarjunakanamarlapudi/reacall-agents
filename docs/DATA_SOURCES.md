@@ -1,57 +1,85 @@
-# Data Sources and Provenance
+# Data Sources, Provenance, and Retrieval Corpus
 
-**Status:** implemented, deterministic data/provenance contract; end-to-end runtime verification remains in Task 11.
-
-Read the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) first for why the public recall predicate and fictional retailer evidence must remain separate throughout matching, tracing, containment, and closure.
+Read the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) first. The central rule is simple: official evidence defines public recall scope; synthetic evidence demonstrates how a fictional retailer could investigate that scope. Neither source is allowed to impersonate the other.
 
 ![Data provenance boundary](images/01_data_provenance.svg)
 
 ## Source register
 
-| Source | Role | Provenance label | Critical-path status |
+| Source | Stored/use form | Audience label | Critical-path role |
 |---|---|---|---|
-| [openFDA Food Enforcement API](https://open.fda.gov/apis/food/enforcement/) | Recall notice lookup | `OFFICIAL — openFDA` | Live lookup plus frozen fallback |
-| Frozen `H-1230-2026` snapshot | Reproducible flagship case | `OFFICIAL — openFDA snapshot` | Required offline fallback |
-| [FDA Food Traceability Rule](https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-requirements-additional-traceability-records-certain-foods) and [traceability lot-code guidance](https://www.fda.gov/food/food-safety-modernization-act-fsma/traceability-lot-code) | Policy context | `OFFICIAL — FDA guidance` | Reference resource; no compliance claim |
-| [GS1 EPCIS 2.0.1](https://ref.gs1.org/standards/epcis/2.0.1/) | Event semantics | `OFFICIAL — GS1 reference` | Reference resource; events are EPCIS-like, not certified conformance |
-| USDA FoodData Central | Optional product enrichment | `OFFICIAL — USDA` | Optional only |
-| Northstar Grocers data | Product, lot, event, inventory, task, receipt fixtures | `SYNTHETIC_RETAILER_DIGITAL_TWIN`; UI: `SYNTHETIC — ACADEMIC DEMO` | Required demo data |
-| USDA FSIS recall API | Possible future adapter | `FUTURE — excluded from flagship` | Not a dependency |
+| [openFDA Food Enforcement API](https://open.fda.gov/apis/food/enforcement/) | Hard-coded `api.fda.gov` endpoint for optional live recall lookup | `OFFICIAL — openFDA` | Optional; bounded timeout and labelled snapshot fallback |
+| `data/public/H-1230-2026.json` | Frozen response with five enforcement records | `OFFICIAL — openFDA snapshot` | Default reproducible notice evidence |
+| [FDA recall definitions](https://www.fda.gov/safety/industry-guidance-recalls/recalls-background-and-definitions) | Paraphrased policy record | `OFFICIAL — FDA reference (paraphrased)` | Classification context |
+| [FDA recall guidance](https://www.fda.gov/media/136987/download) | Two paraphrased policy records | `OFFICIAL — FDA reference (paraphrased)` | Initiation, communication, effectiveness, termination context |
+| [FDA Food Traceability Rule](https://www.fda.gov/food/food-safety-modernization-act-fsma/fsma-final-rule-requirements-additional-traceability-records-certain-foods) | Paraphrased policy record | `OFFICIAL — FDA reference (paraphrased)` | CTE/KDE/traceability-lot context; no applicability claim |
+| [GS1 EPCIS 2.0.1](https://ref.gs1.org/standards/epcis/2.0.1/) | Paraphrased policy record | `OFFICIAL — GS1 reference (paraphrased)` | Event-semantics reference; no conformance claim |
+| `data/synthetic/northstar_demo/dataset.json` | Seeded fictional operational twin | `SYNTHETIC — ACADEMIC DEMO` | Product, lot, trace, inventory, shipment, and acknowledgement evidence |
+| USDA/FSIS or broader sources | Not called | excluded/future | Not a flagship dependency |
 
-## Public/synthetic separation
+RecallOps has no You.com integration and performs no general web search. Retrieval is over committed, checksummed artifacts. The sole optional live data call is the allowlisted openFDA host `api.fda.gov`; no arbitrary URL supplied by a user or retrieved document is fetched.
 
-`H-1230-2026` is an official public recall used to extract a product/UPC/plant/Julian-date/geography/hazard predicate. Northstar Grocers is fictional. The synthetic data may show exact, probable, ambiguous, and rejected matches, but it does not establish any connection between Northstar and the real recall. This distinction follows each record into citations, tool responses, UI badges, and audit traces.
+## Frozen official snapshot
 
-## Business data represented
+The openFDA response contains five records: the flagship `H-1230-2026` egg recall plus four neighboring food-enforcement records that provide negative retrieval controls. The snapshot metadata records the exact source URL, frozen retrieval time, retrieval method, and SHA-256.
 
-A food-recall coordinator starts with a regulator's recall predicate, but containment depends on private operational records that a public API cannot provide. The Northstar twin therefore represents the business chain from product master and supplier receipt through distribution-center/store movement, sale, return, quarantine, disposal, inventory count, and facility acknowledgement. EPCIS-like parent-event links make both forward tracing ("where did this lot go?") and backward tracing ("which receipt did this store event descend from?") inspectable.
+| Artifact | SHA-256 |
+|---|---|
+| `data/public/H-1230-2026.json` | `086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9` |
+| `data/public/H-1230-2026.metadata.json` | `3199cdb467c81bfd1c83228a4ee61d8ca6f93103209ed2c415c8fb0a2e657034` |
 
-The committed portfolio is intentionally larger than the six-row teaching fixture while remaining easy to run locally:
+The frozen capture is reproducible evidence, not proof of current recall status. Production decisions would need current FDA/firm communications and accountable food-safety/legal review.
 
-| Record set | Count | Business purpose |
+## Synthetic Northstar digital twin
+
+The generator uses seed `20260830`, schema `recallops.synthetic-retailer-digital-twin` version `1.1.0`, and a fixed timestamp. The dataset and adjacent manifest are byte-deterministic.
+
+| Collection | Count | Role |
 |---|---:|---|
-| Products | 48 | Catalog filtering, near-UPC controls, and table pagination |
-| Lots | 144 | Exact, probable, ambiguous, rejected, clean, and gapped outcomes |
+| Products | 48 | Product/UPC exact, near, and background controls |
+| Lots | 144 | Exact, probable, ambiguous, rejected, balanced, and gapped cases |
 | Facilities | 18 | Two distribution centers and sixteen stores |
-| EPCIS-like events | 577 | Receiving, shipping/transfer, sale, return, quarantine, and disposal lineage |
-| Inventory positions | 216 | Multi-facility stock and quantity reconciliation |
-| Supplier shipments | 144 | One traceable inbound shipment per lot |
-| Facility acknowledgements | 18 | Complete facility coverage, with `STORE-08` intentionally unresolved |
+| EPCIS-like events | 577 | Receipt, shipment/transfer, sale, return, quarantine, and disposal lineage |
+| Inventory positions | 216 | Lot/facility stock and reconciliation evidence |
+| Supplier shipments | 144 | One inbound source record per lot |
+| Facility acknowledgement seeds | 18 | Acknowledgement/follow-up fixtures |
+| Initial cases/tasks/receipts | 0 / 0 / 0 | Runtime operations start empty |
 
-Six anchor lots remain hand-auditable for the flagship demo. In particular, `LOT-PROBABLE-160` has a zero-unit gap and can exercise safe closure after acknowledgement, while `LOT-EXACT-170` retains a 50-unit gap and must remain blocked. The other 138 lots provide realistic background volume without changing those anchor facts.
+The synthetic dataset SHA-256 is `6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9`; its manifest SHA-256 is `2356b37e583031e22512ec54472bb2336c0ae8c003addc7a6e0f8f78d85690ea`.
 
-## Reproducibility
+Six anchor lots keep the large corpus hand-auditable. `LOT-EXACT-170` is an exact match with 1,200 received and 50 unaccounted units. `LOT-PROBABLE-160` is a probable match with 900 received and zero unaccounted units. `LOT-AMBIG-175` preserves a questionable plant code. `LOT-REJECT-190`, `LOT-CONTROL-170`, and `LOT-NEAR-150` are rejection controls. The other 138 lots add realistic retrieval and table volume without changing the anchor facts.
 
-The public snapshot remains byte-for-byte frozen with SHA-256 `086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9`. Synthetic schema `recallops.synthetic-retailer-digital-twin` version `1.1.0` is regenerated from pinned seed `20260830`; its current `dataset.json` SHA-256 is `6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9`.
+## Validation and trust anchors
 
-The manifest declares the schema, version, seed, source label, exact collection counts, file list, and raw-byte SHA-256. The loader also compares both manifest hash fields and the raw dataset bytes with an independently reviewed pinned digest, so changing the data and recomputing the adjacent manifest cannot establish a new trust anchor. Loading fails closed on checksum or count drift, anchor mutation, unlabelled origin, malformed timezone, shipment-after-receipt chronology, duplicate identifiers, missing foreign keys, lineage cycles, facility-continuity breaks, quantity-aggregate mismatches, or incomplete facility acknowledgements. Generating twice produces byte-identical dataset and manifest files.
+Loaders do not trust a self-updated manifest alone. Code pins independent SHA-256 values for the public snapshot, metadata, policy corpus, synthetic dataset, and synthetic manifest, then validates:
 
-For parent-linked event quantities, every shipment or transfer must be positive and no child event may claim more units than its direct parent. Sibling quantities are intentionally not summed against the parent because returns, quarantines, and disposals may describe business states that overlap an earlier sale or movement; lot-level reconciliation remains the authoritative aggregate equation.
+- schema/version/seed/source label and exact collection counts;
+- duplicate IDs, foreign keys, origins, and timezone-aware timestamps;
+- shipment/receipt chronology, event-parent lineage, cycles, and facility continuity;
+- positive movement quantities and lot-level aggregate reconciliation;
+- acknowledgement coverage and immutable anchor lots.
 
-The generated manifest—not prose—is the authority for synthetic portfolio counts, seed, and checksums. This keeps documentation honest when deterministic background data is expanded while preserving the stable anchor scenarios.
+Changing data and merely recomputing an adjacent manifest fails the independent digest check.
 
-## Data minimization
+## Knowledge corpus
 
-The academic twin excludes real customer PII. Customer-like fields are masked before model context and traces. Real ERP, WMS, POS, supplier, or store systems are not accessed.
+Corpus generation converts each source record into an independently citable document with source class, origin, audience label, record type/ID, source URL, retrieval time, content hash, and structured metadata.
 
-This source design is an academic simulation, not legal advice, food-safety advice, or a determination that the Food Traceability Rule applies to a particular food or business.
+| Corpus slice | Documents |
+|---|---:|
+| Frozen openFDA records | 5 |
+| Paraphrased FDA/GS1 policy records | 5 |
+| Synthetic operational records | 1,165 |
+| **Total** | **1,175** |
+
+Record-type counts are 577 events, 216 inventory positions, 144 lots, 144 shipments, 48 products, 18 facilities, 18 acknowledgement seeds, five openFDA records, and five policies. Corpus SHA-256 is `508914dfe31e4ab2dfa769006bf7fb4d21ed39fb36a9113bd9fb1d136d1e9963`.
+
+The in-memory hybrid index has 5,930 TF-IDF features and 64 LSA dimensions. BM25 and LSA rank independently; reciprocal-rank fusion and deterministic reranking preserve both component scores/ranks and return content-hash citations.
+
+## Live/cached behavior
+
+`RECALLOPS_SOURCE_MODE=snapshot` is the default. The durable LangGraph runtime explicitly uses the snapshot so replay/evaluation cannot drift. With `RECALLOPS_SOURCE_MODE=live`, the registry/UI notice opener requests the exact Food Enforcement endpoint with a two-second default timeout and academic user agent. An HTTP error, malformed response, missing result, or mismatched recall number returns the frozen record with `cached=True` and the cached-fallback source label.
+
+## Privacy and interpretation limits
+
+The twin contains no real customer PII; customer-like display fields are masked before traces/UI. The project has no real ERP/WMS/POS/supplier access and does not determine whether the Food Traceability Rule applies to a food or firm. This repository is an academic engineering demonstration, not legal or food-safety advice.

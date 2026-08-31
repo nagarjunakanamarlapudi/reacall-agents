@@ -1,25 +1,45 @@
 # Submission Checklist
 
-## Scope and provenance
+Use this as the final reviewer/recording gate. A checked box means the referenced artifact or executed evidence is present in the integrated branch; command outcomes belong in [Verification](VERIFICATION.md).
 
-- [ ] Every public reference is labelled with its authority and use.
-- [ ] `H-1230-2026` is displayed as official openFDA data or a labelled frozen snapshot.
-- [ ] Every Northstar record, figure, and UI location is visibly `SYNTHETIC — ACADEMIC DEMO`.
-- [ ] No artefact implies Northstar participated in the real public recall.
-- [ ] No A2A, production write, PII, real notification, or production regulatory claim appears.
+## Business and provenance
 
-## Week 3 capabilities
+- [ ] The opening slide explains recall predicate, lot lineage, reconciliation, containment, acknowledgement, and the difference between internal closure and FDA termination.
+- [ ] `H-1230-2026` is labelled official openFDA live or snapshot; every Northstar row says **SYNTHETIC — ACADEMIC DEMO**.
+- [ ] The narration explicitly says the public notice does not prove Northstar involvement.
+- [ ] Data counts match the manifests: 5 public snapshot records; 48 products, 144 lots, 18 facilities, 577 events, 216 inventory positions, 144 shipments, 18 acknowledgement seeds; 1,175 retrieval documents.
+- [ ] No You.com/general-search claim appears; optional live data is limited to `api.fda.gov` with labelled fallback.
 
-- [ ] LangGraph state, routes, checkpoints, interrupt/resume, and safe side-effect ordering are demonstrated.
-- [ ] Planner, specialists, optional Deep Agent supervisor, and independent critic are distinguishable.
-- [ ] Three MCP servers and the direct/stdio gateway boundary are demonstrated.
-- [ ] Middleware behavior, trace recording, budgets, provenance, masking, and recovery are visible.
-- [ ] Approval/version/idempotency rules and closure gates are demonstrated.
+## Week 3 architecture
 
-## Evidence package
+- [ ] LangGraph node order, JSON state, SQLite checkpoint, persistent checkpoint ID, `thread_id`, interrupt, and resume are visible.
+- [ ] Agentic RAG visibly includes BM25 sparse, local LSA dense, RRF, reranking, critic/rewrite, citations/gaps, and 2-hop/4-query/8-read limits.
+- [ ] The deterministic planner, four specialists, optional Deep Agents factory, and independent verifier are accurately distinguished.
+- [ ] Recall Registry, Traceability, and Recall Operations FastMCP servers plus direct/stdio transports are demonstrated.
+- [ ] Middleware covers reads, model fallback, retrieval, masking, tracing, approvals, versions, idempotency, watchdog, and cross-store fencing.
+- [ ] “No A2A” and “agents never write directly” appear in architecture/narration.
 
-- [ ] The diagram renderer has been run with its pinned Mermaid CLI version.
-- [ ] All rendered SVGs have been visually reviewed for labels, arrows, and clipping.
-- [ ] Data validation, tests, formatting, lint, notebooks, MCP smoke, demo, evaluation, and security commands have final captured results.
-- [ ] `docs/VERIFICATION.md` records exact versions, commands, outcomes, warnings, checksums, and limitations.
-- [ ] Demo narration and UI labels have been checked against the integrated implementation.
+## Human authority and lifecycle
+
+- [ ] **Approve** records zero writes and exposes a separate **Simulate approved actions** confirmation.
+- [ ] First receipt is `create_case` v0→v1; the next fresh review is `apply_inventory_hold` v1→v2.
+- [ ] Edit/reject/escalate behavior is explained; ambiguous scope is never held.
+- [ ] Full later lifecycle is documented: evidence-bound disposition, facility tasks, repeated one-facility acknowledgements, closure review, execution confirmation, close.
+- [ ] Lost-response recovery reuses the exact key; wrong case/thread/version/action/key leaves state unchanged.
+- [ ] Flagship finishes **Open — closure blocked**; R17 is shown only as an optional positive control.
+
+## Product and evaluation
+
+- [ ] All five UI views and exact controls/fields/statuses in `demo_contract.json` are visible.
+- [ ] CLI data validation/demo/MCP config/eval summary and Streamlit startup exit successfully.
+- [ ] The generated evaluator report contains R01–R21, all safety-critical, `gate_passed=true`, perfect required rates, and zero unsafe counters.
+- [ ] Six self-contained notebooks rebuild and execute without product imports, network, install cells, or credentials.
+- [ ] The full test suite, Ruff, lock, dependency, Bandit, pip-audit, Streamlit smoke, MCP stdio smoke, and data checks are recorded.
+
+## Documentation and recording
+
+- [ ] The presentation uses [data boundary](images/recallops-data-boundary.png), [system architecture](images/recallops-system-architecture.png), and [five-minute demo](images/recallops-five-minute-demo.png) visuals; Mermaid/SVG remains the reproducible detail layer.
+- [ ] README, proposal, business guide, architecture, source register, MCP/HITL/operations/evaluation docs, submission document, backlog, demo, and verification are synchronized.
+- [ ] Every Mermaid source renders through the pinned local CLI; two fresh renders match each other and committed SVGs.
+- [ ] The 4:35 walkthrough is rehearsed with the exact copy/paste card and a fresh explicit runtime directory.
+- [ ] No secret, real PII, unlabelled synthetic claim, production action claim, unsupported test count, or “pending integration” wording remains.

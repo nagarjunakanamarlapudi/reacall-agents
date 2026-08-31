@@ -1,13 +1,31 @@
 {
-  "schema_version": "1.0",
-  "runtime_integration_status": "approved contract pending Task 11 runtime integration",
+  "schema_version": "2.0",
+  "runtime_integration_status": "implemented durable runtime and five-view UI",
+  "duration_seconds": 275,
   "cli": {
     "data_validation_command": "uv run recallops data-validate",
-    "demo_command": "uv run recallops demo --recall-number H-1230-2026"
+    "demo_command": "uv run recallops demo --recall-number H-1230-2026",
+    "ui_command": "uv run streamlit run src/recallops/ui/app.py",
+    "evaluation_summary_command": "uv run recallops eval --report data/evals/report.json"
   },
   "streamlit": {
-    "views": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation"],
-    "buttons": ["Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure"],
+    "views": [
+      "Command Center",
+      "Investigation",
+      "Reconciliation",
+      "Human Review",
+      "Audit & Evaluation"
+    ],
+    "buttons": [
+      "Open case",
+      "Run investigation",
+      "Approve",
+      "Edit",
+      "Reject",
+      "Escalate",
+      "Simulate approved actions",
+      "Request closure"
+    ],
     "field_labels": ["Recall number", "Decision", "Actor", "Justification"]
   },
   "inputs": {
@@ -17,27 +35,172 @@
     "escalate_justification": "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."
   },
   "decisions": ["approve", "edit", "reject", "escalate"],
-  "expected_statuses": ["Review required", "Simulated action recorded", "Open — closure blocked"],
+  "expected_statuses": [
+    "Review required",
+    "Simulated action recorded",
+    "Open — closure blocked"
+  ],
+  "action_cycles": [
+    {"action": "create_case", "from_version": 0, "to_version": 1},
+    {"action": "apply_inventory_hold", "from_version": 1, "to_version": 2}
+  ],
+  "failure_recovery": {
+    "scenario": "lost write response → same-key replay",
+    "arm_button": "Run failure fixture",
+    "initial_button": "Simulate approved actions",
+    "recovery_button": "Recover recorded outcome (same key)",
+    "expected_logical_receipts": 1,
+    "expected_version_increments": 1
+  },
+  "data": {
+    "public_snapshot_records": 5,
+    "knowledge_document_count": 1175,
+    "synthetic_record_counts": {
+      "audit_receipts": 0,
+      "cases": 0,
+      "events": 577,
+      "facilities": 18,
+      "facility_acknowledgements": 18,
+      "inventory_positions": 216,
+      "lots": 144,
+      "products": 48,
+      "supplier_shipments": 144,
+      "tasks": 0
+    }
+  },
+  "retrieval": {
+    "sparse": "BM25",
+    "dense": "local TF-IDF/SVD LSA",
+    "fusion": "reciprocal-rank fusion",
+    "rerank": "deterministic evidence reranker",
+    "max_hops": 2,
+    "max_queries": 4,
+    "max_reads": 8
+  },
+  "dependencies": {
+    "general_web_search": false,
+    "you_com": false,
+    "live_public_host_allowlist": ["api.fda.gov"]
+  },
   "artifact_contract": {
     "DEMO_WALKTHROUGH.md": {
-      "commands": ["uv run recallops data-validate", "uv run recallops demo --recall-number H-1230-2026"],
-      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "approve", "edit", "reject", "escalate", "Review required", "Simulated action recorded", "Open — closure blocked", "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.", "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."]
+      "commands": [
+        "uv run recallops data-validate",
+        "uv run recallops demo --recall-number H-1230-2026",
+        "uv run recallops eval --report data/evals/report.json",
+        "uv run streamlit run src/recallops/ui/app.py"
+      ],
+      "required_terms": [
+        "Command Center",
+        "Investigation",
+        "Reconciliation",
+        "Human Review",
+        "Audit & Evaluation",
+        "Open case",
+        "Run investigation",
+        "Approve",
+        "Edit",
+        "Reject",
+        "Escalate",
+        "Simulate approved actions",
+        "Request closure",
+        "Recall number",
+        "Decision",
+        "Actor",
+        "Justification",
+        "H-1230-2026",
+        "Food-safety manager",
+        "approve",
+        "edit",
+        "reject",
+        "escalate",
+        "Review required",
+        "Simulated action recorded",
+        "Open — closure blocked",
+        "create_case",
+        "apply_inventory_hold",
+        "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.",
+        "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."
+      ]
     },
     "SUBMISSION_DOCUMENT.md": {
-      "commands": ["uv run recallops data-validate", "uv run recallops demo --recall-number H-1230-2026"],
-      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "approve", "edit", "reject", "escalate", "Review required", "Simulated action recorded", "Open — closure blocked", "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.", "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."]
+      "commands": [
+        "uv run recallops data-validate",
+        "uv run recallops demo --recall-number H-1230-2026",
+        "uv run streamlit run src/recallops/ui/app.py"
+      ],
+      "required_terms": [
+        "Command Center",
+        "Investigation",
+        "Reconciliation",
+        "Human Review",
+        "Audit & Evaluation",
+        "Open case",
+        "Run investigation",
+        "Approve",
+        "Edit",
+        "Reject",
+        "Escalate",
+        "Simulate approved actions",
+        "Request closure",
+        "Recall number",
+        "Decision",
+        "Actor",
+        "Justification",
+        "H-1230-2026",
+        "Food-safety manager",
+        "approve",
+        "edit",
+        "reject",
+        "escalate",
+        "Review required",
+        "Simulated action recorded",
+        "Open — closure blocked",
+        "create_case",
+        "apply_inventory_hold",
+        "Authorize simulated containment for confirmed scope; retain ambiguous lot for review.",
+        "Do not close while acknowledgement, ambiguity, or reconciliation gaps remain."
+      ]
     },
     "07_demo_story.mmd": {
       "commands": [],
-      "required_terms": ["Command Center", "Investigation", "Reconciliation", "Human Review", "Audit & Evaluation", "Open case", "Run investigation", "Approve", "Edit", "Reject", "Escalate", "Simulate approved actions", "Request closure", "Recall number", "Decision", "Actor", "Justification", "H-1230-2026", "Food-safety manager", "Review required", "Simulated action recorded", "Open — closure blocked"]
+      "required_terms": [
+        "Command Center",
+        "Investigation",
+        "Reconciliation",
+        "Human Review",
+        "Audit & Evaluation",
+        "Open case",
+        "Run investigation",
+        "Approve",
+        "Edit",
+        "Reject",
+        "Escalate",
+        "Simulate approved actions",
+        "Request closure",
+        "Recall number",
+        "Decision",
+        "Actor",
+        "Justification",
+        "H-1230-2026",
+        "Food-safety manager",
+        "Review required",
+        "Simulated action recorded",
+        "Open — closure blocked",
+        "create_case",
+        "apply_inventory_hold"
+      ]
     }
   },
   "timeline": {
-    "00:00": "Open case and state the official/synthetic boundary",
-    "00:35": "Run investigation and show bounded graph/specialists",
-    "01:20": "Show reconciliation and explicit gaps",
-    "02:00": "Review the ambiguous lot as Food-safety manager",
-    "03:10": "Approve a scoped simulated action and show its receipt",
-    "04:20": "Show monitoring, Open — closure blocked, and the separate closure gate"
+    "00:00": "Open official notice and state the source boundary",
+    "00:35": "Run the bounded investigation and show agentic RAG/specialists",
+    "01:20": "Show the unit equation and unresolved evidence",
+    "02:00": "Review the create_case proposal at version zero",
+    "02:35": "Approve, separately confirm, and record create_case version one",
+    "03:05": "Review the newly planned confirmed-only hold at version one",
+    "03:40": "Approve, separately confirm, and record hold version two",
+    "04:10": "Show audit, evaluator, and same-key recovery evidence",
+    "04:35": "Request closure and finish Open — closure blocked"
   }
 }

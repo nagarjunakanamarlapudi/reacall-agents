@@ -2,14 +2,20 @@ flowchart TB
   classDef hook fill:#ede9fe,stroke:#7c3aed,color:#111827
   classDef safety fill:#fee2e2,stroke:#dc2626,color:#111827
   classDef trace fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
+
   START["Case starts"] --> CTX["Case context<br/>case ID • role • source labels"]:::hook
   CTX --> PLAN["Task-plan policy<br/>bounded plan + completion criteria"]:::hook
-  PLAN --> MODEL["Model router + retry/fallback<br/>call budget + structured output"]:::hook
-  MODEL --> TOOLS["Permission + schema/provenance<br/>retry/circuit breaker + tool budget"]:::hook
-  TOOLS --> MASK["PII masking + citation-preserving summarization"]:::hook
-  MASK --> STATE["Typed state update"]:::hook
-  STATE --> WD["Progress watchdog"]:::safety
-  WD --> VERIFY["Reconciliation / contradiction guard"]:::safety
-  VERIFY --> TRACE["Trace recorder<br/>route • node • tool • duration • status • receipt"]:::trace
-  TRACE --> NEXT["Next route, review, or safe stop"]
-  TOOLS --> APPROVAL["Approval guard on every side effect"]:::safety
+  PLAN --> RET["Retrieval middleware<br/>source route • read/query budgets<br/>critic • progress watchdog"]:::hook
+  RET --> MODEL["Model boundary<br/>fixed schema • call budget<br/>deterministic fallback"]:::hook
+  MODEL --> TOOLS["Read tool boundary<br/>permission • schema • provenance<br/>retry • circuit breaker • budget"]:::hook
+  TOOLS --> MASK["PII masking<br/>citation-preserving context"]:::hook
+  MASK --> STATE["JSON state update"]:::state
+  STATE --> VERIFY["Independent verification<br/>reconciliation • ambiguity • coverage"]:::safety
+  VERIFY --> REVIEW["Pending interrupt binding<br/>case • thread • version • digest"]:::safety
+  REVIEW --> APPROVAL["Approval guard<br/>actor • justification • exact action"]:::safety
+  APPROVAL --> CONFIRM["Execution confirmation<br/>execution ID • idempotency key"]:::safety
+  CONFIRM --> WRITE["One write attempt<br/>receipt validation • version increment"]:::hook
+  WRITE --> FENCE["Checkpoint / Operations fence<br/>owner UUID • head • request digest"]:::state
+  FENCE --> TRACE["Trace recorder<br/>route • node • tool • duration<br/>status • warning • receipt"]:::trace
+  TRACE --> NEXT["Next review, durable recovery,<br/>blocked closure, or safe stop"]

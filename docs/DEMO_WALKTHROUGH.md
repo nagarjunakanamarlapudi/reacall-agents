@@ -1,43 +1,87 @@
-# Five-Minute Demo Walkthrough
+# RecallOps 4:35 Demo Walkthrough
 
-![Demo story](images/07_demo_story.svg)
+![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
 
-This is an **approved contract pending Task 11 runtime integration**. [`demo_contract.json`](demo_contract.json) is the single source for its command, fields, controls, status labels, inputs, and timestamps. **Final integration confirmation is required** before recording.
-
-## Audience orientation before the timed walkthrough
-
-Before starting the contracted 4-minute-20-second sequence, use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) to explain the real problem. Emphasize that the public record defines scope, Northstar evidence is fictional, human authorization controls simulated actions, and internal case closure is not FDA recall termination. This orientation is outside the timed contract below and adds no new demo inputs or screen labels.
+This script is derived from [`demo_contract.json`](demo_contract.json) and the implemented durable runtime/five-view UI. The visual is a presentation overview; the exact 4:35 click sequence is the timed table below and the reproducible [demo-story diagram](images/07_demo_story.svg). Use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) for a one-slide orientation before the timed product walkthrough.
 
 ## Preflight
 
-Copy/paste after final integration confirmation:
+Start from a clean shell in the repository root:
 
 ```bash
+uv sync --locked --all-groups
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
+uv run recallops eval --report data/evals/report.json
+uv run streamlit run src/recallops/ui/app.py
 ```
 
-Expected audience-facing source boundary: **official openFDA H-1230-2026** is the authoritative public notice; all Northstar operational records are **SYNTHETIC — ACADEMIC DEMO**. Say this before showing any matches.
+For the recorded run, launch Streamlit against a fresh explicit runtime directory so an earlier rehearsal cannot supply stale case state:
 
-## Narration and inputs
+```bash
+RECALLOPS_DEMO_DIR="$(mktemp -d /tmp/recallops-demo.XXXXXX)"
+RECALLOPS_RUNTIME_DIR="$RECALLOPS_DEMO_DIR" uv run streamlit run src/recallops/ui/app.py
+```
 
-| Time | Narration | Contracted screen/action |
+For the MCP protocol version of the UI, replace the last command with:
+
+```bash
+RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py
+```
+
+Use durable mode, not the UI fixture mode. Confirm the browser opens on **Command Center** with no existing case. Keep the terminal available for the short CLI proof, but record the UI as the primary walkthrough.
+
+## Failure-recovery rehearsal
+
+Rehearse this once in a separate fresh runtime; do not arm it during the timed flagship take. Open the case, run the investigation, approve the `create_case` packet, and stop before execution. In **Audit & Evaluation**, choose **lost write response → same-key replay** under **Failure scenario** and click **Run failure fixture**. Return to **Human Review** and click **Simulate approved actions**. The durable graph should pause at outcome recovery; click **Recover recorded outcome (same key)**. Show that the retry returns one logical receipt and one version increment rather than a duplicate write. Then close that rehearsal process and use a newly created runtime directory for the timed script.
+
+## Copy/paste card
+
+| Field | Exact value |
+|---|---|
+| **Recall number** | `H-1230-2026` |
+| **Decision** | `approve` |
+| **Actor** | `Food-safety manager` |
+| **Justification** | `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.` |
+| Escalation alternative | `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` |
+
+The decision vocabulary is exactly `approve`, `edit`, `reject`, and `escalate`; the visible controls are **Approve**, **Edit**, **Reject**, and **Escalate**.
+
+## Timed script
+
+| Time | Click/show | Say |
 |---|---|---|
-| 00:00 | “I am opening official openFDA recall H-1230-2026. Northstar Grocers is fictional training data, not a party to this public recall.” | In **Command Center**, enter **Recall number** `H-1230-2026` and select **Open case**. |
-| 00:35 | “The graph plans bounded work for intake, matching, traceability, containment, and independent verification. There is no A2A and agents do not directly write records.” | In **Investigation**, select **Run investigation** and show evidence/tool trace. |
-| 01:20 | “The quantity equation makes every unit visible. Any unaccounted unit remains a closure blocker.” | In **Reconciliation**, show explicit gaps. |
-| 02:00 | “This ambiguous lot pauses at a durable interrupt. The Food-safety manager can approve, edit, reject, or escalate.” | In **Human Review**, show status **Review required**. The contract controls are **Approve**, **Edit**, **Reject**, and **Escalate**. Enter **Decision** `approve`, **Actor** `Food-safety manager`, and **Justification** `Authorize simulated containment for confirmed scope; retain ambiguous lot for review.` |
-| 03:10 | “Approval is scoped to the action and case version. Only the approved graph node makes a simulated write.” | Select **Approve**, then **Simulate approved actions**; show status **Simulated action recorded** and the receipt. |
-| 04:20 | “Monitoring still protects closure: a missing acknowledgement, ambiguity, or reconciliation gap keeps the case open.” | In **Audit & Evaluation**, select **Request closure** and show **Open — closure blocked**. For the safe alternate decision, enter `escalate` with `Do not close while acknowledgement, ambiguity, or reconciliation gaps remain.` |
+| 00:00 | In **Command Center**, keep `H-1230-2026` in **Recall number** and click **Open case**. Point to the official and synthetic badges. | “This is a real openFDA enforcement record and a separate fictional Northstar digital twin. The public notice does not prove retailer involvement. There is no You.com or general web search; the default path is frozen and checksummed.” |
+| 00:35 | Open **Investigation**, click **Run investigation**, then show the retrieval trace, four specialist rows, critic, match classifications, and synthetic lineage. | “LangGraph owns the durable state. Agentic RAG plans a source route, combines BM25 sparse and local LSA dense retrieval with RRF and reranking, critiques coverage, and stops within two hops/four queries/eight reads. The planner delegates bounded intake, match, trace, and containment work; the verifier remains independent.” |
+| 01:20 | Open **Reconciliation**. Point to the exact equation, `LOT-EXACT-170` gap, ambiguous lot, and evidence links. | “The model cannot explain away a missing unit. Structured trace and reconciliation stay authoritative: received equals on-hand, quarantined, sold, returned, disposed, plus unaccounted. Fifty exact-lot units and ambiguity remain visible closure blockers.” |
+| 02:00 | Open **Human Review**. Show **Review required**, action `create_case`, case version 0, digest, sources, gaps, and remaining actions. Confirm **Decision**, **Actor**, and **Justification** have the copy/paste values. | “The first interrupt is one exact proposal at one exact version. Approval is not execution. Edit returns through verification; Reject writes nothing; Escalate stops safely.” |
+| 02:35 | Click **Approve**. Explicitly show that no receipt appeared and that a separate execution confirmation is pending. Then click **Simulate approved actions** and show **Simulated action recorded**, action `create_case`, and the v0→v1 receipt. | “Approve recorded zero writes. This second confirmation lets only the approved graph node call Operations MCP once. The receipt binds actor, justification, action digest, idempotency key, and version.” |
+| 03:05 | Stay in **Human Review** and show the next **Review required** packet: `apply_inventory_hold`, version 1, confirmed lot targets, and a new digest/key. | “The first approval expired when the case version changed. The graph replans, so the hold needs a fresh review. The ambiguous lot is retained for review and cannot be smuggled into confirmed scope.” |
+| 03:40 | Click **Approve**, show the second execution confirmation, click **Simulate approved actions**, and show the `apply_inventory_hold` v1→v2 receipt plus **Simulated action recorded**. | “This is one write per version, not a batch convenience call. Both records are simulated; no real inventory system was touched.” |
+| 04:10 | Open **Audit & Evaluation**. Show decision/receipt ordering, then point to R13 exact replay and R18 restart/resume in the loaded evaluation table; mention the separately rehearsed lost-response recovery. If the report panel cannot load, show the preflight `recallops eval` terminal summary and committed report instead—do not switch to fixture mode. | “A lost response becomes durable unknown-outcome state; the **Recover recorded outcome (same key)** control reuses the persisted key and returns one logical receipt. The 21-scenario evaluator also checks direct/stdio parity, restart, watchdog, approval, idempotency, and TOCTOU closure controls.” |
+| 04:35 | Click **Request closure** and point to **Open — closure blocked** and its returned blockers. | “Closure is a separate decision, not a side effect of containment. This mixed case stays open because ambiguity and reconciliation evidence remain unresolved. Internal retailer closure is also distinct from FDA termination.” |
 
-The agreed sequence ends with the closure-blocked demonstration. Runtime UI strings and outcome values must be checked against `demo_contract.json` by Task 11 integration tests.
+## What the audience should have seen
 
-## Evaluator questions
+1. Official and **SYNTHETIC — ACADEMIC DEMO** evidence never merge into a claim of retailer involvement.
+2. Agentic RAG, planning, four specialists, independent verification, and MCP calls are visible, bounded, and cited.
+3. **Approve** and **Simulate approved actions** are two different human decisions.
+4. `create_case` v0→v1 and `apply_inventory_hold` v1→v2 each produce one durable receipt.
+5. Audit/recovery evidence makes retries and stale/concurrent requests inspectable.
+6. **Request closure** ends **Open — closure blocked**, which is the intended flagship safety outcome.
+
+## Optional positive-close proof (outside the timed flagship)
+
+Do not replace the blocked flagship with a happy path. If a reviewer asks whether closure can ever succeed, open `data/evals/report.json` at R17 or run the evaluator and explain: the isolated `LOT-PROBABLE-160` scope has zero unaccounted units; the runtime performs reviewed disposition if needed, facility tasks, one acknowledgement per required facility, a separate closure review and execution confirmation, then one `close_case` receipt. Operations revalidates all gates transactionally.
+
+## Presenter Q&A
 
 | Question | Answer |
 |---|---|
-| Is Northstar tied to the real recall? | No. It is a `SYNTHETIC — ACADEMIC DEMO` digital twin. |
-| Can an agent make an inventory hold? | No. It can draft; only an approved graph node calls the simulated operations MCP tool. |
-| Why not use A2A? | The requirement is explicit stateful orchestration; LangGraph is sufficient and more inspectable here. |
-| What happens if openFDA is unavailable? | The app uses a labelled frozen snapshot for the demo. |
-| Can the case close with a discrepancy? | No; reconciliation and acknowledgement gates block closure. |
+| Why not use You.com/web search? | General search adds nondeterministic/untrusted critical-path data. RecallOps uses an allowlisted openFDA lookup plus a frozen snapshot and committed FDA/GS1 references. |
+| Is LSA really dense retrieval? | Yes: TF-IDF vectors are projected into a local 64-dimensional latent semantic space. It is deliberately called local LSA, not neural embeddings. |
+| Is Deep Agents actually present? | Yes, the repository builds a real fixed-subagent Deep Agents graph. The default durable workflow uses the equivalent deterministic plan so the demo needs no model key; agents never receive Operations tools. |
+| Why two approvals? | The first approves the evidence-bound action. The second confirms execution with the persisted execution ID/key. This prevents “approve” from silently becoming a write. |
+| What if the process restarts? | Reopen the same checkpoint and Operations database paths. The same thread/checkpoint/interrupt resumes; completed reasoning is not rerun. |
+| Are Northstar holds real? | No. Every operational record/receipt is **SYNTHETIC — ACADEMIC DEMO** and status `simulated`. |
+| Is internal close FDA termination? | No. FDA termination is an external regulatory decision; RecallOps only simulates closing a fictional retailer case. |

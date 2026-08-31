@@ -4,9 +4,9 @@
 
 This guide explains the business problem before the AI architecture. RecallOps asks a practical retailer question: **given an authoritative public recall record, can we identify the product and lot scope, trace the affected flow, account for the units, contain the right facilities, and assemble enough evidence for a human to decide what happens next?**
 
-![Business recall lifecycle](images/08_business_recall_lifecycle.svg)
+![Honest boundary between official recall scope and fictional retailer evidence](images/recallops-data-boundary.png)
 
-The lifecycle diagram is a business view. It deliberately omits software components.
+The polished visual is the presentation-first domain orientation. The reproducible [business recall lifecycle](images/08_business_recall_lifecycle.svg) and [domain evidence model](images/09_domain_evidence_model.svg) provide the detailed process and record relationships; the lifecycle view deliberately omits software components.
 
 ## 1. Why this is a real operational problem
 
@@ -95,7 +95,7 @@ The predicate separates dimensions that must not be blended:
 - initial distribution geography; and
 - hazard/reason for recall.
 
-The predicate is conjunctive where the notice requires multiple conditions. A matching UPC is not enough when the plant or date is outside scope. Every edit creates a new reviewable case version so an approval cannot silently authorize a different scope.
+The predicate is conjunctive where the notice requires multiple conditions. A matching UPC is not enough when the plant or date is outside scope. In this implementation, `edit` changes the review rationale only and returns through verification; it cannot alter predicate scope, targets, evidence, action type, case identity, or version. A production predicate editor would need to create a new immutable revision and invalidate prior authorization.
 
 ### Step 3 — Match products, then lots
 
@@ -144,11 +144,12 @@ A safe fictional facility loop is:
 1. identify every DC/store touched by an included or unresolved lot;
 2. propose the least broad justified action, such as count, stop-sale, or quarantine;
 3. obtain a human decision bound to the case version and exact proposed action;
-4. record a simulated operation receipt;
-5. obtain facility acknowledgement and updated quantity/disposition evidence; and
-6. escalate missing, stale, or contradictory responses.
+4. separately confirm execution and record exactly one simulated operation receipt/version increment;
+5. re-plan and re-authorize each later disposition, facility-task, and acknowledgement action;
+6. obtain one acknowledgement from every required facility together with updated quantity/disposition evidence; and
+7. request and separately authorize closure only after every deterministic gate passes.
 
-An acknowledgement proves only that the specific facility response was recorded. It does not resolve an ambiguous lot or make missing units disappear.
+Creating a task is not an acknowledgement. An acknowledgement proves only that the specific facility response was recorded. Neither resolves an ambiguous lot or makes missing units disappear. Approval also is not execution: the academic workflow uses a second confirmation so one broad click cannot authorize a chain of later operations.
 
 ## 9. Evidence model and audit packet
 
@@ -157,7 +158,7 @@ An acknowledgement proves only that the specific facility response was recorded.
 The audit packet should let a reviewer move from conclusion back to source without trusting a generated narrative. It contains:
 
 - the public record, retrieval/frozen-snapshot metadata, and citations;
-- the versioned predicate and human edits;
+- the versioned predicate and human review-rationale edits;
 - product/lot match results with included and excluded dimensions;
 - supplier shipment, event, inventory, and facility evidence IDs;
 - per-lot reconciliation components and residuals;
