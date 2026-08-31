@@ -878,11 +878,11 @@ async def test_cancelled_unchanged_resume_releases_fence_for_immediate_retry(
 
 
 @pytest.mark.asyncio
-async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
+async def test_copied_expired_marker_rejects_changed_request_and_exact_retry_recovers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Break caught: lease expiry lets a copied store fork an uncertain attempt."""
+    """Break caught: a copied expired marker changes approve to reject under one token."""
     import recallops.agents.runtime as runtime_module
     from recallops.agents.runtime import RecallOpsRuntime
     from recallops.services.operations import OperationsService
@@ -900,8 +900,6 @@ async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
             case_id="CASE-EXPIRED-FENCE",
             thread_id="THREAD-EXPIRED-FENCE",
         )
-
-    shutil.copy2(original_path, copied_path)
 
     async def die_before_mutation(*args, **kwargs):
         raise SystemExit("simulated death before checkpoint mutation")
@@ -922,6 +920,10 @@ async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
                     response=_bound_response(review.pending_interrupt, decision="approve"),
                 )
 
+    # Copy after the prepared attempt exists so both stores carry the same token.
+    # The request digest, not token identity alone, must reject approve -> reject.
+    shutil.copy2(original_path, copied_path)
+
     with sqlite3.connect(operations_path) as connection:
         connection.execute(
             "UPDATE workflow_identities SET attempt_expires_at=0 WHERE case_id=?",
@@ -932,10 +934,48 @@ async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
         checkpoint_path=copied_path,
         operations_path=operations_path,
     ) as copied:
+        with sqlite3.connect(operations_path) as connection:
+            operation_attempt_before = connection.execute(
+                "SELECT checkpoint_head, attempt_token, attempt_expected_head, "
+                "attempt_state, attempt_expires_at FROM workflow_identities WHERE case_id=?",
+                ("CASE-EXPIRED-FENCE",),
+            ).fetchone()
+            operations_digest = connection.execute(
+                "SELECT attempt_request_digest FROM workflow_identities WHERE case_id=?",
+                ("CASE-EXPIRED-FENCE",),
+            ).fetchone()[0]
+        with sqlite3.connect(copied_path) as connection:
+            checkpoint_attempt_before = connection.execute(
+                "SELECT * FROM recallops_mutation_attempts WHERE case_id=?",
+                ("CASE-EXPIRED-FENCE",),
+            ).fetchone()
+            checkpoint_digest = connection.execute(
+                "SELECT request_digest FROM recallops_mutation_attempts WHERE case_id=?",
+                ("CASE-EXPIRED-FENCE",),
+            ).fetchone()[0]
+        assert operations_digest == checkpoint_digest
+        assert len(operations_digest) == 64
         with pytest.raises(ValueError, match="active|uncertain|mutation"):
             await copied.resume_case(
                 thread_id="THREAD-EXPIRED-FENCE",
                 response=_bound_response(review.pending_interrupt, decision="reject"),
+            )
+        with sqlite3.connect(operations_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT checkpoint_head, attempt_token, attempt_expected_head, "
+                    "attempt_state, attempt_expires_at FROM workflow_identities WHERE case_id=?",
+                    ("CASE-EXPIRED-FENCE",),
+                ).fetchone()
+                == operation_attempt_before
+            )
+        with sqlite3.connect(copied_path) as connection:
+            assert (
+                connection.execute(
+                    "SELECT * FROM recallops_mutation_attempts WHERE case_id=?",
+                    ("CASE-EXPIRED-FENCE",),
+                ).fetchone()
+                == checkpoint_attempt_before
             )
 
     with sqlite3.connect(operations_path) as connection:
@@ -943,7 +983,7 @@ async def test_expired_uncertain_lease_rejects_copy_but_original_token_recovers(
             "SELECT attempt_state FROM workflow_identities WHERE case_id=?",
             ("CASE-EXPIRED-FENCE",),
         ).fetchone()[0]
-    assert state == "uncertain"
+    assert state == "active"
 
     async with RecallOpsRuntime.open(
         checkpoint_path=original_path,
@@ -966,6 +1006,7 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
         RecallOpsRuntime,
         _clear_checkpoint_attempt,
         _load_checkpoint_attempt,
+        _mutation_request_digest,
         _prepare_checkpoint_attempt,
     )
     from recallops.services.operations import OperationsService
@@ -982,11 +1023,21 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
             case_id="CASE-LIVE-MARKER",
             thread_id="THREAD-LIVE-MARKER",
         )
+        response = _bound_response(review.pending_interrupt, decision="approve")
+        request_digest = _mutation_request_digest(
+            case_id="CASE-LIVE-MARKER",
+            thread_id="THREAD-LIVE-MARKER",
+            expected_checkpoint_head=review.checkpoint_id,
+            interrupt_kind=review.pending_interrupt["kind"],
+            normalized_response=response,
+            pending=review.pending_interrupt,
+        )
         token = _prepare_checkpoint_attempt(
             checkpoint_path,
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
             review.checkpoint_id,
+            request_digest,
         )
         operations = OperationsService(storage_path=operations_path)
         operations.claim_workflow_mutation(
@@ -995,31 +1046,121 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
             runtime._checkpoint_owner_token,
             review.checkpoint_id,
             token,
+            request_digest,
         )
 
         with pytest.raises(ValueError, match="active|uncertain"):
             await runtime.resume_case(
                 thread_id="THREAD-LIVE-MARKER",
-                response=_bound_response(review.pending_interrupt, decision="approve"),
+                response=response,
             )
 
         assert _load_checkpoint_attempt(
             checkpoint_path,
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
-        ) == (token, review.checkpoint_id)
+        ) == (token, review.checkpoint_id, request_digest)
         operations.release_workflow_mutation(
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
             runtime._checkpoint_owner_token,
             review.checkpoint_id,
             token,
+            request_digest,
         )
         _clear_checkpoint_attempt(
             checkpoint_path,
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
             token,
+            request_digest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("baseline_response", "changed_response"),
+    [
+        (
+            {"decision": "approve", "actor": "reviewer-a", "justification": "evidence"},
+            {"decision": "approve", "actor": "reviewer-b", "justification": "evidence"},
+        ),
+        (
+            {"decision": "approve", "actor": "reviewer-a", "justification": "evidence"},
+            {"decision": "approve", "actor": "reviewer-a", "justification": "changed"},
+        ),
+        ({"decision": "approve"}, {"decision": "reject"}),
+        (
+            {"decision": "edit", "edited_action": {"rationale": "original"}},
+            {"decision": "edit", "edited_action": {"rationale": "changed"}},
+        ),
+        ({"decision": "confirm"}, {"decision": "cancel"}),
+    ],
+    ids=("actor", "justification", "decision", "edit", "confirmation"),
+)
+def test_checkpoint_attempt_digest_rejects_every_changed_human_field(
+    tmp_path: Path,
+    baseline_response: dict,
+    changed_response: dict,
+) -> None:
+    from recallops.agents.runtime import (
+        _checkpoint_store_owner,
+        _mutation_request_digest,
+        _prepare_checkpoint_attempt,
+    )
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    _checkpoint_store_owner(checkpoint_path)
+    pending = {
+        "kind": "action_review",
+        "action_id": "ACTION-DIGEST",
+        "action_digest": "a" * 64,
+        "execution_id": "EXECUTION-DIGEST",
+        "idempotency_key": "recallops:EXECUTION-DIGEST",
+    }
+    baseline_digest = _mutation_request_digest(
+        case_id="CASE-DIGEST",
+        thread_id="THREAD-DIGEST",
+        expected_checkpoint_head="CHECKPOINT-DIGEST",
+        interrupt_kind="action_review",
+        normalized_response=baseline_response,
+        pending=pending,
+    )
+    changed_digest = _mutation_request_digest(
+        case_id="CASE-DIGEST",
+        thread_id="THREAD-DIGEST",
+        expected_checkpoint_head="CHECKPOINT-DIGEST",
+        interrupt_kind="action_review",
+        normalized_response=changed_response,
+        pending=pending,
+    )
+    assert baseline_digest != changed_digest
+    _prepare_checkpoint_attempt(
+        checkpoint_path,
+        "CASE-DIGEST",
+        "THREAD-DIGEST",
+        "CHECKPOINT-DIGEST",
+        baseline_digest,
+    )
+    with sqlite3.connect(checkpoint_path) as connection:
+        before = connection.execute(
+            "SELECT * FROM recallops_mutation_attempts WHERE case_id='CASE-DIGEST'"
+        ).fetchone()
+
+    with pytest.raises(ValueError, match="request digest"):
+        _prepare_checkpoint_attempt(
+            checkpoint_path,
+            "CASE-DIGEST",
+            "THREAD-DIGEST",
+            "CHECKPOINT-DIGEST",
+            changed_digest,
+        )
+
+    with sqlite3.connect(checkpoint_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT * FROM recallops_mutation_attempts WHERE case_id='CASE-DIGEST'"
+            ).fetchone()
+            == before
         )
 
 

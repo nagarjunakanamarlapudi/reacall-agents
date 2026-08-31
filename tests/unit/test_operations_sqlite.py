@@ -171,7 +171,8 @@ def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_pat
         columns = {row[1] for row in connection.execute("PRAGMA table_info(workflow_identities)")}
         mapping = connection.execute(
             "SELECT case_id, thread_id, owner_token, checkpoint_head, attempt_token, "
-            "attempt_expected_head, attempt_state, attempt_expires_at FROM workflow_identities"
+            "attempt_expected_head, attempt_request_digest, attempt_state, attempt_expires_at "
+            "FROM workflow_identities"
         ).fetchone()
     assert columns == {
         "case_id",
@@ -180,10 +181,21 @@ def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_pat
         "checkpoint_head",
         "attempt_token",
         "attempt_expected_head",
+        "attempt_request_digest",
         "attempt_state",
         "attempt_expires_at",
     }
-    assert mapping == ("CASE-LEGACY", "THREAD-LEGACY", None, None, None, None, None, None)
+    assert mapping == (
+        "CASE-LEGACY",
+        "THREAD-LEGACY",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path: Path) -> None:
@@ -197,8 +209,8 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
         "OWNER-FENCE",
         "__recallops_initial_checkpoint__",
         "ATTEMPT-FENCE",
+        "a" * 64,
     )
-
     with pytest.raises(ValueError, match="active|uncertain"):
         service.claim_workflow_mutation(
             "CASE-FENCE",
@@ -206,11 +218,31 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
             "OWNER-FENCE",
             "__recallops_initial_checkpoint__",
             "ATTEMPT-FENCE",
+            "a" * 64,
         )
 
     with sqlite3.connect(database) as connection:
         connection.execute(
             "UPDATE workflow_identities SET attempt_expires_at=0 WHERE case_id='CASE-FENCE'"
+        )
+        before_changed_request = connection.execute(
+            "SELECT * FROM workflow_identities WHERE case_id='CASE-FENCE'"
+        ).fetchone()
+    with pytest.raises(ValueError, match="request digest"):
+        service.claim_workflow_mutation(
+            "CASE-FENCE",
+            "THREAD-FENCE",
+            "OWNER-FENCE",
+            "__recallops_initial_checkpoint__",
+            "ATTEMPT-FENCE",
+            "b" * 64,
+        )
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute(
+                "SELECT * FROM workflow_identities WHERE case_id='CASE-FENCE'"
+            ).fetchone()
+            == before_changed_request
         )
     service.claim_workflow_mutation(
         "CASE-FENCE",
@@ -218,6 +250,53 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
         "OWNER-FENCE",
         "__recallops_initial_checkpoint__",
         "ATTEMPT-FENCE",
+        "a" * 64,
+    )
+
+
+def test_recovery_requires_the_exact_bound_request_digest(tmp_path: Path) -> None:
+    database = tmp_path / "recovery-digest.sqlite3"
+    service = OperationsService(storage_path=database)
+    service.reserve_workflow_identity("CASE-RECOVER", "THREAD-RECOVER", "OWNER-RECOVER")
+    service.claim_workflow_mutation(
+        "CASE-RECOVER",
+        "THREAD-RECOVER",
+        "OWNER-RECOVER",
+        "__recallops_initial_checkpoint__",
+        "ATTEMPT-RECOVER",
+        "a" * 64,
+    )
+    with sqlite3.connect(database) as connection:
+        before = connection.execute(
+            "SELECT * FROM workflow_identities WHERE case_id='CASE-RECOVER'"
+        ).fetchone()
+
+    with pytest.raises(ValueError, match="recovery proof"):
+        service.recover_workflow_mutation(
+            "CASE-RECOVER",
+            "THREAD-RECOVER",
+            "OWNER-RECOVER",
+            "__recallops_initial_checkpoint__",
+            "CHECKPOINT-RECOVERED",
+            "ATTEMPT-RECOVER",
+            "b" * 64,
+        )
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute(
+                "SELECT * FROM workflow_identities WHERE case_id='CASE-RECOVER'"
+            ).fetchone()
+            == before
+        )
+
+    service.recover_workflow_mutation(
+        "CASE-RECOVER",
+        "THREAD-RECOVER",
+        "OWNER-RECOVER",
+        "__recallops_initial_checkpoint__",
+        "CHECKPOINT-RECOVERED",
+        "ATTEMPT-RECOVER",
+        "a" * 64,
     )
 
 

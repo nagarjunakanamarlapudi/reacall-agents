@@ -88,7 +88,8 @@ class OperationsService:
                     CREATE TABLE IF NOT EXISTS workflow_identities (
                       case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
                       owner_token TEXT, checkpoint_head TEXT, attempt_token TEXT,
-                      attempt_expected_head TEXT, attempt_state TEXT,
+                      attempt_expected_head TEXT, attempt_request_digest TEXT,
+                      attempt_state TEXT,
                       attempt_expires_at REAL);
                     CREATE TABLE IF NOT EXISTS receipts (
                       receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
@@ -143,6 +144,7 @@ class OperationsService:
                 ("checkpoint_head", "TEXT"),
                 ("attempt_token", "TEXT"),
                 ("attempt_expected_head", "TEXT"),
+                ("attempt_request_digest", "TEXT"),
                 ("attempt_state", "TEXT"),
                 ("attempt_expires_at", "REAL"),
             ):
@@ -509,6 +511,15 @@ class OperationsService:
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to validate workflow identity: {error}") from error
 
+    @staticmethod
+    def _validate_request_digest(request_digest: str) -> None:
+        if (
+            type(request_digest) is not str
+            or len(request_digest) != 64
+            or any(character not in "0123456789abcdef" for character in request_digest)
+        ):
+            raise ValueError("request_digest must be a canonical SHA-256 hex digest")
+
     def claim_workflow_mutation(
         self,
         case_id: str,
@@ -516,6 +527,7 @@ class OperationsService:
         owner_token: str,
         expected_checkpoint_head: str,
         attempt_token: str,
+        request_digest: str,
         *,
         lease_seconds: float = WORKFLOW_MUTATION_LEASE_SECONDS,
     ) -> None:
@@ -529,6 +541,7 @@ class OperationsService:
         ):
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be a nonblank exact string")
+        self._validate_request_digest(request_digest)
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)):
             raise TypeError("lease_seconds must be a positive number")
         if lease_seconds <= 0:
@@ -538,7 +551,8 @@ class OperationsService:
             with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
-                    "attempt_expected_head, attempt_state, attempt_expires_at "
+                    "attempt_expected_head, attempt_request_digest, attempt_state, "
+                    "attempt_expires_at "
                     "FROM workflow_identities "
                     "WHERE case_id=?",
                     (case_id,),
@@ -562,11 +576,13 @@ class OperationsService:
                 if row["attempt_token"] is None:
                     conn.execute(
                         "UPDATE workflow_identities SET attempt_token=?, "
-                        "attempt_expected_head=?, attempt_state='active', attempt_expires_at=? "
+                        "attempt_expected_head=?, attempt_request_digest=?, "
+                        "attempt_state='active', attempt_expires_at=? "
                         "WHERE case_id=? AND thread_id=? AND owner_token=?",
                         (
                             attempt_token,
                             expected_checkpoint_head,
+                            request_digest,
                             expires_at,
                             case_id,
                             thread_id,
@@ -577,7 +593,11 @@ class OperationsService:
                     row["attempt_token"] == attempt_token
                     and row["attempt_expected_head"] == expected_checkpoint_head
                 ):
-                    if (
+                    if row["attempt_request_digest"] != request_digest:
+                        raise ValueError(
+                            "workflow mutation request digest does not match this attempt"
+                        )
+                    elif (
                         row["attempt_state"] == "active"
                         and (row["attempt_expires_at"] or 0) > time.time()
                     ):
@@ -611,6 +631,7 @@ class OperationsService:
         expected_checkpoint_head: str,
         new_checkpoint_head: str,
         attempt_token: str,
+        request_digest: str,
     ) -> None:
         """Atomically bind the successful checkpoint head and close its fencing attempt."""
         for name, value in (
@@ -623,11 +644,13 @@ class OperationsService:
         ):
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be a nonblank exact string")
+        self._validate_request_digest(request_digest)
         try:
             with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
-                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    "attempt_expected_head, attempt_request_digest FROM workflow_identities "
+                    "WHERE case_id=?",
                     (case_id,),
                 ).fetchone()
                 if row is None or row["thread_id"] != thread_id:
@@ -640,11 +663,13 @@ class OperationsService:
                     row["checkpoint_head"] != expected_checkpoint_head
                     or row["attempt_token"] != attempt_token
                     or row["attempt_expected_head"] != expected_checkpoint_head
+                    or row["attempt_request_digest"] != request_digest
                 ):
                     raise ValueError("workflow mutation fence no longer matches this attempt")
                 conn.execute(
                     "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
-                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (new_checkpoint_head, case_id),
                 )
@@ -660,6 +685,7 @@ class OperationsService:
         owner_token: str,
         expected_checkpoint_head: str,
         attempt_token: str,
+        request_digest: str,
     ) -> None:
         """Release an attempt only while its checkpoint head is provably unchanged."""
         for name, value in (
@@ -671,11 +697,13 @@ class OperationsService:
         ):
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be a nonblank exact string")
+        self._validate_request_digest(request_digest)
         try:
             with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
-                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    "attempt_expected_head, attempt_request_digest FROM workflow_identities "
+                    "WHERE case_id=?",
                     (case_id,),
                 ).fetchone()
                 if row is None or row["thread_id"] != thread_id:
@@ -691,11 +719,13 @@ class OperationsService:
                     row["checkpoint_head"] != expected_checkpoint_head
                     or row["attempt_token"] != attempt_token
                     or row["attempt_expected_head"] != expected_checkpoint_head
+                    or row["attempt_request_digest"] != request_digest
                 ):
                     raise ValueError("workflow mutation cannot be released after its head changed")
                 conn.execute(
                     "UPDATE workflow_identities SET attempt_token=NULL, "
-                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (case_id,),
                 )
@@ -712,6 +742,7 @@ class OperationsService:
         expected_checkpoint_head: str,
         recovered_checkpoint_head: str,
         attempt_token: str,
+        request_digest: str,
     ) -> None:
         """Finish an uncertain attempt only for the store carrying its persisted token."""
         for name, value in (
@@ -724,11 +755,13 @@ class OperationsService:
         ):
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be a nonblank exact string")
+        self._validate_request_digest(request_digest)
         try:
             with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
-                    "attempt_expected_head FROM workflow_identities WHERE case_id=?",
+                    "attempt_expected_head, attempt_request_digest FROM workflow_identities "
+                    "WHERE case_id=?",
                     (case_id,),
                 ).fetchone()
                 if row is None or row["thread_id"] != thread_id:
@@ -744,12 +777,14 @@ class OperationsService:
                     row["checkpoint_head"] != expected_checkpoint_head
                     or row["attempt_token"] != attempt_token
                     or row["attempt_expected_head"] != expected_checkpoint_head
+                    or row["attempt_request_digest"] != request_digest
                     or recovered_checkpoint_head == expected_checkpoint_head
                 ):
                     raise ValueError("workflow mutation recovery proof does not match")
                 conn.execute(
                     "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
-                    "attempt_expected_head=NULL, attempt_state=NULL, attempt_expires_at=NULL "
+                    "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (recovered_checkpoint_head, case_id),
                 )

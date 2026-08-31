@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -129,9 +131,17 @@ def _checkpoint_store_owner(path: Path) -> str:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS recallops_mutation_attempts "
             "(case_id TEXT NOT NULL, thread_id TEXT NOT NULL, attempt_token TEXT NOT NULL, "
-            "expected_checkpoint_head TEXT NOT NULL, state TEXT NOT NULL, "
+            "expected_checkpoint_head TEXT NOT NULL, request_digest TEXT NOT NULL, "
+            "state TEXT NOT NULL, "
             "PRIMARY KEY (case_id, thread_id))"
         )
+        attempt_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(recallops_mutation_attempts)")
+        }
+        if "request_digest" not in attempt_columns:
+            connection.execute(
+                "ALTER TABLE recallops_mutation_attempts ADD COLUMN request_digest TEXT"
+            )
         row = connection.execute(
             "SELECT value FROM recallops_runtime_metadata WHERE key='checkpoint_store_id'"
         ).fetchone()
@@ -160,15 +170,68 @@ def _load_checkpoint_attempt(
     path: Path,
     case_id: str,
     thread_id: str,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str] | None:
     with sqlite3.connect(path, timeout=5) as connection:
         connection.execute("PRAGMA busy_timeout=5000")
         row = connection.execute(
-            "SELECT attempt_token, expected_checkpoint_head FROM recallops_mutation_attempts "
+            "SELECT attempt_token, expected_checkpoint_head, request_digest "
+            "FROM recallops_mutation_attempts "
             "WHERE case_id=? AND thread_id=?",
             (case_id, thread_id),
         ).fetchone()
-    return (str(row[0]), str(row[1])) if row else None
+    if row is None:
+        return None
+    if row[2] is None:
+        raise ValueError("legacy checkpoint mutation marker lacks a bound request digest")
+    _validate_request_digest(str(row[2]))
+    return str(row[0]), str(row[1]), str(row[2])
+
+
+def _validate_request_digest(request_digest: str) -> None:
+    if (
+        type(request_digest) is not str
+        or len(request_digest) != 64
+        or any(character not in "0123456789abcdef" for character in request_digest)
+    ):
+        raise ValueError("request digest must be a canonical SHA-256 hex digest")
+
+
+def _mutation_request_digest(
+    *,
+    case_id: str,
+    thread_id: str,
+    expected_checkpoint_head: str,
+    interrupt_kind: str,
+    normalized_response: Any = None,
+    pending: Mapping[str, Any] | None = None,
+    initial_payload: Mapping[str, Any] | None = None,
+) -> str:
+    """Bind one exact start or human command to its durable fencing attempt."""
+    normalized_pending = pending or {}
+    contract = strict_json_value(
+        {
+            "schema": "recallops-mutation-request-v1",
+            "case_id": case_id,
+            "thread_id": thread_id,
+            "expected_checkpoint_head": expected_checkpoint_head,
+            "interrupt_kind": interrupt_kind,
+            "human_response": normalized_response,
+            "pending_action_id": normalized_pending.get("action_id")
+            or normalized_pending.get("action", {}).get("action_id"),
+            "pending_action_digest": normalized_pending.get("action_digest"),
+            "execution_id": normalized_pending.get("execution_id"),
+            "idempotency_key": normalized_pending.get("idempotency_key"),
+            "initial_payload": initial_payload,
+        }
+    )
+    encoded = json.dumps(
+        contract,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _prepare_checkpoint_attempt(
@@ -176,27 +239,32 @@ def _prepare_checkpoint_attempt(
     case_id: str,
     thread_id: str,
     expected_checkpoint_head: str,
+    request_digest: str,
 ) -> str:
+    _validate_request_digest(request_digest)
     connection = sqlite3.connect(path, timeout=5, isolation_level=None)
     try:
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
-            "SELECT attempt_token, expected_checkpoint_head FROM recallops_mutation_attempts "
+            "SELECT attempt_token, expected_checkpoint_head, request_digest "
+            "FROM recallops_mutation_attempts "
             "WHERE case_id=? AND thread_id=?",
             (case_id, thread_id),
         ).fetchone()
         if row is not None:
             if row[1] != expected_checkpoint_head:
                 raise RuntimeError("checkpoint mutation marker belongs to another head")
+            if row[2] != request_digest:
+                raise ValueError("checkpoint mutation marker request digest does not match")
             attempt_token = str(row[0])
         else:
             attempt_token = str(uuid4())
             connection.execute(
                 "INSERT INTO recallops_mutation_attempts "
-                "(case_id, thread_id, attempt_token, expected_checkpoint_head, state) "
-                "VALUES (?, ?, ?, ?, 'prepared')",
-                (case_id, thread_id, attempt_token, expected_checkpoint_head),
+                "(case_id, thread_id, attempt_token, expected_checkpoint_head, "
+                "request_digest, state) VALUES (?, ?, ?, ?, ?, 'prepared')",
+                (case_id, thread_id, attempt_token, expected_checkpoint_head, request_digest),
             )
         connection.execute("COMMIT")
         return attempt_token
@@ -213,15 +281,17 @@ def _clear_checkpoint_attempt(
     case_id: str,
     thread_id: str,
     attempt_token: str,
+    request_digest: str,
 ) -> None:
+    _validate_request_digest(request_digest)
     connection = sqlite3.connect(path, timeout=5, isolation_level=None)
     try:
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             "DELETE FROM recallops_mutation_attempts "
-            "WHERE case_id=? AND thread_id=? AND attempt_token=?",
-            (case_id, thread_id, attempt_token),
+            "WHERE case_id=? AND thread_id=? AND attempt_token=? AND request_digest=?",
+            (case_id, thread_id, attempt_token, request_digest),
         )
         connection.execute("COMMIT")
     except BaseException:
@@ -465,6 +535,13 @@ class RecallOpsRuntime:
             "question": question,
             "scope_lot_ids": scope,
         }
+        request_digest = _mutation_request_digest(
+            case_id=generated_case,
+            thread_id=generated_thread,
+            expected_checkpoint_head=INITIAL_CHECKPOINT_HEAD,
+            interrupt_kind="start",
+            initial_payload=initial,
+        )
         async with self._thread_lock("start", namespace="identity"):
             async with self._thread_lock(generated_thread):
                 workflow = _RUNTIME_WORKFLOWS[self]
@@ -485,6 +562,7 @@ class RecallOpsRuntime:
                     generated_case,
                     generated_thread,
                     INITIAL_CHECKPOINT_HEAD,
+                    request_digest,
                 )
                 claimed = False
                 try:
@@ -494,6 +572,7 @@ class RecallOpsRuntime:
                         self._checkpoint_owner_token,
                         INITIAL_CHECKPOINT_HEAD,
                         attempt_token,
+                        request_digest,
                     )
                     claimed = True
                     await _execute_workflow(workflow, initial, config)
@@ -508,12 +587,14 @@ class RecallOpsRuntime:
                         INITIAL_CHECKPOINT_HEAD,
                         created_checkpoint_id,
                         attempt_token,
+                        request_digest,
                     )
                     _clear_checkpoint_attempt(
                         checkpoint_path,
                         generated_case,
                         generated_thread,
                         attempt_token,
+                        request_digest,
                     )
                 except BaseException:
                     created = await workflow.aget_state(config)
@@ -526,6 +607,7 @@ class RecallOpsRuntime:
                                 self._checkpoint_owner_token,
                                 INITIAL_CHECKPOINT_HEAD,
                                 attempt_token,
+                                request_digest,
                             )
                         else:
                             self._operations_service.advance_workflow_mutation(
@@ -535,12 +617,14 @@ class RecallOpsRuntime:
                                 INITIAL_CHECKPOINT_HEAD,
                                 created_checkpoint_id,
                                 attempt_token,
+                                request_digest,
                             )
                         _clear_checkpoint_attempt(
                             checkpoint_path,
                             generated_case,
                             generated_thread,
                             attempt_token,
+                            request_digest,
                         )
                     if reserved and created_checkpoint_id is None:
                         self._operations_service.release_workflow_identity(
@@ -615,6 +699,19 @@ class RecallOpsRuntime:
                 checkpoint_thread_id=checkpoint_thread_id,
                 checkpoint_id=before_checkpoint_id,
             )
+            normalized = self._validate_resume_binding(
+                thread_id=thread_id,
+                response=response,
+                pending=pending,
+            )
+            request_digest = _mutation_request_digest(
+                case_id=checkpoint_case_id,
+                thread_id=thread_id,
+                expected_checkpoint_head=before_checkpoint_id,
+                interrupt_kind=pending["kind"],
+                normalized_response=normalized,
+                pending=pending,
+            )
             checkpoint_path = Path(self._checkpoint_key)
             marker = _load_checkpoint_attempt(
                 checkpoint_path,
@@ -629,18 +726,21 @@ class RecallOpsRuntime:
                     marker[1],
                     before_checkpoint_id,
                     marker[0],
+                    marker[2],
                 )
                 _clear_checkpoint_attempt(
                     checkpoint_path,
                     checkpoint_case_id,
                     thread_id,
                     marker[0],
+                    marker[2],
                 )
             attempt_token = _prepare_checkpoint_attempt(
                 checkpoint_path,
                 checkpoint_case_id,
                 thread_id,
                 before_checkpoint_id,
+                request_digest,
             )
             claimed = False
             try:
@@ -650,17 +750,13 @@ class RecallOpsRuntime:
                     self._checkpoint_owner_token,
                     before_checkpoint_id,
                     attempt_token,
+                    request_digest,
                 )
                 claimed = True
                 if self._failures.consume("stale_decision_version"):
                     raise ValueError("injected stale decision/version rejected before resume")
                 if self._failures.consume("changed_action_digest"):
                     raise ValueError("injected changed action digest rejected before resume")
-                normalized = self._validate_resume_binding(
-                    thread_id=thread_id,
-                    response=response,
-                    pending=pending,
-                )
                 current = await workflow.aget_state(config)
                 if self._checkpoint_id(current) != before_checkpoint_id:
                     raise RuntimeError("checkpoint changed during resume binding validation")
@@ -676,12 +772,14 @@ class RecallOpsRuntime:
                     before_checkpoint_id,
                     after_checkpoint_id,
                     attempt_token,
+                    request_digest,
                 )
                 _clear_checkpoint_attempt(
                     checkpoint_path,
                     checkpoint_case_id,
                     thread_id,
                     attempt_token,
+                    request_digest,
                 )
                 return self._result(after)
             except BaseException:
@@ -699,6 +797,7 @@ class RecallOpsRuntime:
                             before_checkpoint_id,
                             after_checkpoint_id,
                             attempt_token,
+                            request_digest,
                         )
                     else:
                         self._operations_service.release_workflow_mutation(
@@ -707,12 +806,14 @@ class RecallOpsRuntime:
                             self._checkpoint_owner_token,
                             before_checkpoint_id,
                             attempt_token,
+                            request_digest,
                         )
                     _clear_checkpoint_attempt(
                         checkpoint_path,
                         checkpoint_case_id,
                         thread_id,
                         attempt_token,
+                        request_digest,
                     )
                 raise
 
