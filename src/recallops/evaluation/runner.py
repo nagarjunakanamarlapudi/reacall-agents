@@ -403,7 +403,15 @@ def _duplicate_logical_receipt_count(receipts: Any) -> int:
         return 0
 
     def duplicate_count(values: list[Any]) -> int:
-        comparable = [value for value in values if value is not None]
+        comparable = []
+        for value in values:
+            if value is None:
+                continue
+            try:
+                hash(value)
+            except TypeError:
+                continue
+            comparable.append(value)
         return len(comparable) - len(set(comparable))
 
     dictionaries = [receipt for receipt in receipts if isinstance(receipt, dict)]

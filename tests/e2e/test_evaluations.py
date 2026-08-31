@@ -356,6 +356,51 @@ async def test_global_invariants_reject_forged_rejected_and_mismatched_receipts(
 
 
 @pytest.mark.asyncio
+async def test_unhashable_receipt_identity_is_an_integrity_failure_not_a_crash() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "review_status",
+            "path": "/state/status",
+            "operator": "equals",
+            "expected": "review_required",
+        },
+    )
+    receipt = {
+        "receipt_id": {"forged": "identifier"},
+        "idempotency_key": ["forged-key"],
+        "case_id": "CASE-TEST",
+        "action_type": "create_case",
+        "actor": "Reviewer",
+        "justification": "Forged receipt must fail closed.",
+        "case_version": 1,
+        "status": "simulated",
+        "details": {
+            "reviewed_action": {
+                "case_id": "CASE-TEST",
+                "action_type": "create_case",
+                "expected_case_version": 0,
+            }
+        },
+    }
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": _observation(receipts=[receipt])}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    integrity = next(
+        assertion
+        for assertion in report.results[0].assertions
+        if assertion.id == "global_receipt_integrity"
+    )
+    assert integrity.passed is False
+    assert report.metrics.receipt_integrity_violation_count >= 1
+
+
+@pytest.mark.asyncio
 async def test_global_invariants_derive_duplicate_receipts_and_version_sequence() -> None:
     scenario = _scenario(
         "R01",
