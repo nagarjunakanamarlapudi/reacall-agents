@@ -574,9 +574,7 @@ def _render_audit() -> None:
                 "Aggregate rates and unsafe counters are projected from the verified committed "
                 "report; raw state excerpts and tool traces are intentionally omitted."
             )
-            st.dataframe(
-                [asdict(row) for row in metric_rows], width="stretch", hide_index=True
-            )
+            st.dataframe([asdict(row) for row in metric_rows], width="stretch", hide_index=True)
 
         st.markdown("### Deterministic failure injection")
         st.selectbox(

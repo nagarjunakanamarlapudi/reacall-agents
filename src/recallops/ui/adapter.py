@@ -313,8 +313,7 @@ def _project_committed_evaluation_report(
             or not isinstance(assertions, list)
             or not assertions
             or not all(
-                isinstance(assertion, Mapping)
-                and isinstance(assertion.get("passed"), bool)
+                isinstance(assertion, Mapping) and isinstance(assertion.get("passed"), bool)
                 for assertion in assertions
             )
             or (error is not None and not isinstance(error, str))
@@ -358,9 +357,7 @@ def _project_committed_evaluation_report(
     metrics = report.get("metrics")
     if not isinstance(metrics, Mapping):
         raise ValueError("evaluation metrics must be a mapping")
-    projected_metrics = {
-        name: _require_rate(metrics, name) for name in _EVALUATION_RATE_METRICS
-    }
+    projected_metrics = {name: _require_rate(metrics, name) for name in _EVALUATION_RATE_METRICS}
     unsafe_counters = {
         name: _require_counter(metrics, name) for name in _EVALUATION_UNSAFE_COUNTERS
     }
