@@ -528,6 +528,8 @@ def _render_audit() -> None:
         failure = case.raw.get("failure_result")
         if failure:
             st.info(f"{failure['mode']}: {failure['safe_outcome']}")
+            if failure.get("next_step"):
+                st.caption(f"Next step: {failure['next_step']}")
     else:
         st.info("No audit or evaluation data is available until a case is opened.")
 

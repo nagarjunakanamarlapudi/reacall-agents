@@ -80,11 +80,17 @@ async def test_durable_failure_selector_arms_only_supported_runtime_failure(tmp_
     opened = await adapter.open_case("H-1230-2026")
     armed = await adapter.inject_failure(opened, "openFDA unavailable → labelled frozen snapshot")
     assert armed["failure_result"]["status"] == "armed"
+    assert armed["failure_result"]["next_step"] == "Run investigation"
     investigated = await adapter.run_investigation(armed)
     assert any(
         "pinned OFFICIAL_OPENFDA_SNAPSHOT fallback" in warning
         for warning in investigated["warnings"]
     )
+
+    with pytest.raises(ValueError, match="fresh case"):
+        await adapter.inject_failure(
+            investigated, "read timeout/429 → bounded retry then circuit-open/fallback"
+        )
 
 
 @pytest.mark.asyncio

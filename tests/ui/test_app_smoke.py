@@ -78,9 +78,21 @@ def test_app_default_product_mode_uses_durable_runtime(monkeypatch, tmp_path) ->
 
     app.button(key="open_case_button").click().run()
     assert app.session_state.ui_case["status"] == "intake_ready"
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    app.selectbox(key="ui_failure_scenario").set_value(
+        "openFDA unavailable → labelled frozen snapshot"
+    )
+    app.button(key="inject_failure_button").click().run()
+    assert any("Next step: Run investigation" in item.value for item in app.caption)
+
     app.radio(key="ui_active_view").set_value("Investigation").run()
     app.button(key="run_investigation_button").click().run(timeout=30)
     assert app.session_state.ui_case["pending_interrupt"]["kind"] == "action_review"
+    assert app.session_state.ui_case["failure_result"]["status"] == "observed"
+    assert any(
+        "pinned OFFICIAL_OPENFDA_SNAPSHOT fallback" in warning
+        for warning in app.session_state.ui_case["warnings"]
+    )
 
     app.radio(key="ui_active_view").set_value("Human Review").run()
     app.button(key="approve_button").click().run(timeout=30)

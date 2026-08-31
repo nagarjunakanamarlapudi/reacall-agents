@@ -55,6 +55,11 @@ _RUNTIME_FAILURE_STAGES = {
     "stale_decision_version": "review",
     "lost_write_response": "simulate",
 }
+_FAILURE_NEXT_STEPS = {
+    "run": "Run investigation",
+    "review": "Submit the pending Human Review decision",
+    "simulate": "Simulate approved actions",
+}
 
 
 class RecallOpsUIAdapter(Protocol):
@@ -338,12 +343,31 @@ class DurableRuntimeAdapter:
         runtime_scenario = _RUNTIME_FAILURES.get(scenario)
         if runtime_scenario is None:
             raise ValueError("Not available in this runtime")
+        stage = _RUNTIME_FAILURE_STAGES[runtime_scenario]
+        pending = current.get("pending_interrupt")
+        pending_kind = pending.get("kind") if isinstance(pending, Mapping) else None
+        compatible = (
+            (stage == "run" and not current.get("checkpoint_id"))
+            or (stage == "review" and pending_kind in {"action_review", "closure_review"})
+            or (
+                stage == "simulate"
+                and pending_kind in {"execution_confirmation", "write_outcome_recovery"}
+            )
+        )
+        if not compatible:
+            requirement = (
+                "a fresh case before Run investigation"
+                if stage == "run"
+                else f"a case ready to {_FAILURE_NEXT_STEPS[stage].casefold()}"
+            )
+            raise ValueError(f"This failure scenario requires {requirement}.")
         current["ui_failure_request"] = runtime_scenario
         current["failure_result"] = {
             "scenario": scenario,
             "runtime_scenario": runtime_scenario,
             "status": "armed",
             "safe_outcome": "Armed for the next compatible durable runtime operation.",
+            "next_step": _FAILURE_NEXT_STEPS[stage],
             "mode": self.runtime_label,
         }
         return current
