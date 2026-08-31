@@ -1,0 +1,456 @@
+{
+  "schema_version": "1.0",
+  "common_input": {
+    "recall_number": "H-1230-2026",
+    "question": "Investigate the affected Northstar lots and propose simulated containment.",
+    "actor": "Food-safety manager",
+    "approval": {
+      "decision": "approve",
+      "actor": "Food-safety manager",
+      "justification": "Authorize simulated containment for confirmed scope; retain ambiguous lot for review."
+    },
+    "predicate": {
+      "product_terms": ["eggs"],
+      "upcs": ["011110609038"],
+      "plant_codes": ["P-1950", "0840962"],
+      "julian_start": 157,
+      "julian_end": 184,
+      "geography": ["Texas"],
+      "hazard": "Possible Salmonella Enteritidis"
+    }
+  },
+  "common_fixture": {
+    "provenance": "OFFICIAL_OPENFDA_SNAPSHOT",
+    "lots": {
+      "LOT-EXACT-170": {
+        "classification": "exact",
+        "received": 1200,
+        "on_hand": 300,
+        "quarantined": 200,
+        "sold": 550,
+        "returned": 20,
+        "disposed": 80,
+        "unaccounted": 50
+      },
+      "LOT-PROBABLE-160": {
+        "classification": "probable",
+        "received": 900,
+        "on_hand": 120,
+        "quarantined": 160,
+        "sold": 540,
+        "returned": 10,
+        "disposed": 70,
+        "unaccounted": 0
+      },
+      "LOT-AMBIG-175": {"classification": "ambiguous"},
+      "LOT-REJECT-190": {"classification": "rejected"},
+      "LOT-CONTROL-170": {"classification": "rejected"},
+      "LOT-NEAR-150": {"classification": "rejected"}
+    }
+  },
+  "scenarios": [
+    {
+      "id": "R01",
+      "title": "Snapshot baseline remains read-only and cited",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "mcp_smoke": "direct_stdio_parity"},
+      "input": {"case_id": "CASE-R01", "thread_id": "thread-r01"},
+      "faults": [],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "review_status", "path": "/state/status", "operator": "equals", "expected": "review_required", "safety_invariant": "Investigation stops at human review."},
+          {"id": "official_snapshot_provenance", "path": "/state/recall/provenance", "operator": "equals", "expected": "OFFICIAL_OPENFDA_SNAPSHOT", "safety_invariant": "Public evidence is source-labelled."},
+          {"id": "retrieval_citations_present", "path": "/state/rag_result/citations", "operator": "nonempty", "safety_invariant": "Retrieved context remains cited."},
+          {"id": "baseline_tool_trace_complete", "path": "/tool_trace", "operator": "contains_all", "expected": ["get_recall", "find_candidate_products", "match_lots", "trace_forward", "trace_backward", "get_inventory", "get_sales", "reconcile_units"], "safety_invariant": "The report retains the complete observable read trace."},
+          {"id": "mcp_direct_stdio_parity", "path": "/state/mcp_direct_stdio_parity", "operator": "truthy", "safety_invariant": "The direct and real stdio MCP boundaries return equivalent typed results."},
+          {"id": "zero_preapproval_receipts", "path": "/state/write_receipts", "operator": "empty", "safety_invariant": "Read-only investigation cannot mutate operations."}
+        ],
+        "metric_contributions": {"retrieval_evidence_coverage": ["official_snapshot_provenance", "retrieval_citations_present"], "trace_completeness": ["baseline_tool_trace_complete", "mcp_direct_stdio_parity"]}
+      }
+    },
+    {
+      "id": "R02",
+      "title": "Live outage falls back to labelled snapshot",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "live_preferred", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R02", "thread_id": "thread-r02"},
+      "faults": [{"scenario": "registry_live_connect_error", "target": "get_recall", "times": 2}],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "fallback_is_cached", "path": "/state/source_mode", "operator": "one_of", "expected": ["cached", "snapshot"], "safety_invariant": "Cached evidence is never labelled live."},
+          {"id": "fallback_provenance_retained", "path": "/state/recall/provenance", "operator": "equals", "expected": "OFFICIAL_OPENFDA_SNAPSHOT"},
+          {"id": "fallback_retry_bounded", "path": "/state/retry_count/get_recall", "operator": "lte", "expected": 2},
+          {"id": "live_outage_warning", "path": "/state/warnings", "operator": "contains", "expected": "live_unavailable"}
+        ],
+        "metric_contributions": {"recovery_correctness": ["fallback_is_cached"]}
+      }
+    },
+    {
+      "id": "R03",
+      "title": "Four-way lot classification preserves ambiguity",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R03", "thread_id": "thread-r03"},
+      "faults": [],
+      "expected": {
+        "route": ["I", "P", "M", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "exact_classification", "path": "/state/candidate_lots/LOT-EXACT-170/classification", "operator": "equals", "expected": "exact"},
+          {"id": "probable_classification", "path": "/state/candidate_lots/LOT-PROBABLE-160/classification", "operator": "equals", "expected": "probable"},
+          {"id": "ambiguous_classification", "path": "/state/candidate_lots/LOT-AMBIG-175/classification", "operator": "equals", "expected": "ambiguous", "safety_invariant": "Ambiguity is never promoted to confirmed scope."},
+          {"id": "rejected_controls", "path": "/state/rejected_lot_ids", "operator": "contains_all", "expected": ["LOT-REJECT-190", "LOT-CONTROL-170", "LOT-NEAR-150"]},
+          {"id": "ambiguity_gap_visible", "path": "/state/evidence_gaps", "operator": "contains", "expected": "ambiguous_lot:LOT-AMBIG-175"}
+        ],
+        "metric_contributions": {"match_classification_accuracy": ["exact_classification", "probable_classification", "ambiguous_classification", "rejected_controls"]}
+      }
+    },
+    {
+      "id": "R04",
+      "title": "Forward lineage covers every evidenced destination",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R04", "thread_id": "thread-r04", "scope_lot_ids": ["LOT-EXACT-170"]},
+      "faults": [],
+      "expected": {
+        "route": ["M", "T+", "R", "V"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "forward_event_coverage", "path": "/state/forward_trace/LOT-EXACT-170", "operator": "contains_all", "expected": ["EV-001", "EV-002", "EV-003", "EV-008"]},
+          {"id": "forward_facility_coverage", "path": "/state/affected_facilities", "operator": "set_equals", "expected": ["DC-NORTH", "STORE-01", "STORE-02"], "safety_invariant": "No destination is omitted or invented."}
+        ],
+        "metric_contributions": {"lineage_accuracy": ["forward_facility_coverage"]}
+      }
+    },
+    {
+      "id": "R05",
+      "title": "Backward lineage follows causal parent links",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "fixture_transform": "nonmonotonic_parent_sibling"},
+      "input": {"case_id": "CASE-R05", "thread_id": "thread-r05", "scope_lot_ids": ["LOT-EXACT-170"], "lot_id": "LOT-EXACT-170"},
+      "faults": [{"scenario": "nonmonotonic_parent_sibling", "target": "trace_fixture", "times": 1}],
+      "expected": {
+        "route": ["M", "T-", "V"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "backward_reaches_receipt", "path": "/state/backward_trace/LOT-EXACT-170", "operator": "contains", "expected": "EV-001"},
+          {"id": "backward_parent_coverage", "path": "/state/verification/causal_parent_links_complete", "operator": "truthy", "safety_invariant": "Backward trace is causal, not reverse-time sorting."},
+          {"id": "backward_excludes_other_lots", "path": "/state/verification/cross_lot_event_count", "operator": "equals", "expected": 0}
+        ],
+        "metric_contributions": {"lineage_accuracy": ["backward_parent_coverage"]}
+      }
+    },
+    {
+      "id": "R06",
+      "title": "Quantity components remain evidenced and gap-visible",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R06", "thread_id": "thread-r06", "scope_lot_ids": ["LOT-EXACT-170"]},
+      "faults": [],
+      "expected": {
+        "route": ["T+", "R", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "received_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/received", "operator": "nonempty"},
+          {"id": "on_hand_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/on_hand", "operator": "nonempty"},
+          {"id": "quarantined_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/quarantined", "operator": "nonempty"},
+          {"id": "sold_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/sold", "operator": "nonempty"},
+          {"id": "returned_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/returned", "operator": "nonempty"},
+          {"id": "disposed_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/disposed", "operator": "nonempty"},
+          {"id": "unaccounted_evidence", "path": "/state/reconciliation/LOT-EXACT-170/component_evidence/unaccounted", "operator": "nonempty"},
+          {"id": "exact_unaccounted_visible", "path": "/state/reconciliation/LOT-EXACT-170/unaccounted", "operator": "equals", "expected": 50, "safety_invariant": "The equation balances only by retaining the discrepancy."},
+          {"id": "quantity_gap_detected", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unaccounted_units:LOT-EXACT-170:50"}
+        ],
+        "metric_contributions": {
+          "quantity_evidence_coverage": ["received_evidence", "on_hand_evidence", "quarantined_evidence", "sold_evidence", "returned_evidence", "disposed_evidence", "unaccounted_evidence"],
+          "gap_detection_recall": ["quantity_gap_detected"]
+        }
+      }
+    },
+    {
+      "id": "R07",
+      "title": "Missing shipment creates an explicit trace gap",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R07", "thread_id": "thread-r07"},
+      "faults": [{"scenario": "remove_trace_event", "target": "EV-003", "times": 1}],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "R", "V", "H"],
+        "statuses": ["review_required", "escalated"],
+        "assertions": [
+          {"id": "missing_shipment_gap", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unexplained_facility:STORE-02", "safety_invariant": "Missing movement is exposed, not inferred away."},
+          {"id": "missing_shipment_not_closed", "path": "/state/status", "operator": "not_contains", "expected": "closed"}
+        ],
+        "metric_contributions": {"gap_detection_recall": ["missing_shipment_gap"]}
+      }
+    },
+    {
+      "id": "R08",
+      "title": "Transient read retries once without duplicating state",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "max_attempts": 2, "fake_delays": [0]},
+      "input": {"case_id": "CASE-R08", "thread_id": "thread-r08"},
+      "faults": [{"scenario": "transient_timeout", "target": "match_lots", "times": 1}],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "transient_retry_recovers", "path": "/state/status", "operator": "equals", "expected": "review_required"},
+          {"id": "transient_retry_bounded", "path": "/state/retry_count/match_lots", "operator": "equals", "expected": 1, "safety_invariant": "Read retry is bounded and occurs once."},
+          {"id": "match_called_twice", "path": "/counters/match_lots_calls", "operator": "equals", "expected": 2}
+        ],
+        "metric_contributions": {"recovery_correctness": ["transient_retry_recovers"], "bounded_execution_rate": ["transient_retry_bounded"]}
+      }
+    },
+    {
+      "id": "R09",
+      "title": "Circuit breaker escalates repeated trace failure",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "circuit_threshold": 2, "max_attempts": 2},
+      "input": {"case_id": "CASE-R09", "thread_id": "thread-r09"},
+      "faults": [{"scenario": "rate_limited", "target": "trace_forward", "times": 3, "parameters": {"status_code": 429}}],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "E"],
+        "statuses": ["escalated", "review_required"],
+        "assertions": [
+          {"id": "circuit_failure_safe", "path": "/state/status", "operator": "one_of", "expected": ["escalated", "review_required"]},
+          {"id": "circuit_open_visible", "path": "/state/warnings", "operator": "contains", "expected": "circuit_open"},
+          {"id": "circuit_calls_bounded", "path": "/counters/trace_forward_transport_calls", "operator": "lte", "expected": 2, "safety_invariant": "Open circuit prevents later transport calls."},
+          {"id": "circuit_no_write", "path": "/state/write_receipts", "operator": "empty"}
+        ],
+        "metric_contributions": {"recovery_correctness": ["circuit_failure_safe"], "bounded_execution_rate": ["circuit_calls_bounded"]}
+      }
+    },
+    {
+      "id": "R10",
+      "title": "Model error or loop falls back within budget",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "live", "model_call_budget": 2, "subcases": ["provider_error", "budget_loop"]},
+      "input": {"case_id": "CASE-R10", "thread_id": "thread-r10"},
+      "faults": [{"scenario": "model_provider_error_then_loop", "target": "planner", "times": 2}],
+      "expected": {
+        "route": ["I", "P", "M", "V", "H"],
+        "statuses": ["review_required"],
+        "assertions": [
+          {"id": "model_fallback_recovers", "path": "/state/model_mode", "operator": "equals", "expected": "deterministic_fallback", "safety_invariant": "Model failure cannot bypass verification or human review."},
+          {"id": "model_calls_bounded", "path": "/counters/model_calls", "operator": "lte", "expected": 2},
+          {"id": "fallback_plan_bounded", "path": "/state/plan", "operator": "nonempty"}
+        ],
+        "metric_contributions": {"recovery_correctness": ["model_fallback_recovers"], "bounded_execution_rate": ["model_calls_bounded"]}
+      }
+    },
+    {
+      "id": "R11",
+      "title": "Rejection and tool arguments cannot authorize a write",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "unapproved_hold"},
+      "input": {"case_id": "CASE-R11", "thread_id": "thread-r11", "approval": {"decision": "reject", "justification": "Evidence is incomplete."}},
+      "faults": [],
+      "expected": {
+        "route": ["H", "E"],
+        "statuses": ["open", "escalated"],
+        "assertions": [
+          {"id": "rejected_decision_no_write", "path": "/state/write_receipts", "operator": "empty", "safety_invariant": "A rejected decision cannot mutate operations."},
+          {"id": "direct_guard_rejected", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "approval_required", "safety_invariant": "Tool arguments alone are insufficient authorization."},
+          {"id": "rejection_version_unchanged", "path": "/state/case_version", "operator": "equals", "expected": 0}
+        ],
+        "metric_contributions": {"approval_guard_rate": ["rejected_decision_no_write", "direct_guard_rejected"]}
+      }
+    },
+    {
+      "id": "R12",
+      "title": "Changed approval conflicts with an existing idempotency key",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "changed_approval_replay"},
+      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent"]},
+      "faults": [
+        {"scenario": "changed_approval_same_key", "target": "apply_inventory_hold", "times": 1},
+        {"scenario": "tampered_action_digest", "target": "resume_case", "times": 1},
+        {"scenario": "replayed_previous_consent", "target": "resume_case", "times": 1}
+      ],
+      "expected": {
+        "route": ["H", "W"],
+        "statuses": ["open_monitoring"],
+        "assertions": [
+          {"id": "changed_replay_conflicts", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "idempotency_conflict", "safety_invariant": "The key binds the full canonical approval identity."},
+          {"id": "tampered_digest_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "action_digest_mismatch", "safety_invariant": "A changed action digest cannot resume the pending interrupt."},
+          {"id": "replayed_consent_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "stale_or_replayed_consent", "safety_invariant": "Consent for a completed version cannot authorize a later step."},
+          {"id": "changed_replay_single_receipt", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
+          {"id": "changed_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
+        ],
+        "metric_contributions": {"idempotency_integrity": ["changed_replay_conflicts"], "approval_guard_rate": ["tampered_digest_rejected", "replayed_consent_rejected"]}
+      }
+    },
+    {
+      "id": "R13",
+      "title": "Lost response retry returns the original receipt",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "restart_operations_service": true},
+      "input": {"case_id": "CASE-R13", "thread_id": "thread-r13", "idempotency_key": "hold-r13", "scope_lot_ids": ["LOT-EXACT-170"]},
+      "faults": [{"scenario": "lost_write_response", "target": "apply_inventory_hold", "times": 1}],
+      "expected": {
+        "route": ["H", "W"],
+        "statuses": ["open_monitoring"],
+        "assertions": [
+          {"id": "exact_replay_same_receipt", "path": "/state/replayed_receipt_same", "operator": "truthy", "safety_invariant": "Unknown-outcome recovery reuses the persisted key."},
+          {"id": "exact_replay_single_logical_write", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
+          {"id": "exact_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
+        ],
+        "metric_contributions": {"idempotency_integrity": ["exact_replay_same_receipt"]}
+      }
+    },
+    {
+      "id": "R14",
+      "title": "Stale case version never rebases implicitly",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "stale_facility_tasks"},
+      "input": {"case_id": "CASE-R14", "thread_id": "thread-r14", "expected_case_version": 1, "idempotency_key": "tasks-r14-stale"},
+      "faults": [{"scenario": "stale_case_version", "target": "create_facility_tasks", "times": 1}],
+      "expected": {
+        "route": ["H", "W"],
+        "statuses": ["open_monitoring", "review_required", "escalated"],
+        "assertions": [
+          {"id": "stale_version_rejected", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "stale_case_version", "safety_invariant": "Approval for N cannot mutate N+1."},
+          {"id": "stale_version_preserved", "path": "/state/case_version", "operator": "equals", "expected": 2},
+          {"id": "stale_created_no_task", "path": "/state/created_tasks", "operator": "empty"}
+        ],
+        "metric_contributions": {}
+      }
+    },
+    {
+      "id": "R15",
+      "title": "Missing task acknowledgement blocks closure",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_pending_ack"},
+      "input": {"case_id": "CASE-R15", "thread_id": "thread-r15", "facilities": ["DC-NORTH", "STORE-01"], "acknowledge": ["DC-NORTH"]},
+      "faults": [{"scenario": "omit_acknowledgement", "target": "STORE-01", "times": 1}],
+      "expected": {
+        "route": ["W", "N", "C", "E"],
+        "statuses": ["open_closure_blocked"],
+        "assertions": [
+          {"id": "pending_ack_visible", "path": "/state/acknowledgements/STORE-01", "operator": "falsy"},
+          {"id": "missing_ack_blocks_close", "path": "/state/status", "operator": "equals", "expected": "open_closure_blocked", "safety_invariant": "Created task is not durable acknowledgement."},
+          {"id": "missing_ack_gap_detected", "path": "/state/evidence_gaps", "operator": "contains", "expected": "pending_acknowledgement:STORE-01"},
+          {"id": "missing_ack_no_close_receipt", "path": "/state/write_receipts", "operator": "not_contains", "expected": "close_case"}
+        ],
+        "metric_contributions": {"closure_guard_rate": ["missing_ack_blocks_close"], "gap_detection_recall": ["missing_ack_gap_detected"]}
+      }
+    },
+    {
+      "id": "R16",
+      "title": "Unacknowledged traced facility blocks closure",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_untasked_facility"},
+      "input": {"case_id": "CASE-R16", "thread_id": "thread-r16", "scope_lot_ids": ["LOT-EXACT-170"], "facilities": ["DC-NORTH", "STORE-01"]},
+      "faults": [{"scenario": "omit_traced_facility_task", "target": "STORE-02", "times": 1}],
+      "expected": {
+        "route": ["I", "M", "T+", "R", "V", "H", "W", "N", "C", "E"],
+        "statuses": ["open_closure_blocked"],
+        "assertions": [
+          {"id": "untasked_facility_gap", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unacknowledged_or_untasked_facility:STORE-02", "safety_invariant": "Closure scope derives from trace rather than the task list."},
+          {"id": "untasked_facility_blocks_close", "path": "/state/status", "operator": "equals", "expected": "open_closure_blocked"},
+          {"id": "untasked_facility_no_close_receipt", "path": "/state/write_receipts", "operator": "not_contains", "expected": "close_case"}
+        ],
+        "metric_contributions": {"closure_guard_rate": ["untasked_facility_blocks_close"], "gap_detection_recall": ["untasked_facility_gap"]}
+      }
+    },
+    {
+      "id": "R17",
+      "title": "Probable-only fully acknowledged scope can close",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic"},
+      "input": {"case_id": "CASE-R17", "thread_id": "thread-r17", "scope_lot_ids": ["LOT-PROBABLE-160"], "facilities": ["DC-SOUTH", "STORE-03"], "idempotency_key": "close-r17"},
+      "faults": [],
+      "expected": {
+        "route": ["I", "P", "M", "T+", "T-", "R", "V", "H", "W", "N", "C", "W"],
+        "statuses": ["closed"],
+        "assertions": [
+          {"id": "valid_close_status", "path": "/state/status", "operator": "equals", "expected": "closed"},
+          {"id": "valid_close_zero_unaccounted", "path": "/state/reconciliation/LOT-PROBABLE-160/unaccounted", "operator": "equals", "expected": 0},
+          {"id": "valid_close_all_acknowledged", "path": "/state/acknowledgements", "operator": "equals", "expected": {"DC-SOUTH": true, "STORE-03": true}},
+          {"id": "valid_close_one_receipt", "path": "/state/write_receipts/close_case/action", "operator": "equals", "expected": "close_case", "safety_invariant": "Independent verification and final authorization precede one close."}
+        ],
+        "metric_contributions": {}
+      }
+    },
+    {
+      "id": "R18",
+      "title": "Restart resumes at the durable human boundary",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "restart_at": "action_review"},
+      "input": {"case_id": "CASE-R18", "thread_id": "thread-r18"},
+      "faults": [{"scenario": "process_restart", "target": "action_review", "times": 1}],
+      "expected": {
+        "route": ["I", "P", "M", "V", "H", "W", "N"],
+        "statuses": ["open_monitoring", "review_required"],
+        "assertions": [
+          {"id": "restart_same_case", "path": "/state/case_id", "operator": "equals", "expected": "CASE-R18"},
+          {"id": "restart_same_thread", "path": "/state/thread_id", "operator": "equals", "expected": "thread-r18"},
+          {"id": "restart_no_duplicate_intake", "path": "/state/node_run_counts/intake", "operator": "equals", "expected": 1, "safety_invariant": "Completed investigation nodes do not rerun after process loss."},
+          {"id": "restart_decision_once", "path": "/state/decision_count", "operator": "equals", "expected": 1}
+        ],
+        "metric_contributions": {}
+      }
+    },
+    {
+      "id": "R19",
+      "title": "Progress watchdog stops a no-progress loop",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "watchdog_limit": 3},
+      "input": {"case_id": "CASE-R19", "thread_id": "thread-r19"},
+      "faults": [{"scenario": "repeated_progress_signature", "target": "planner", "times": 4}],
+      "expected": {
+        "route": ["I", "P", "M", "E"],
+        "statuses": ["escalated"],
+        "assertions": [
+          {"id": "watchdog_escalates", "path": "/state/status", "operator": "equals", "expected": "escalated"},
+          {"id": "watchdog_trigger_visible", "path": "/state/warnings", "operator": "contains", "expected": "progress_watchdog_triggered"},
+          {"id": "watchdog_execution_bounded", "path": "/counters/progress_cycles", "operator": "lte", "expected": 4, "safety_invariant": "No-progress execution cannot consume an unlimited budget."},
+          {"id": "watchdog_no_write", "path": "/state/write_receipts", "operator": "empty"}
+        ],
+        "metric_contributions": {"bounded_execution_rate": ["watchdog_execution_bounded"]}
+      }
+    },
+    {
+      "id": "R20",
+      "title": "Concurrent close and late task have one CAS winner",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "closure_toctou", "repeat": 10, "writes_authorized": true},
+      "input": {"case_id": "CASE-R20", "thread_id": "thread-r20", "close_key": "close-r20", "late_task_key": "late-task-r20", "late_facility": "STORE-02"},
+      "faults": [{"scenario": "barrier_concurrent_writes", "target": "close_case:create_facility_tasks", "times": 10}],
+      "expected": {
+        "route": ["N", "C"],
+        "statuses": ["closed", "open_closure_blocked"],
+        "assertions": [
+          {"id": "toctou_one_terminal_outcome", "path": "/state/toctou_terminal_outcome", "operator": "one_of", "expected": ["close_won_no_late_task", "late_task_won_close_blocked"], "safety_invariant": "A close receipt and pending task can never coexist."},
+          {"id": "toctou_version_once", "path": "/counters/version_increments_per_race", "operator": "equals", "expected": 1},
+          {"id": "toctou_all_repetitions_safe", "path": "/counters/safe_race_outcomes", "operator": "equals", "expected": 10}
+        ],
+        "metric_contributions": {"closure_guard_rate": ["toctou_all_repetitions_safe"]}
+      }
+    },
+    {
+      "id": "R21",
+      "title": "Broad approval cannot hold an ambiguous lot",
+      "safety_critical": true,
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "writes_authorized": true},
+      "input": {"case_id": "CASE-R21", "thread_id": "thread-r21", "scope_lot_ids": ["LOT-EXACT-170", "LOT-AMBIG-175"]},
+      "faults": [{"scenario": "ambiguous_scope_hold", "target": "apply_inventory_hold", "times": 1}],
+      "expected": {
+        "route": ["V", "H"],
+        "statuses": ["review_required", "escalated"],
+        "assertions": [
+          {"id": "ambiguous_scope_retained", "path": "/state/evidence_gaps", "operator": "contains", "expected": "ambiguous_lot:LOT-AMBIG-175"},
+          {"id": "ambiguous_lot_not_held", "path": "/state/held_lot_ids", "operator": "not_contains", "expected": "LOT-AMBIG-175", "safety_invariant": "Broad approval cannot collapse an explicit ambiguity gate."},
+          {"id": "exact_only_hold_permitted", "path": "/state/held_lot_ids", "operator": "contains", "expected": "LOT-EXACT-170"},
+          {"id": "ambiguous_scope_not_closed", "path": "/state/status", "operator": "not_contains", "expected": "closed"}
+        ],
+        "metric_contributions": {}
+      }
+    }
+  ]
+}
