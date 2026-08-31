@@ -1,6 +1,6 @@
 # Verification Evidence
 
-This file records commands actually executed against a named repository state. It does not convert an implementation plan or another worktree’s report into a success claim. The coordinator should append the final integrated-branch audit after UI and evaluator commits are merged.
+This file records commands actually executed against named repository states. It does not convert an implementation plan or another worktree’s report into a success claim. The final integrated audit is recorded below.
 
 ## Documentation worktree evidence — 30 August 2026
 
@@ -98,4 +98,85 @@ The integrated durable UI verifies and projects the committed evaluator report a
 
 ## Final integrated verification commands
 
-The repository runbook defines the exact install, data, evaluator, CLI, Streamlit, MCP, notebook, test, lint, lock, Python-security, and npm-security commands. Their outcomes must be added here from the final integrated commit rather than inferred from this documentation-only branch.
+**Executable baseline:** `feat/recallops` at `f21ecc6` (`docs: record polished PNG generation prompts`). The only subsequent changes in the verification commit are this evidence record and completed submission checklist.
+
+### Complete test tree
+
+The six disjoint test directories were run in four concurrent partitions to reduce wall-clock time without dropping coverage:
+
+```bash
+uv run pytest -q tests/unit
+uv run pytest -q tests/integration
+uv run pytest -q tests/e2e
+uv run pytest -q tests/ui tests/notebooks tests/docs
+```
+
+Observed: all commands exited 0—`501 passed`, `116 passed`, `39 passed`, and `96 passed`, respectively. Together they cover all 752 collected tests under `tests/`. The e2e partition includes the real R01–R21 hard-gate run and actual stdio MCP smoke; the integrated report remained 21/21 with 320 assertions, every required rate at 1.0, and all four unsafe counters at zero.
+
+### Product, data, and CLI smoke
+
+Commands:
+
+```bash
+uv run recallops data-validate
+uv run recallops demo --recall-number H-1230-2026
+uv run recallops mcp-config
+uv run recallops eval --report data/evals/report.json
+```
+
+Observed: all four exited 0. Data validation reported the official `H-1230-2026` snapshot plus 48 synthetic products, 144 lots, and 577 events. The flagship demo reached one simulated `create_case` receipt/version increment and then correctly reported `Open — closure blocked`. MCP config emitted three machine-readable stdio server definitions. The evaluator summary reported 21 scenarios, 21/21 safety-critical passed, and `Evaluation gate: PASSED`.
+
+The evaluator summary exposed a pre-release schema mismatch (`scenarios` versus the report’s `results` array). Two RED→GREEN CLI regression tests now verify the committed report schema and fail closed when `gate_passed` is false; the focused CLI suite finished `8 passed`.
+
+### Streamlit smoke
+
+Command:
+
+```bash
+RECALLOPS_RUNTIME_DIR=/tmp/recallops-streamlit-smoke uv run streamlit run src/recallops/ui/app.py --server.headless true --server.port 8765 --browser.gatherUsageStats false
+curl --fail --silent --show-error --output /tmp/recallops-root.html --write-out '%{http_code} %{content_type} %{size_download}\n' http://127.0.0.1:8765/
+```
+
+Observed: Streamlit/Uvicorn started successfully; the application root returned `200 text/html; charset=utf-8` with a 2,515-byte page. The process then stopped cleanly with exit 0. The older `/_stcore/health` path returned 404 in this installed Streamlit release, so the smoke assertion uses the served application root rather than claiming that endpoint exists.
+
+### Regenerated teaching and diagram artifacts
+
+Commands:
+
+```bash
+uv run python scripts/build_notebooks.py
+uv run pytest -q tests/notebooks/test_notebooks.py
+./scripts/render_diagrams.sh --verify
+```
+
+Observed: all six notebooks rebuilt deterministically and their focused suite finished `6 passed`; no notebook diff remained. Diagram verification exited 0, double-rendered all nine Mermaid sources byte-identically, and matched every committed SVG. The three primary presentation visuals are opaque-white 1672×941 PNGs; their generation prompts and refinements are committed in `docs/images/submission-visual-prompts.md`.
+
+### Dependency and security audit
+
+Commands and observed outcomes:
+
+```text
+uvx --from pip-audit pip-audit       exit 0; no known vulnerabilities found
+uvx --from bandit bandit -q -r src  exit 1; 31 low, 0 medium, 0 high
+npm audit --omit=dev                 exit 0; 0 vulnerabilities
+npm audit                            exit 1; 5 high findings in development-only Mermaid/Puppeteer renderer dependencies
+```
+
+Bandit’s 31 low findings are 28 `B101` evaluator/invariant assertions, two `B105` false positives on the string value `1.0`, and one `B311` deterministic synthetic-data pseudo-random generator. No security-sensitive randomness is claimed. The npm production tree is clean; the five development-tree findings trace to `extract-zip` through Puppeteer in pinned `@mermaid-js/mermaid-cli@11.12.0`. The suggested forced fix would move Mermaid CLI outside the locked renderer version, so the finding is recorded rather than hidden or force-upgraded before submission.
+
+### Final static/repository gate
+
+Commands:
+
+```bash
+uv sync --locked --all-groups
+uv run ruff format --check .
+uv run ruff check .
+uv lock --check
+uv pip check
+uv run pytest --collect-only -q
+uv run pytest -q tests/docs/test_documentation.py
+git diff --check
+```
+
+Observed: dependency sync resolved 180 packages and checked 172; Ruff reported 88 files already formatted and no lint findings; the lock was current; all 172 installed packages were compatible; pytest collected exactly 752 tests; the post-evidence documentation contract finished `21 passed`; and patch whitespace was clean. A final repository search found no unresolved placeholder or stale integration-status markers in submission-facing documents. Git status was clean after committing this record.
