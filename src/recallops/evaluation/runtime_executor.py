@@ -11,6 +11,9 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Any
 
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import StateUpdate
+
 from recallops.agents.middleware import (
     CallBudget,
     CircuitBreaker,
@@ -19,6 +22,7 @@ from recallops.agents.middleware import (
     with_retry,
 )
 from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
+from recallops.agents.workflow import build_workflow
 from recallops.evaluation.runner import EvaluationObservation, load_scenarios, run_evaluations
 from recallops.evaluation.schema import EvaluationReport, EvaluationScenario
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
@@ -1069,7 +1073,106 @@ class RecallOpsEvaluationExecutor:
             restored = await runtime.get_case(thread_id=review.case["thread_id"])
             assert restored == review
             created = await _approve_and_confirm(runtime, restored)
-        return self._observation(created)
+        compiled_guard_results = await self._probe_compiled_workflow_guards(
+            scenario,
+            checkpoint.parent,
+        )
+        return self._observation(
+            created,
+            state_updates={"compiled_guard_results": compiled_guard_results},
+        )
+
+    async def _probe_compiled_workflow_guards(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> dict[str, bool]:
+        def graph_for(label: str) -> Any:
+            gateway = DirectGateway(
+                operations=OperationsService(storage_path=root / f"{label}-operations.sqlite3")
+            )
+            return build_workflow(gateway=gateway, checkpointer=InMemorySaver())
+
+        async def initialized(label: str) -> tuple[Any, dict[str, Any], Any]:
+            graph = graph_for(label)
+            identity = f"THREAD-R18-{label.upper()}"
+            config = {"configurable": {"thread_id": identity}}
+            initial = {
+                "case_id": identity,
+                "thread_id": identity,
+                "recall_number": scenario.input.recall_number,
+                "question": "Protect this paused graph from direct state replacement.",
+                "scope_lot_ids": [],
+            }
+            await graph.ainvoke(
+                initial,
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+            return graph, config, initial
+
+        def unchanged(before: Any, after: Any) -> bool:
+            return (
+                after.values == before.values
+                and after.interrupts == before.interrupts
+                and after.config == before.config
+            )
+
+        graph, config, initial = await initialized("reinitialize")
+        before = await graph.aget_state(config)
+        rejected = False
+        try:
+            await graph.ainvoke(
+                {**initial, "question": "Attempted overwrite."},
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
+            rejected = True
+        reinitialize_guarded = rejected and unchanged(before, await graph.aget_state(config))
+
+        graph, config, _ = await initialized("update")
+        before = await graph.aget_state(config)
+        rejected = False
+        try:
+            await graph.aupdate_state(config, {"case_id": "CASE-FORGED"})
+        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
+            rejected = True
+        update_guarded = rejected and unchanged(before, await graph.aget_state(config))
+
+        graph, config, _ = await initialized("bulk-update")
+        before = await graph.aget_state(config)
+        rejected = False
+        try:
+            await graph.abulk_update_state(
+                config,
+                [[StateUpdate(values={"case_id": "CASE-FORGED"}, as_node="intake")]],
+            )
+        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
+            rejected = True
+        bulk_update_guarded = rejected and unchanged(before, await graph.aget_state(config))
+
+        checkpointer_required = False
+        try:
+            build_workflow(
+                gateway=DirectGateway(
+                    operations=OperationsService(
+                        storage_path=root / "missing-checkpointer-operations.sqlite3"
+                    )
+                )
+            )
+        except (TypeError, ValueError):
+            checkpointer_required = True
+        return {
+            "reinitialize": reinitialize_guarded,
+            "update_state": update_guarded,
+            "bulk_update_state": bulk_update_guarded,
+            "checkpointer_required": checkpointer_required,
+        }
 
     async def _consent_and_idempotency(
         self,

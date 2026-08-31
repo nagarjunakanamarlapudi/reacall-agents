@@ -397,7 +397,11 @@
           {"id": "restart_same_case", "path": "/state/case_id", "operator": "equals", "expected": "CASE-R18"},
           {"id": "restart_same_thread", "path": "/state/thread_id", "operator": "equals", "expected": "thread-r18"},
           {"id": "restart_no_duplicate_intake", "path": "/state/node_run_counts/intake", "operator": "equals", "expected": 1, "safety_invariant": "Completed investigation nodes do not rerun after process loss."},
-          {"id": "restart_decision_once", "path": "/state/decision_count", "operator": "equals", "expected": 1}
+          {"id": "restart_decision_once", "path": "/state/decision_count", "operator": "equals", "expected": 1},
+          {"id": "compiled_reinitialize_rejected", "path": "/state/compiled_guard_results/reinitialize", "operator": "truthy", "safety_invariant": "A direct compiled-graph invocation cannot replace an existing paused thread."},
+          {"id": "compiled_update_rejected", "path": "/state/compiled_guard_results/update_state", "operator": "truthy", "safety_invariant": "Public graph update APIs cannot overwrite approval-bound state."},
+          {"id": "compiled_bulk_update_rejected", "path": "/state/compiled_guard_results/bulk_update_state", "operator": "truthy", "safety_invariant": "Public graph bulk-update APIs cannot overwrite approval-bound state."},
+          {"id": "workflow_requires_checkpointer", "path": "/state/compiled_guard_results/checkpointer_required", "operator": "truthy", "safety_invariant": "The HITL workflow cannot be compiled without a real checkpointer."}
         ],
         "metric_contributions": {}
       }
