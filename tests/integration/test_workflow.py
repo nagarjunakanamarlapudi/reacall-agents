@@ -18,6 +18,14 @@ def _operation_count(path: Path) -> int:
         connection.close()
 
 
+def _case_count(path: Path) -> int:
+    connection = sqlite3.connect(path)
+    try:
+        return int(connection.execute("SELECT COUNT(*) FROM cases").fetchone()[0])
+    finally:
+        connection.close()
+
+
 def _bound_response(
     pending: dict,
     *,
@@ -81,6 +89,7 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
     assert result.pending_interrupt["rag_citations"]
     assert "rag_gaps" in result.pending_interrupt
     assert result.case["status"] == "review_required"
+    assert result.case["action_queue"] == [result.case["current_action"]]
     assert result.case["node_trace"] == [
         "intake",
         "retrieve_context",
@@ -96,6 +105,35 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
     ]
     assert json.loads(json.dumps(result.case)) == result.case
     assert _operation_count(operations_path) == 0
+    assert _case_count(operations_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_existing_thread_start_fails_without_altering_checkpoint(tmp_path: Path) -> None:
+    """Break caught: start_case overwrites a durable thread or invents an unknown case."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        assert await runtime.get_case(thread_id="THREAD-NOT-FOUND") is None
+        first = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Investigate the affected recall lots.",
+            case_id="CASE-ONCE",
+            thread_id="THREAD-ONCE",
+        )
+        with pytest.raises(ValueError, match="already has a durable checkpoint"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Try to replace the durable workflow.",
+                case_id="CASE-REPLACEMENT",
+                thread_id="THREAD-ONCE",
+            )
+        assert await runtime.get_case(thread_id="THREAD-ONCE") == first
+    assert _case_count(operations_path) == 0
 
 
 @pytest.mark.asyncio
@@ -118,6 +156,9 @@ async def test_restart_restores_review_and_confirmation_without_rerunning_reason
             thread_id="THREAD-RESTART",
         )
         original_trace = review.case["tool_trace"]
+        original_rag_state = review.case["rag_state"]
+        assert original_rag_state["read_count"] == review.case["rag_result"]["read_count"]
+        assert original_rag_state["query_count"] == review.case["rag_result"]["query_count"]
 
     async with RecallOpsRuntime.open(
         checkpoint_path=checkpoint_path,
@@ -130,6 +171,7 @@ async def test_restart_restores_review_and_confirmation_without_rerunning_reason
             response=_bound_response(restored_review.pending_interrupt, decision="approve"),
         )
         assert confirmation.case["tool_trace"] == original_trace
+        assert confirmation.case["rag_state"] == original_rag_state
 
     async with RecallOpsRuntime.open(
         checkpoint_path=checkpoint_path,
@@ -147,6 +189,7 @@ async def test_restart_restores_review_and_confirmation_without_rerunning_reason
 
     assert created.case["case_version"] == 1
     assert created.case["tool_trace"] == original_trace
+    assert created.case["rag_state"] == original_rag_state
     assert _operation_count(operations_path) == 1
 
 
@@ -313,6 +356,82 @@ async def test_wrong_resume_binding_leaves_checkpoint_and_operations_unchanged(
 
 
 @pytest.mark.asyncio
+async def test_injected_stale_decision_and_changed_digest_fail_before_resume(
+    tmp_path: Path,
+) -> None:
+    """Break caught: an injected approval race mutates a pending checkpoint."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Investigate the recall and protect the approval boundary.",
+            case_id="CASE-INJECTED-BINDING",
+            thread_id="THREAD-INJECTED-BINDING",
+        )
+        before = await runtime.get_case(thread_id="THREAD-INJECTED-BINDING")
+        for scenario, message in (
+            ("stale_decision_version", "stale decision/version"),
+            ("changed_action_digest", "changed action digest"),
+        ):
+            runtime.inject_failure(scenario)
+            with pytest.raises(ValueError, match=message):
+                await runtime.resume_case(
+                    thread_id="THREAD-INJECTED-BINDING",
+                    response=_bound_response(review.pending_interrupt, decision="approve"),
+                )
+            assert await runtime.get_case(thread_id="THREAD-INJECTED-BINDING") == before
+            assert _operation_count(operations_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_compiled_graph_also_rejects_a_direct_unbound_command(tmp_path: Path) -> None:
+    """Break caught: bypassing Runtime can feed an unbound Command into a write path."""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from recallops.agents.workflow import build_workflow
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    gateway = DirectGateway(
+        operations=OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    )
+    graph = build_workflow(gateway=gateway, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "THREAD-DIRECT"}}
+    await graph.ainvoke(
+        {
+            "case_id": "CASE-DIRECT",
+            "thread_id": "THREAD-DIRECT",
+            "recall_number": "H-1230-2026",
+            "question": "Investigate the affected recall lots.",
+            "scope_lot_ids": [],
+        },
+        config,
+        version="v2",
+        stream_mode="values",
+        durability="sync",
+    )
+    pending = (await graph.aget_state(config)).interrupts[0].value
+    response = _bound_response(pending, decision="approve")
+    response["case_id"] = "CASE-ATTACKER"
+
+    with pytest.raises(ValueError, match="case_id"):
+        await graph.ainvoke(
+            Command(resume=response),
+            config,
+            version="v2",
+            stream_mode="values",
+            durability="sync",
+        )
+    assert _operation_count(tmp_path / "operations.sqlite3") == 0
+
+
+@pytest.mark.asyncio
 async def test_edit_reverifies_new_digest_and_reject_never_exposes_execution(
     tmp_path: Path,
 ) -> None:
@@ -357,3 +476,211 @@ async def test_edit_reverifies_new_digest_and_reject_never_exposes_execution(
     assert rejected.case["status"] == "open"
     assert "execution_confirmation" not in rejected.next_nodes
     assert _operation_count(operations_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_probable_only_case_runs_one_operation_per_version_through_closure(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a closure bypasses tasks/acks or combines multiple versioned writes."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Trace and contain LOT-PROBABLE-160, then close only if every gate passes.",
+            case_id="CASE-PROBABLE",
+            thread_id="THREAD-PROBABLE",
+            scope_lot_ids=["LOT-PROBABLE-160"],
+        )
+        reviewed_actions: list[str] = []
+        versions: list[int] = []
+        while result.pending_interrupt is not None:
+            pending = result.pending_interrupt
+            if pending["kind"] in {"action_review", "closure_review"}:
+                reviewed_actions.append(pending["action"]["action_type"])
+                result = await runtime.resume_case(
+                    thread_id="THREAD-PROBABLE",
+                    response=_bound_response(pending, decision="approve"),
+                )
+            elif pending["kind"] == "execution_confirmation":
+                previous_count = _operation_count(operations_path)
+                result = await runtime.resume_case(
+                    thread_id="THREAD-PROBABLE",
+                    response=_bound_response(pending, decision="confirm"),
+                )
+                assert _operation_count(operations_path) == previous_count + 1
+                versions.append(result.case["case_version"])
+            else:  # pragma: no cover - the assertion gives a clearer failure than KeyError
+                raise AssertionError(f"unexpected interrupt: {pending['kind']}")
+
+    assert reviewed_actions == [
+        "create_case",
+        "apply_inventory_hold",
+        "create_facility_tasks",
+        "record_acknowledgment",
+        "record_acknowledgment",
+        "close_case",
+    ]
+    assert versions == [1, 2, 3, 4, 5, 6]
+    assert result.case["status"] == "closed"
+    assert result.case["closure_outcome"] == {"eligible": True, "closed": True}
+    assert [receipt["action_type"] for receipt in result.case["write_receipts"]] == reviewed_actions
+
+
+@pytest.mark.asyncio
+async def test_read_and_model_failures_are_labelled_or_fail_closed(tmp_path: Path) -> None:
+    """Break caught: a dependency failure silently invents evidence or drops provenance."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "fallback-checkpoints.sqlite3",
+        operations_path=tmp_path / "fallback-operations.sqlite3",
+    ) as runtime:
+        runtime.inject_failure("registry_transient_failure")
+        runtime.inject_failure("model_failure")
+        fallback = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Investigate the affected lots with cited official evidence.",
+            case_id="CASE-FALLBACK",
+            thread_id="THREAD-FALLBACK",
+        )
+
+    assert fallback.pending_interrupt["official_evidence"]["provenance"] == (
+        "OFFICIAL_OPENFDA_SNAPSHOT"
+    )
+    assert any(
+        "pinned OFFICIAL_OPENFDA_SNAPSHOT fallback" in item for item in fallback.case["warnings"]
+    )
+    assert fallback.case["model_trace"] == [
+        {
+            "operation": "deep_supervisor_reasoning",
+            "status": "fallback",
+            "fallback": "deterministic_fixed_specialists",
+        }
+    ]
+    registry_attempts = [
+        item for item in fallback.case["tool_trace"] if item["operation"] == "get_recall"
+    ]
+    assert [item["status"] for item in registry_attempts] == ["retry", "error"]
+    assert fallback.case["retry_state"]["read_attempts"] == 2
+
+    for scenario in ("unavailable_evidence", "malformed_evidence"):
+        async with RecallOpsRuntime.open(
+            checkpoint_path=tmp_path / f"{scenario}-checkpoints.sqlite3",
+            operations_path=tmp_path / f"{scenario}-operations.sqlite3",
+        ) as runtime:
+            runtime.inject_failure(scenario)
+            blocked = await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Investigate without fabricating missing evidence.",
+                case_id=f"CASE-{scenario}",
+                thread_id=f"THREAD-{scenario}",
+            )
+        assert blocked.pending_interrupt is None
+        assert blocked.case["status"] == "escalated"
+        assert blocked.case["failure_state"]["stage"] == "regulatory_intake"
+        assert _operation_count(tmp_path / f"{scenario}-operations.sqlite3") == 0
+
+
+@pytest.mark.asyncio
+async def test_watchdog_and_ambiguous_scope_escalate_without_a_write_gate(tmp_path: Path) -> None:
+    """Break caught: stalled reasoning or ambiguous-only scope can reach containment."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "watchdog-checkpoints.sqlite3",
+        operations_path=tmp_path / "watchdog-operations.sqlite3",
+    ) as runtime:
+        runtime.inject_failure("repeated_progress_signature")
+        stalled = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Investigate the recall.",
+            case_id="CASE-STALLED",
+            thread_id="THREAD-STALLED",
+        )
+    assert stalled.case["status"] == "escalated"
+    assert stalled.case["watchdog"]["repeat_count"] == 2
+    assert stalled.case["node_trace"] == ["intake", "retrieve_context"]
+    assert stalled.pending_interrupt is None
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "ambiguous-checkpoints.sqlite3",
+        operations_path=tmp_path / "ambiguous-operations.sqlite3",
+    ) as runtime:
+        ambiguous = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Can LOT-AMBIG-175 be held?",
+            case_id="CASE-AMBIGUOUS",
+            thread_id="THREAD-AMBIGUOUS",
+            scope_lot_ids=["LOT-AMBIG-175"],
+        )
+    assert ambiguous.case["status"] == "escalated"
+    assert ambiguous.pending_interrupt is None
+    assert _operation_count(tmp_path / "ambiguous-operations.sqlite3") == 0
+
+
+@pytest.mark.asyncio
+async def test_closure_review_survives_restart_before_final_confirmation(tmp_path: Path) -> None:
+    """Break caught: the final closure review is transient or doubles the close receipt."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Contain LOT-PROBABLE-160 and close only after all acknowledgments.",
+            case_id="CASE-CLOSURE-RESTART",
+            thread_id="THREAD-CLOSURE-RESTART",
+            scope_lot_ids=["LOT-PROBABLE-160"],
+        )
+        while result.pending_interrupt["kind"] != "closure_review":
+            pending = result.pending_interrupt
+            decision = "approve" if pending["kind"] == "action_review" else "confirm"
+            result = await runtime.resume_case(
+                thread_id="THREAD-CLOSURE-RESTART",
+                response=_bound_response(pending, decision=decision),
+            )
+        closure_review = result
+
+    assert closure_review.case["status"] == "closure_review_required"
+    assert _operation_count(operations_path) == 5
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-CLOSURE-RESTART")
+        assert restored == closure_review
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-CLOSURE-RESTART",
+            response=_bound_response(restored.pending_interrupt, decision="approve"),
+        )
+
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+    assert _operation_count(operations_path) == 5
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored_confirmation = await runtime.get_case(thread_id="THREAD-CLOSURE-RESTART")
+        closed = await runtime.resume_case(
+            thread_id="THREAD-CLOSURE-RESTART",
+            response=_bound_response(
+                restored_confirmation.pending_interrupt,
+                decision="confirm",
+            ),
+        )
+
+    assert closed.case["status"] == "closed"
+    assert closed.case["case_version"] == 6
+    assert _operation_count(operations_path) == 6

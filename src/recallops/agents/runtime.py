@@ -193,6 +193,10 @@ class RecallOpsRuntime:
         pending = self._pending(before)
         if pending is None:
             raise ValueError(f"thread {thread_id!r} has no pending interrupt")
+        if self._failures.consume("stale_decision_version"):
+            raise ValueError("injected stale decision/version rejected before resume")
+        if self._failures.consume("changed_action_digest"):
+            raise ValueError("injected changed action digest rejected before resume")
         normalized = self._validate_resume_binding(
             thread_id=thread_id,
             response=response,

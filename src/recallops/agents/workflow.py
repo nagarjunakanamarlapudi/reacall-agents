@@ -29,6 +29,7 @@ from recallops.mcp.gateway import DirectGateway, Gateway
 from recallops.models import (
     ApprovalBinding,
     ApprovalDecision,
+    AuditReceipt,
     ProposedAction,
     RecallPredicate,
     RecallRecord,
@@ -203,6 +204,25 @@ def _review_packet(state: RecallOpsGraphState, action: ProposedAction) -> dict[s
     }
 
 
+def _validate_interrupt_response(response: Any, pending: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = strict_json_value(response)
+    if not isinstance(normalized, dict):
+        raise TypeError("interrupt response must be a JSON object")
+    for key in ("kind", "case_id", "thread_id", "case_version"):
+        if normalized.get(key) != pending.get(key):
+            raise ValueError(f"resume {key} does not match the pending interrupt")
+    if pending["kind"] in {"action_review", "closure_review"}:
+        if normalized.get("action_id") != pending["action"]["action_id"]:
+            raise ValueError("resume action_id does not match the pending interrupt")
+        if normalized.get("action_digest") != pending["action_digest"]:
+            raise ValueError("resume action_digest does not match the pending interrupt")
+    else:
+        for key in ("action_id", "action_digest", "execution_id", "idempotency_key"):
+            if normalized.get(key) != pending.get(key):
+                raise ValueError(f"resume {key} does not match the pending interrupt")
+    return normalized
+
+
 async def _read(
     *,
     operation: Any,
@@ -247,6 +267,7 @@ def build_workflow(
             warnings=[],
             review_history=[],
             write_receipts=[],
+            action_queue=[],
             acknowledgements={},
             watchdog={"signature": None, "repeat_count": 0, "max_repeats": 2},
             retry_state={"read_attempts": 0, "write_attempts": 0},
@@ -267,11 +288,21 @@ def build_workflow(
             "repeat_count": result.model_dump(mode="json").get("progress_repeat_count", 0),
             "max_repeats": 2,
         }
+        durable_rag_state = {
+            "budgets": trusted_retriever.budgets.model_dump(mode="json"),
+            "hop_count": result.hop_count,
+            "query_count": result.query_count,
+            "read_count": result.read_count,
+            "rewrite_used": result.rewrite_used,
+            "stop_reason": result.stop_reason,
+            "progress_signature": watchdog["signature"],
+            "progress_repeat_count": watchdog["repeat_count"],
+        }
         if failure_controller.consume("repeated_progress_signature"):
             return _node(
                 "retrieve_context",
                 rag_result=result.model_dump(mode="json"),
-                rag_state=loop_state.model_dump(mode="json"),
+                rag_state=durable_rag_state,
                 watchdog={**watchdog, "repeat_count": 2},
                 status="escalated",
                 warnings=["Progress watchdog escalated a repeated reasoning signature."],
@@ -279,7 +310,7 @@ def build_workflow(
         return _node(
             "retrieve_context",
             rag_result=result.model_dump(mode="json"),
-            rag_state=loop_state.model_dump(mode="json"),
+            rag_state=durable_rag_state,
             watchdog=watchdog,
         )
 
@@ -306,14 +337,22 @@ def build_workflow(
         recorder = TraceRecorder(case_id=state["case_id"], thread_id=state["thread_id"])
         warnings: list[str] = []
         try:
-            if failure_controller.consume("registry_transient_failure"):
-                raise TransientCallError("injected registry outage")
-            raw = await _read(
-                operation=trusted_gateway.get_recall,
-                name="get_recall",
-                recorder=recorder,
-                args=(state["recall_number"],),
-            )
+            if failure_controller.consume("unavailable_evidence"):
+                raw = None
+            else:
+                operation = trusted_gateway.get_recall
+                if failure_controller.consume("registry_transient_failure"):
+
+                    async def unavailable_registry(_: str) -> Any:
+                        raise TransientCallError("injected registry outage")
+
+                    operation = unavailable_registry
+                raw = await _read(
+                    operation=operation,
+                    name="get_recall",
+                    recorder=recorder,
+                    args=(state["recall_number"],),
+                )
             if raw is None:
                 raise ValueError("recall evidence is unavailable")
             if failure_controller.consume("malformed_evidence"):
@@ -347,6 +386,9 @@ def build_workflow(
             specialist_outputs={"recall-intelligence": intelligence.model_dump(mode="json")},
             warnings=warnings,
             tool_trace=recorder.to_dicts(),
+            retry_state=(
+                {**state["retry_state"], "read_attempts": 2} if warnings else state["retry_state"]
+            ),
         )
 
     def route_after_regulatory(state: RecallOpsGraphState) -> str:
@@ -551,6 +593,7 @@ def build_workflow(
             return _node(
                 "prepare_action_review",
                 status="open_closure_blocked",
+                action_queue=[],
                 closure_outcome={
                     "eligible": False,
                     "reason": "unresolved ambiguity or reconciliation evidence gap",
@@ -561,6 +604,7 @@ def build_workflow(
             "prepare_action_review",
             status="review_required",
             current_action=action.model_dump(mode="json"),
+            action_queue=[action.model_dump(mode="json")],
             action_digest=packet["action_digest"],
             review_packet=packet,
             remaining_action_types=packet["remaining_action_types"],
@@ -568,11 +612,15 @@ def build_workflow(
         )
 
     async def action_review(state: RecallOpsGraphState) -> dict[str, Any]:
-        response = interrupt(state["review_packet"])
+        response = _validate_interrupt_response(
+            interrupt(state["review_packet"]), state["review_packet"]
+        )
         return _handle_review_response(state, response, node_name="action_review")
 
     async def closure_review(state: RecallOpsGraphState) -> dict[str, Any]:
-        response = interrupt(state["review_packet"])
+        response = _validate_interrupt_response(
+            interrupt(state["review_packet"]), state["review_packet"]
+        )
         return _handle_review_response(state, response, node_name="closure_review")
 
     def _handle_review_response(
@@ -614,13 +662,14 @@ def build_workflow(
                 node_name,
                 status="investigating",
                 current_action=edited.model_dump(mode="json"),
+                action_queue=[edited.model_dump(mode="json")],
                 action_digest=proposed_action_digest(edited),
                 review_history=[history],
             )
         if decision == "reject":
-            return _node(node_name, status="open", review_history=[history])
+            return _node(node_name, status="open", action_queue=[], review_history=[history])
         if decision == "escalate":
-            return _node(node_name, status="escalated", review_history=[history])
+            return _node(node_name, status="escalated", action_queue=[], review_history=[history])
         raise ValueError("review decision must be approve, edit, reject, or escalate")
 
     def route_review(state: RecallOpsGraphState) -> str:
@@ -689,13 +738,13 @@ def build_workflow(
         )
 
     async def execution_confirmation(state: RecallOpsGraphState) -> dict[str, Any]:
-        response = interrupt(state["execution_request"])
-        if not isinstance(response, dict):
-            raise TypeError("execution response must be an object")
+        response = _validate_interrupt_response(
+            interrupt(state["execution_request"]), state["execution_request"]
+        )
         if response.get("decision") == "confirm":
             return _node("execution_confirmation", status="approved_pending_execution")
         if response.get("decision") == "cancel":
-            return _node("execution_confirmation", status="open")
+            return _node("execution_confirmation", status="open", action_queue=[])
         raise ValueError("execution decision must be confirm or cancel")
 
     def route_execution(state: RecallOpsGraphState) -> str:
@@ -709,6 +758,9 @@ def build_workflow(
             proposed_action=action,
             expected_case_version=state["case_version"],
         )
+        # One invocation receives exactly one write attempt; unknown outcomes are
+        # checkpointed and require a new human-triggered invocation with the same key.
+        CallBudget(1).consume()
         kwargs = {
             "case_id": state["case_id"],
             "proposed_action": action,
@@ -750,6 +802,7 @@ def build_workflow(
             receipt = await trusted_gateway.close_case(**kwargs)
         else:
             raise ValueError(f"unsupported runtime action {action.action_type}")
+        typed_receipt = AuditReceipt.model_validate(receipt)
         if failure_controller.consume("lost_write_response"):
             return _node(
                 "execute_one_operation",
@@ -764,7 +817,7 @@ def build_workflow(
                     "write_attempts": state["retry_state"].get("write_attempts", 0) + 1,
                 },
             )
-        return _after_receipt(state, receipt)
+        return _after_receipt(state, typed_receipt)
 
     def _after_receipt(state: RecallOpsGraphState, raw_receipt: Any) -> dict[str, Any]:
         receipt = _json(raw_receipt)
@@ -790,6 +843,7 @@ def build_workflow(
                 acknowledgements=acknowledgements,
                 approval={},
                 execution_request={},
+                action_queue=[],
                 status="closed",
                 closure_outcome={"eligible": True, "closed": True},
             )
@@ -802,6 +856,7 @@ def build_workflow(
                 acknowledgements=acknowledgements,
                 approval={},
                 execution_request={},
+                action_queue=[],
                 status="open_closure_blocked",
                 closure_outcome={
                     "eligible": False,
@@ -817,6 +872,7 @@ def build_workflow(
             approval={},
             execution_request={},
             current_action=next_action.model_dump(mode="json"),
+            action_queue=[next_action.model_dump(mode="json")],
             action_digest=packet["action_digest"],
             review_packet=packet,
             remaining_action_types=packet["remaining_action_types"],
@@ -867,9 +923,9 @@ def build_workflow(
         )
 
     async def write_recovery(state: RecallOpsGraphState) -> dict[str, Any]:
-        response = interrupt(state["execution_request"])
-        if not isinstance(response, dict):
-            raise TypeError("write recovery response must be an object")
+        response = _validate_interrupt_response(
+            interrupt(state["execution_request"]), state["execution_request"]
+        )
         if response.get("decision") == "retry":
             return _node("write_recovery", status="approved_pending_execution")
         return _node("write_recovery", status="escalated")
