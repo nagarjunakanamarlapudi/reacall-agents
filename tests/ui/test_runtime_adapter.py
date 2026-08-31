@@ -202,3 +202,41 @@ async def test_durable_repeated_progress_surfaces_fail_closed_state(tmp_path: Pa
     assert escalated["pending_interrupt"] is None
     assert escalated["failure_result"]["status"] == "observed"
     assert escalated["watchdog"]["repeat_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_closure_presentation_preserves_review_and_closed_lifecycle_states(
+    tmp_path: Path,
+) -> None:
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    )
+    ready = await adapter.open_case("H-1230-2026")
+    ready.update(
+        status="closure_review_required",
+        current_node="closure_review",
+        pending_interrupt={
+            "kind": "closure_review",
+            "case_id": ready["case_id"],
+            "thread_id": ready["thread_id"],
+            "expected_version": 8,
+            "action_digest": "closure-digest",
+        },
+        case_version=8,
+        evidence_gaps=[],
+        ambiguous_lot_ids=[],
+        required_facilities=["DC-NORTH"],
+        acknowledgements={"DC-NORTH": True},
+        verification={"violations": []},
+    )
+    review = await adapter.request_closure(ready)
+    assert review["status"] == "closure_review_required"
+    assert review["closure"]["status"] == "closure_review_required"
+    assert any(gate["state"] == "review" for gate in review["closure"]["gates"])
+    assert review["closure"]["blockers"] == []
+
+    closed = {**review, "status": "closed", "pending_interrupt": None}
+    completed = await adapter.request_closure(closed)
+    assert completed["status"] == "closed"
+    assert completed["closure"]["status"] == "Closed — simulated"

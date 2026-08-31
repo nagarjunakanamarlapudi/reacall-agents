@@ -551,6 +551,20 @@ def test_closure_rows_never_treat_all_pass_as_closed() -> None:
     all_pass = build_closure_gate_rows(reduce_case_snapshot(raw))
     assert all_pass[0].state == "pass"
     assert "human" in all_pass[0].next_step.lower()
+    raw["closure"] = {
+        "status": "closure_review_required",
+        "gates": [
+            {
+                "gate": "Final closure action",
+                "state": "review",
+                "detail": "Version-bound human review is pending",
+            }
+        ],
+        "blockers": [],
+    }
+    review = build_closure_gate_rows(reduce_case_snapshot(raw))
+    assert review[0].state == "review"
+    assert "human closure review" in review[0].next_step.lower()
 
 
 def test_evaluation_missing_is_not_success() -> None:

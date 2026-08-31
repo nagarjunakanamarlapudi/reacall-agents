@@ -320,7 +320,26 @@ class DurableRuntimeAdapter:
             facility for facility in required if acknowledgements.get(facility) is not True
         ]
         pending = current.get("pending_interrupt")
-        violations = current.get("verification", {}).get("violations", [])
+        pending_kind = pending.get("kind") if isinstance(pending, Mapping) else None
+        closure_review_pending = pending_kind == "closure_review"
+        closure_outcome = current.get("closure_outcome")
+        closed = current.get("status") == "closed" or (
+            isinstance(closure_outcome, Mapping) and closure_outcome.get("closed") is True
+        )
+        verification = current.get("verification")
+        violations = verification.get("violations", []) if isinstance(verification, Mapping) else []
+        if closed:
+            approval_state = "pass"
+            approval_detail = "Authoritative simulated close receipt is present"
+        elif closure_review_pending:
+            approval_state = "review"
+            approval_detail = "Final version-bound human closure review is pending"
+        elif pending:
+            approval_state = "block"
+            approval_detail = "A version-bound action remains pending"
+        else:
+            approval_state = "block"
+            approval_detail = "Authoritative closure-review interrupt is not available"
         gates = [
             {
                 "gate": "Reconciliation",
@@ -339,10 +358,8 @@ class DurableRuntimeAdapter:
             },
             {
                 "gate": "Approval and version",
-                "state": "block" if pending else "pass",
-                "detail": "A version-bound action remains pending"
-                if pending
-                else "No action pending",
+                "state": approval_state,
+                "detail": approval_detail,
             },
             {
                 "gate": "Contradictions and evidence",
@@ -352,15 +369,30 @@ class DurableRuntimeAdapter:
             },
         ]
         blockers = [item["detail"] for item in gates if item["state"] == "block"]
+        closure_status = (
+            "Closed — simulated"
+            if closed
+            else "Open — closure blocked"
+            if blockers
+            else "closure_review_required"
+        )
         current["closure"] = {
-            "status": "Open — closure blocked" if blockers else "closure_review_required",
+            "status": closure_status,
             "gates": gates,
             "blockers": blockers,
             "authoritative_checkpoint_reloaded": True,
         }
         current["runtime_status"] = current.get("status")
-        current["status"] = "open_closure_blocked" if blockers else "closure_review_required"
-        current["current_node"] = "closure_gate"
+        current["status"] = (
+            "closed"
+            if closed
+            else "open_closure_blocked"
+            if blockers
+            else "closure_review_required"
+        )
+        current["current_node"] = (
+            "closed" if closed else "closure_review" if closure_review_pending else "closure_gate"
+        )
         return current
 
     async def inject_failure(self, case: Mapping[str, Any], scenario: str) -> dict[str, Any]:

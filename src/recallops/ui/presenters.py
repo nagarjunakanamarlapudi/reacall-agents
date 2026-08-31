@@ -695,7 +695,9 @@ def build_closure_gate_rows(case: CasePresentation) -> list[ClosureGateRow]:
             state=_display(item.get("state") or "unknown"),
             detail=_display(item.get("detail")),
             next_step=(
-                "Final human closure review is required; this is not closed."
+                "Complete the version-bound human closure review; this is not closed."
+                if item.get("state") == "review"
+                else "Final human closure review is required; this is not closed."
                 if all_pass
                 else "Resolve the returned blocker before requesting closure again."
             ),

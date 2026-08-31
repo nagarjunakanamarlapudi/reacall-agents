@@ -556,6 +556,8 @@ def _render_audit() -> None:
         closure = case.raw["closure"]
         if closure.get("status") == "Open — closure blocked":
             st.warning("Open — closure blocked")
+        elif closure.get("status") == "Closed — simulated":
+            st.success("Closed — simulated")
         else:
             st.info(
                 "All returned gates passed; final human closure review is required. The case is not closed."
