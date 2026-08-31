@@ -215,6 +215,15 @@ class DurableRuntimeAdapter:
         current = self._bound_copy(case)
         if current.get("checkpoint_id"):
             return await self.load_case(current["thread_id"])
+        question = current.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("question must be a nonblank string")
+        scope = current.get("scope_lot_ids")
+        if scope is not None and (
+            not isinstance(scope, list)
+            or any(not isinstance(item, str) or not item.strip() for item in scope)
+        ):
+            raise ValueError("scope_lot_ids must be a list of nonblank strings")
         async with RecallOpsRuntime.open(
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
@@ -223,10 +232,10 @@ class DurableRuntimeAdapter:
             applied = self._arm_failure(runtime, current, stage="run")
             result = await runtime.start_case(
                 recall_number=current["recall_number"],
-                question=str(current.get("question") or "Investigate the recall safely."),
+                question=question,
                 case_id=current["case_id"],
                 thread_id=current["thread_id"],
-                scope_lot_ids=current.get("scope_lot_ids") or None,
+                scope_lot_ids=scope or None,
             )
         return self._project_failure(self._normalize_result(result), current, applied)
 

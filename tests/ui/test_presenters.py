@@ -318,6 +318,37 @@ def test_case_snapshot_rejects_coercive_safety_bindings() -> None:
     assert any(issue.field == "case" for issue in issues)
 
 
+def test_review_guard_rejects_bool_version_even_when_equal_to_zero() -> None:
+    raw = _raw_case()
+    raw["pending_interrupt"]["expected_version"] = False
+    issues = validate_review_submission(
+        "approve", "Food-safety manager", "Scoped approval.", reduce_case_snapshot(raw)
+    )
+    assert any(issue.field == "case_version" for issue in issues)
+
+
+def test_execution_guard_rejects_coercive_approval_metadata() -> None:
+    raw = _raw_case()
+    raw["pending_interrupt"] = {
+        **raw["pending_interrupt"],
+        "kind": "execution_confirmation",
+        "idempotency_key": "idem-1",
+    }
+    raw["approval"] = {
+        "decision": "approve",
+        "case_id": raw["case_id"],
+        "thread_id": raw["thread_id"],
+        "expected_version": raw["case_version"],
+        "action_digest": raw["proposed_actions"][0]["digest"],
+        "idempotency_key": "idem-1",
+        "actor": 123,
+        "justification": "Scoped approval.",
+    }
+    allowed, reason = can_simulate(reduce_case_snapshot(raw))
+    assert not allowed
+    assert "does not match" in reason
+
+
 def test_match_rows_keep_classification_rationale_and_review_flag() -> None:
     rows = build_match_rows(reduce_case_snapshot(_raw_case()))
     assert [row.classification for row in rows] == ["exact", "ambiguous"]

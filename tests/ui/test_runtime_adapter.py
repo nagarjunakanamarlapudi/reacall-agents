@@ -136,6 +136,28 @@ async def test_durable_adapter_rejects_coercive_case_and_thread_bindings(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"question": 123},
+        {"scope_lot_ids": [True]},
+        {"scope_lot_ids": "LOT-EXACT-170"},
+    ],
+)
+async def test_durable_adapter_rejects_coercive_investigation_inputs(
+    tmp_path: Path, overrides: dict[str, object]
+) -> None:
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    opened.update(overrides)
+    with pytest.raises(ValueError, match="question|scope_lot_ids"):
+        await adapter.run_investigation(opened)
+
+
+@pytest.mark.asyncio
 async def test_durable_lost_response_is_observed_then_recovers_with_same_key(
     tmp_path: Path,
 ) -> None:

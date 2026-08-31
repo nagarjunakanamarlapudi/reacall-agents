@@ -558,7 +558,10 @@ def validate_review_submission(
         ("thread_id", case.thread_id),
         ("expected_version", case.case_version),
     )
-    if any(interrupt.get(key) != expected for key, expected in bindings):
+    if any(
+        type(interrupt.get(key)) is not type(expected) or interrupt.get(key) != expected
+        for key, expected in bindings
+    ):
         issues.append(
             ValidationIssue(
                 "case_version", "The review is stale; refresh and review the current version."
@@ -579,14 +582,27 @@ def can_simulate(case: CasePresentation | None) -> tuple[bool, str]:
     if interrupt.get("kind") != "execution_confirmation":
         return False, "Execution confirmation is not pending."
     bindings = (
-        approval.get("case_id") == case.case_id == interrupt.get("case_id"),
-        approval.get("thread_id") == case.thread_id == interrupt.get("thread_id"),
-        approval.get("expected_version") == case.case_version == interrupt.get("expected_version"),
-        approval.get("action_digest") == action.get("digest") == interrupt.get("action_digest"),
-        approval.get("idempotency_key") == interrupt.get("idempotency_key"),
-        bool(str(approval.get("idempotency_key") or "").strip()),
-        bool(str(approval.get("actor") or "").strip()),
-        bool(str(approval.get("justification") or "").strip()),
+        _strict_equal_text(approval.get("case_id"), case.case_id, interrupt.get("case_id")),
+        _strict_equal_text(approval.get("thread_id"), case.thread_id, interrupt.get("thread_id")),
+        all(
+            type(value) is int
+            for value in (
+                approval.get("expected_version"),
+                case.case_version,
+                interrupt.get("expected_version"),
+            )
+        )
+        and approval.get("expected_version")
+        == case.case_version
+        == interrupt.get("expected_version"),
+        _strict_equal_text(
+            approval.get("action_digest"),
+            action.get("digest"),
+            interrupt.get("action_digest"),
+        ),
+        _strict_equal_text(approval.get("idempotency_key"), interrupt.get("idempotency_key")),
+        _strict_nonblank_text(approval.get("actor")),
+        _strict_nonblank_text(approval.get("justification")),
     )
     if not all(bindings):
         return (
@@ -756,6 +772,14 @@ def _optional_text(value: Any) -> str | None:
 
 def _strict_optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _strict_nonblank_text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _strict_equal_text(*values: Any) -> bool:
+    return all(_strict_nonblank_text(value) for value in values) and len(set(values)) == 1
 
 
 def _safe_url(value: Any) -> str:
