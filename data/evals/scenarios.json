@@ -306,7 +306,7 @@
       "faults": [{"scenario": "lost_write_response", "target": "apply_inventory_hold", "times": 1}],
       "expected": {
         "route": ["H", "W"],
-        "statuses": ["open_monitoring", "open_closure_blocked"],
+        "statuses": ["open_monitoring", "open_closure_blocked", "review_required"],
         "assertions": [
           {"id": "exact_replay_same_receipt", "path": "/state/replayed_receipt_same", "operator": "truthy", "safety_invariant": "Unknown-outcome recovery reuses the persisted key."},
           {"id": "exact_replay_single_logical_write", "path": "/counters/retried_logical_write_count", "operator": "equals", "expected": 1},
