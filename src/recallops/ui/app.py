@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-from recallops.ui.adapter import DeterministicDemoAdapter
+from recallops.paths import PROJECT_ROOT
+from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
 from recallops.ui.presenters import (
     DECISIONS,
     EQUATION,
@@ -29,13 +32,28 @@ from recallops.ui.presenters import (
     build_timeline_rows,
     can_simulate,
     initialize_ui_state,
+    mask_display_value,
     reduce_case_snapshot,
     source_badge,
     validate_review_submission,
 )
 from recallops.ui.theme import CSS
 
-_ADAPTER = DeterministicDemoAdapter()
+
+def _build_adapter():
+    mode = os.environ.get("RECALLOPS_UI_MODE", "durable").strip().casefold()
+    if mode == "demo":
+        return DeterministicDemoAdapter()
+    if mode != "durable":
+        raise ValueError("RECALLOPS_UI_MODE must be 'durable' or 'demo'")
+    runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
+    return DurableRuntimeAdapter(
+        checkpoint_path=runtime_dir / "checkpoints.sqlite3",
+        operations_path=runtime_dir / "operations.sqlite3",
+    )
+
+
+_ADAPTER = _build_adapter()
 
 
 def _await(value: Awaitable[dict[str, Any]]) -> dict[str, Any]:
@@ -74,6 +92,11 @@ def _apply_snapshot(raw: dict[str, Any], *, investigation_state: str | None = No
         updates["ui_investigation_state"] = investigation_state
     for key, value in updates.items():
         st.session_state[key] = value
+    if case.status == "escalated":
+        st.session_state.ui_investigation_state = "error"
+        st.session_state.ui_last_error = (
+            "Investigation escalated safely because required evidence or progress controls failed."
+        )
 
 
 def _safe_action(
@@ -169,6 +192,8 @@ def _render_sidebar() -> None:
                 f"Source mode: {st.session_state.ui_source_mode or 'not opened'} · "
                 f"Model mode: {st.session_state.ui_model_mode}"
             )
+            st.caption(f"Execution mode: {_ADAPTER.runtime_label}")
+            st.caption(f"Transport: {_ADAPTER.transport_label}")
             st.caption("Offline-first academic demonstration; no production system writes.")
         st.markdown(
             '<span class="source-official">OFFICIAL — openFDA snapshot</span>',
@@ -192,7 +217,7 @@ def _render_header() -> None:
     if (
         st.session_state.ui_active_view == "Human Review"
         and case is not None
-        and case.raw.get("pending_interrupt")
+        and case.raw.get("pending_interrupt", {}).get("kind") in {"action_review", "closure_review"}
     ):
         st.warning("Review required")
     columns = st.columns(5)
@@ -270,6 +295,21 @@ def _render_investigation() -> None:
             "Open a case first. Investigation is bounded, read-only work and will not write records."
         )
         return
+    if case.status == "escalated":
+        st.error("Fail-closed investigation outcome")
+        warnings = case.raw.get("warnings", [])
+        if warnings:
+            st.table([{"Returned warning": mask_display_value(value)} for value in warnings])
+        retrieval = build_retrieval_rows(case)
+        if retrieval:
+            st.markdown("### Agentic RAG retrieval trace")
+            st.dataframe([asdict(row) for row in retrieval], width="stretch", hide_index=True)
+            rag = case.raw.get("retrieval", {})
+            st.warning(
+                f"RAG stopped safely: {mask_display_value(rag.get('stop_reason'))}. "
+                "No unsupported evidence was promoted to an operational fact."
+            )
+        return
     if not case.raw.get("matches"):
         st.info(
             "Run investigation to plan bounded matching, traceability and containment work. No records will be written."
@@ -294,6 +334,15 @@ def _render_investigation() -> None:
     citations = case.raw.get("retrieval", {}).get("citations", [])
     bounds = case.raw.get("retrieval", {}).get("bounds", {})
     st.caption(f"Citations: {', '.join(citations)} · Bounds: {bounds}")
+    retrieval_state = case.raw.get("retrieval", {})
+    if retrieval_state.get("coverage_satisfied") is False:
+        st.warning(
+            f"Evidence critic did not establish full coverage; stop reason: "
+            f"{mask_display_value(retrieval_state.get('stop_reason'))}. Structured controls remain authoritative."
+        )
+        gaps = retrieval_state.get("evidence_gaps", [])
+        if gaps:
+            st.table([{"Agentic RAG evidence gap": mask_display_value(value)} for value in gaps])
 
     st.markdown("### Product and lot matches")
     matches = build_match_rows(case)

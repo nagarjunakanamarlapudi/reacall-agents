@@ -9,6 +9,7 @@ from recallops.ui.presenters import APPROVAL_JUSTIFICATION, can_simulate, reduce
 @pytest.mark.asyncio
 async def test_demo_adapter_requires_two_distinct_consents_and_one_write_per_version() -> None:
     adapter = DeterministicDemoAdapter()
+    assert "Explicit deterministic demo fixture" in adapter.runtime_label
     opened = await adapter.open_case("H-1230-2026")
     assert opened["matches"] == []
     assert opened["receipts"] == []

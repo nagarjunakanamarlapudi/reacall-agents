@@ -13,7 +13,8 @@ def test_data_validate_command_reports_real_dataset_counts(capsys) -> None:
     assert "SYNTHETIC — ACADEMIC DEMO" in output
 
 
-def test_demo_command_prints_exact_copy_paste_landmarks(capsys) -> None:
+def test_demo_command_prints_exact_copy_paste_landmarks(capsys, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(tmp_path / "runtime"))
     assert main(["demo", "--recall-number", "H-1230-2026"]) == 0
     output = capsys.readouterr().out
     for text in (
@@ -44,5 +45,5 @@ def test_mcp_config_is_machine_readable_and_has_three_servers(capsys) -> None:
 def test_unknown_demo_recall_fails_safely_without_traceback(capsys) -> None:
     assert main(["demo", "--recall-number", "NOT-A-RECALL"]) == 2
     captured = capsys.readouterr()
-    assert "Only the pinned frozen recall H-1230-2026 is available offline." in captured.err
+    assert "Recall 'NOT-A-RECALL' is unavailable from the configured registry." in captured.err
     assert "Traceback" not in captured.err

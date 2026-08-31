@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -7,7 +8,8 @@ from streamlit.testing.v1 import AppTest
 APP = Path(__file__).parents[2] / "src" / "recallops" / "ui" / "app.py"
 
 
-def test_app_starts_on_command_center_with_pinned_empty_state() -> None:
+def test_app_starts_on_command_center_with_pinned_empty_state(monkeypatch) -> None:
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
     app = AppTest.from_file(str(APP), default_timeout=15).run()
     assert not app.exception
     assert app.title[0].value == "RecallOps Command Center"
@@ -18,7 +20,8 @@ def test_app_starts_on_command_center_with_pinned_empty_state() -> None:
     assert any("Synthetic operations boundary" in item.value for item in app.markdown)
 
 
-def test_app_open_then_investigate_surfaces_agentic_rag_and_review() -> None:
+def test_app_open_then_investigate_surfaces_agentic_rag_and_review(monkeypatch) -> None:
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     app.button(key="open_case_button").click().run()
     assert any("OFFICIAL — openFDA snapshot" in item.value for item in app.markdown)
@@ -39,7 +42,8 @@ def test_app_open_then_investigate_surfaces_agentic_rag_and_review() -> None:
     assert app.button(key="simulate_button").disabled
 
 
-def test_app_dual_consent_receipt_reconciliation_and_closure_block() -> None:
+def test_app_dual_consent_receipt_reconciliation_and_closure_block(monkeypatch) -> None:
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     app.button(key="open_case_button").click().run()
     app.radio(key="ui_active_view").set_value("Investigation").run()
@@ -63,3 +67,31 @@ def test_app_dual_consent_receipt_reconciliation_and_closure_block() -> None:
     app.button(key="request_closure_button").click().run()
     assert any("Open — closure blocked" in item.value for item in app.warning)
     assert app.session_state.ui_case["status"] == "open_closure_blocked"
+
+
+def test_app_default_product_mode_uses_durable_runtime(monkeypatch, tmp_path) -> None:
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.delenv("RECALLOPS_UI_MODE", raising=False)
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(runtime_dir))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    assert any("Durable LangGraph + SQLite" in item.value for item in app.caption)
+
+    app.button(key="open_case_button").click().run()
+    assert app.session_state.ui_case["status"] == "intake_ready"
+    app.radio(key="ui_active_view").set_value("Investigation").run()
+    app.button(key="run_investigation_button").click().run(timeout=30)
+    assert app.session_state.ui_case["pending_interrupt"]["kind"] == "action_review"
+
+    app.radio(key="ui_active_view").set_value("Human Review").run()
+    app.button(key="approve_button").click().run(timeout=30)
+    assert app.session_state.ui_case["pending_interrupt"]["kind"] == "execution_confirmation"
+    assert not any(item.value == "Review required" for item in app.warning)
+    app.button(key="simulate_button").click().run(timeout=30)
+    assert app.session_state.ui_case_version == 1
+    assert len(app.session_state.ui_write_receipts) == 1
+
+    connection = sqlite3.connect(runtime_dir / "operations.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 1
+    finally:
+        connection.close()

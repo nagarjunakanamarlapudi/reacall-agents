@@ -307,6 +307,17 @@ def test_case_header_and_predicate_show_only_supplied_truth() -> None:
     assert "Package" not in rows
 
 
+def test_case_snapshot_rejects_coercive_safety_bindings() -> None:
+    raw = _raw_case()
+    raw.update(case_id=123, thread_id=["THREAD"], case_version=True)
+    case = reduce_case_snapshot(raw)
+    assert case.case_id is None
+    assert case.thread_id is None
+    assert case.case_version is None
+    issues = validate_review_submission("approve", "actor", "why", case)
+    assert any(issue.field == "case" for issue in issues)
+
+
 def test_match_rows_keep_classification_rationale_and_review_flag() -> None:
     rows = build_match_rows(reduce_case_snapshot(_raw_case()))
     assert [row.classification for row in rows] == ["exact", "ambiguous"]
@@ -349,6 +360,8 @@ def test_review_packet_contains_scope_evidence_gaps_actions_and_trace() -> None:
     assert packet.timeline
     raw = _raw_case()
     raw["pending_interrupt"] = None
+    assert build_review_packet(reduce_case_snapshot(raw)) is None
+    raw["pending_interrupt"] = {"kind": "execution_confirmation"}
     assert build_review_packet(reduce_case_snapshot(raw)) is None
 
 

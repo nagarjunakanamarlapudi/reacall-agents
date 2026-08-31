@@ -263,8 +263,8 @@ def reduce_case_snapshot(raw_case: Mapping[str, Any]) -> CasePresentation:
     return CasePresentation(
         raw=raw,
         recall_number=str(raw.get("recall_number") or PINNED_RECALL),
-        case_id=_optional_text(raw.get("case_id")),
-        thread_id=_optional_text(raw.get("thread_id")),
+        case_id=_strict_optional_text(raw.get("case_id")),
+        thread_id=_strict_optional_text(raw.get("thread_id")),
         case_version=version,
         status=str(raw.get("status") or "not_started"),
         source_mode=_optional_text(raw.get("source_mode")),
@@ -479,7 +479,7 @@ def build_reconciliation_presentation(case: CasePresentation) -> ReconciliationP
 
 def build_review_packet(case: CasePresentation) -> ReviewPacketPresentation | None:
     interrupt = _mapping(case.raw.get("pending_interrupt"))
-    if not interrupt:
+    if interrupt.get("kind") not in {"action_review", "closure_review"}:
         return None
     version = interrupt.get("expected_version")
     if isinstance(version, bool) or not isinstance(version, int):
@@ -609,7 +609,9 @@ def build_receipt_rows(case: CasePresentation) -> list[ReceiptRow]:
                 idempotency_result=_display(item.get("idempotency_result")),
                 actor=_display(item.get("actor"), "actor"),
                 justification=_display(item.get("justification")),
-                timestamp=_display(item.get("timestamp") or item.get("recorded_at")),
+                timestamp=_display(
+                    item.get("timestamp") or item.get("recorded_at") or item.get("created_at")
+                ),
                 source=source_badge(item.get("source") or item.get("origin")).label,
             )
         )
@@ -686,10 +688,10 @@ def build_retrieval_rows(case: CasePresentation) -> list[RetrievalRow]:
         RetrievalRow(
             hop=int(item.get("hop", index)),
             query=_display(item.get("query")),
-            sparse=f"BM25 · {_display(item.get('sparse_hits'))} hits",
-            dense=f"LSA dense · {_display(item.get('dense_hits'))} hits",
-            fusion=f"RRF · {_display(item.get('fused_hits'))} hits",
-            rerank=f"Deterministic rerank · {_display(item.get('reranked_hits'))} hits",
+            sparse=_retrieval_stage("BM25", item.get("sparse_hits")),
+            dense=_retrieval_stage("LSA dense", item.get("dense_hits")),
+            fusion=_retrieval_stage("RRF", item.get("fused_hits")),
+            rerank=_retrieval_stage("Deterministic rerank", item.get("reranked_hits")),
             critic=_display(item.get("critic")),
         )
         for index, item in enumerate(_list_of_mappings(retrieval.get("queries")), start=1)
@@ -752,6 +754,16 @@ def _optional_text(value: Any) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
+def _strict_optional_text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def _safe_url(value: Any) -> str:
     text = str(value or "")
     return html.escape(text, quote=True) if text.startswith(("https://", "http://")) else ""
+
+
+def _retrieval_stage(label: str, count: Any) -> str:
+    if isinstance(count, int) and not isinstance(count, bool):
+        return f"{label} · {count} hits"
+    return f"{label} · executed (count not exposed)"

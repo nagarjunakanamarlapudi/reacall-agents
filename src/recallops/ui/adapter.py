@@ -12,11 +12,15 @@ import copy
 import hashlib
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 from recallops.agents.planner import plan_investigation
+from recallops.agents.runtime import RecallOpsRuntime
 from recallops.agents.specialists import investigate_recall
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 from recallops.ui.presenters import PINNED_RECALL
 
@@ -35,6 +39,17 @@ FAILURE_SCENARIOS = (
     "repeated graph progress → watchdog escalation",
     "model error/budget → deterministic fallback",
 )
+
+_RUNTIME_FAILURES = {
+    FAILURE_SCENARIOS[0]: "registry_transient_failure",
+    FAILURE_SCENARIOS[1]: "registry_transient_failure",
+    FAILURE_SCENARIOS[2]: "changed_action_digest",
+    FAILURE_SCENARIOS[3]: "unavailable_evidence",
+    FAILURE_SCENARIOS[5]: "lost_write_response",
+    FAILURE_SCENARIOS[6]: "stale_decision_version",
+    FAILURE_SCENARIOS[7]: "repeated_progress_signature",
+    FAILURE_SCENARIOS[8]: "model_failure",
+}
 
 
 class RecallOpsUIAdapter(Protocol):
@@ -77,16 +92,282 @@ def normalize_runtime_result(result: Any) -> dict[str, Any]:
     case = payload.get("case")
     if not isinstance(case, Mapping):
         raise ValueError("runtime result lacks a case mapping")
-    normalized = copy.deepcopy(dict(case))
-    normalized["pending_interrupt"] = copy.deepcopy(payload.get("pending_interrupt"))
-    normalized["next_nodes"] = list(payload.get("next_nodes") or [])
-    normalized["checkpoint_id"] = payload.get("checkpoint_id")
-    return normalized
+    return _project_runtime_case(
+        copy.deepcopy(dict(case)),
+        pending=copy.deepcopy(payload.get("pending_interrupt")),
+        next_nodes=list(payload.get("next_nodes") or []),
+        checkpoint_id=payload.get("checkpoint_id"),
+    )
+
+
+class DurableRuntimeAdapter:
+    """Thin product adapter over the locked, SQLite-backed RecallOpsRuntime."""
+
+    runtime_label = "Durable LangGraph + SQLite"
+    transport_label = "direct gateway · same typed MCP contract"
+    available_failure_scenarios = tuple(_RUNTIME_FAILURES)
+
+    def __init__(self, *, checkpoint_path: Path | str, operations_path: Path | str) -> None:
+        self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
+        self.operations_path = Path(operations_path).expanduser().resolve()
+
+    async def open_case(self, recall_number: str) -> dict[str, Any]:
+        """Open only the official notice; graph investigation remains explicit."""
+
+        recall_number = recall_number.strip()
+        record = RecallRegistryService().get_recall(recall_number)
+        if record is None:
+            raise ValueError(
+                f"Recall {recall_number!r} is unavailable from the configured registry."
+            )
+        intelligence = investigate_recall(record)
+        case_id = f"CASE-{uuid4()}"
+        thread_id = f"THREAD-{uuid4()}"
+        source_mode = (
+            "live" if record.provenance == "LIVE_OPENFDA" and not record.cached else "snapshot"
+        )
+        return {
+            "recall_number": recall_number,
+            "case_id": case_id,
+            "thread_id": thread_id,
+            "case_version": 0,
+            "status": "intake_ready",
+            "source_mode": source_mode,
+            "source_detail": "Live openFDA lookup"
+            if source_mode == "live"
+            else "Cached/frozen fallback",
+            "model_mode": "deterministic",
+            "runtime_mode": self.runtime_label,
+            "transport_mode": self.transport_label,
+            "question": (
+                f"Identify affected lots and facilities for {recall_number}, reconcile quantities, "
+                "and prepare safe simulated containment."
+            ),
+            "scope_lot_ids": [],
+            "current_node": "intake_ready",
+            "recall": {
+                "summary": _recall_summary(record.model_dump(mode="json")),
+                "predicate": intelligence.predicate.model_dump(mode="json"),
+                "citations": [
+                    {
+                        "citation_id": f"openfda:{record.recall_number}",
+                        "source": record.provenance,
+                        "url": record.source_url,
+                        "observation": "Official recall notice opened before graph investigation.",
+                    }
+                ],
+            },
+            "matches": [],
+            "lineage": [],
+            "evidence": [],
+            "facilities": [],
+            "proposed_actions": [],
+            "pending_interrupt": None,
+            "approval": None,
+            "review_history": [],
+            "receipts": [],
+            "reconciliation": None,
+            "verification": None,
+            "retrieval": None,
+            "specialists": [],
+            "node_trace": [
+                {
+                    "order": 1,
+                    "node": "intake_ready",
+                    "route": "user → official notice open",
+                    "actor": "system",
+                    "classification": "read",
+                    "status": "notice opened; graph not started",
+                    "case_version": 0,
+                    "source": record.provenance,
+                }
+            ],
+            "tool_trace": [],
+            "closure": None,
+            "evaluation_report": None,
+            "checkpoint_id": None,
+            "next_nodes": [],
+        }
+
+    async def run_investigation(self, case: Mapping[str, Any]) -> dict[str, Any]:
+        current = self._bound_copy(case)
+        if current.get("checkpoint_id"):
+            return await self.load_case(current["thread_id"])
+        async with RecallOpsRuntime.open(
+            checkpoint_path=self.checkpoint_path,
+            operations_path=self.operations_path,
+        ) as runtime:
+            self._arm_failure(runtime, current)
+            result = await runtime.start_case(
+                recall_number=current["recall_number"],
+                question=str(current.get("question") or "Investigate the recall safely."),
+                case_id=current["case_id"],
+                thread_id=current["thread_id"],
+                scope_lot_ids=current.get("scope_lot_ids") or None,
+            )
+        return normalize_runtime_result(result)
+
+    async def load_case(self, thread_id: str) -> dict[str, Any]:
+        async with RecallOpsRuntime.open(
+            checkpoint_path=self.checkpoint_path,
+            operations_path=self.operations_path,
+        ) as runtime:
+            result = await runtime.get_case(thread_id=thread_id)
+        if result is None:
+            raise KeyError(f"Unknown durable thread {thread_id!r}.")
+        return normalize_runtime_result(result)
+
+    async def resume_review(
+        self,
+        case: Mapping[str, Any],
+        *,
+        decision: str,
+        actor: str,
+        justification: str,
+        edited_action: str,
+    ) -> dict[str, Any]:
+        current = self._bound_copy(case)
+        pending = self._pending(current, expected=("action_review", "closure_review"))
+        response = _bound_runtime_response(pending, decision=decision)
+        response.update(actor=actor.strip(), justification=justification.strip())
+        if decision == "edit":
+            if not edited_action.strip():
+                raise ValueError("Edit requires revised proposed-action text.")
+            edited = copy.deepcopy(dict(pending["action"]))
+            # UI edit is deliberately rationale-only; action ordering/scope cannot be changed.
+            edited["rationale"] = edited_action.strip()
+            response["edited_action"] = edited
+        async with RecallOpsRuntime.open(
+            checkpoint_path=self.checkpoint_path,
+            operations_path=self.operations_path,
+        ) as runtime:
+            self._arm_failure(runtime, current)
+            result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
+        return normalize_runtime_result(result)
+
+    async def simulate_approved_actions(self, case: Mapping[str, Any]) -> dict[str, Any]:
+        current = self._bound_copy(case)
+        pending = self._pending(
+            current, expected=("execution_confirmation", "write_outcome_recovery")
+        )
+        decision = "retry" if pending["kind"] == "write_outcome_recovery" else "confirm"
+        response = _bound_runtime_response(pending, decision=decision)
+        async with RecallOpsRuntime.open(
+            checkpoint_path=self.checkpoint_path,
+            operations_path=self.operations_path,
+        ) as runtime:
+            self._arm_failure(runtime, current)
+            result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
+        return normalize_runtime_result(result)
+
+    async def request_closure(self, case: Mapping[str, Any]) -> dict[str, Any]:
+        """Reload authoritative checkpoint state and present its closure gates read-only."""
+
+        current = self._bound_copy(case)
+        if current.get("checkpoint_id"):
+            current = await self.load_case(current["thread_id"])
+        gaps = [str(value) for value in current.get("evidence_gaps", [])]
+        ambiguous = [str(value) for value in current.get("ambiguous_lot_ids", [])]
+        required = [str(value) for value in current.get("required_facilities", [])]
+        acknowledgements = current.get("acknowledgements", {})
+        if not isinstance(acknowledgements, Mapping):
+            acknowledgements = {}
+        unacknowledged = [
+            facility for facility in required if acknowledgements.get(facility) is not True
+        ]
+        pending = current.get("pending_interrupt")
+        violations = current.get("verification", {}).get("violations", [])
+        gates = [
+            {
+                "gate": "Reconciliation",
+                "state": "block" if gaps else "pass",
+                "detail": "; ".join(gaps) or "No returned reconciliation gaps",
+            },
+            {
+                "gate": "Facility acknowledgements",
+                "state": "block" if unacknowledged else "pass",
+                "detail": ", ".join(unacknowledged) or "Every required facility acknowledged",
+            },
+            {
+                "gate": "Ambiguous matches",
+                "state": "block" if ambiguous else "pass",
+                "detail": ", ".join(ambiguous) or "No ambiguous matches in scope",
+            },
+            {
+                "gate": "Approval and version",
+                "state": "block" if pending else "pass",
+                "detail": "A version-bound action remains pending"
+                if pending
+                else "No action pending",
+            },
+            {
+                "gate": "Contradictions and evidence",
+                "state": "block" if violations else "pass",
+                "detail": "; ".join(str(value) for value in violations)
+                or "Independent verifier returned no violations",
+            },
+        ]
+        blockers = [item["detail"] for item in gates if item["state"] == "block"]
+        current["closure"] = {
+            "status": "Open — closure blocked" if blockers else "closure_review_required",
+            "gates": gates,
+            "blockers": blockers,
+            "authoritative_checkpoint_reloaded": True,
+        }
+        current["runtime_status"] = current.get("status")
+        current["status"] = "open_closure_blocked" if blockers else "closure_review_required"
+        current["current_node"] = "closure_gate"
+        return current
+
+    async def inject_failure(self, case: Mapping[str, Any], scenario: str) -> dict[str, Any]:
+        current = self._bound_copy(case)
+        runtime_scenario = _RUNTIME_FAILURES.get(scenario)
+        if runtime_scenario is None:
+            raise ValueError("Not available in this runtime")
+        current["ui_failure_request"] = runtime_scenario
+        current["failure_result"] = {
+            "scenario": scenario,
+            "runtime_scenario": runtime_scenario,
+            "status": "armed",
+            "safe_outcome": "Armed for the next compatible durable runtime operation.",
+            "mode": self.runtime_label,
+        }
+        return current
+
+    @staticmethod
+    def _bound_copy(case: Mapping[str, Any]) -> dict[str, Any]:
+        current = copy.deepcopy(dict(case))
+        if any(
+            not isinstance(current.get(key), str) or not current[key].strip()
+            for key in ("case_id", "thread_id", "recall_number")
+        ):
+            raise ValueError(
+                "Current recall, case, and durable thread identifiers must be nonblank strings."
+            )
+        version = current.get("case_version")
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError("Current case version is required.")
+        return current
+
+    @staticmethod
+    def _pending(current: Mapping[str, Any], *, expected: tuple[str, ...]) -> dict[str, Any]:
+        pending = current.get("pending_interrupt")
+        if not isinstance(pending, Mapping) or pending.get("kind") not in expected:
+            raise ValueError(f"Expected one of {expected!r} as the pending durable interrupt.")
+        return copy.deepcopy(dict(pending))
+
+    @staticmethod
+    def _arm_failure(runtime: RecallOpsRuntime, current: Mapping[str, Any]) -> None:
+        scenario = current.get("ui_failure_request")
+        if isinstance(scenario, str) and scenario:
+            runtime.inject_failure(scenario)
 
 
 class DeterministicDemoAdapter:
     """A state-validating offline walkthrough built from checked-in data."""
 
+    runtime_label = "Explicit deterministic demo fixture — not durable runtime"
+    transport_label = "deterministic in-memory demo adapter"
     available_failure_scenarios = FAILURE_SCENARIOS
 
     async def open_case(self, recall_number: str) -> dict[str, Any]:
@@ -106,7 +387,8 @@ class DeterministicDemoAdapter:
             "source_mode": "snapshot",
             "source_detail": "Cached/frozen fallback",
             "model_mode": "deterministic",
-            "runtime_mode": "Deterministic UI adapter — not durable runtime recovery",
+            "runtime_mode": self.runtime_label,
+            "transport_mode": self.transport_label,
             "current_node": "intake",
             "recall": {
                 "summary": {
@@ -826,3 +1108,475 @@ def _contradictions(case: Mapping[str, Any]) -> list[str]:
         return []
     values = verification.get("contradictions")
     return [str(value) for value in values] if isinstance(values, list) else []
+
+
+def _bound_runtime_response(pending: Mapping[str, Any], *, decision: str) -> dict[str, Any]:
+    response = {
+        key: pending[key]
+        for key in ("kind", "case_id", "thread_id", "case_version", "action_digest")
+    }
+    response["action_id"] = (
+        pending["action_id"] if "action_id" in pending else pending["action"]["action_id"]
+    )
+    for key in ("execution_id", "idempotency_key"):
+        if key in pending:
+            response[key] = pending[key]
+    response["decision"] = decision
+    return response
+
+
+def _recall_summary(record: Mapping[str, Any]) -> dict[str, Any]:
+    payload = record.get("payload") if isinstance(record.get("payload"), Mapping) else {}
+    return {
+        "recall_number": record.get("recall_number"),
+        "product": "Grade A shell eggs (28 listed configurations)",
+        "classification": payload.get("classification"),
+        "status": payload.get("status"),
+        "hazard": payload.get("reason_for_recall"),
+    }
+
+
+def _project_runtime_case(
+    state: dict[str, Any],
+    *,
+    pending: Any,
+    next_nodes: list[str],
+    checkpoint_id: Any,
+) -> dict[str, Any]:
+    """Project the JSON-only graph checkpoint into the stable UI presentation shape."""
+
+    runtime_pending = copy.deepcopy(dict(pending)) if isinstance(pending, Mapping) else None
+    pending_ui = copy.deepcopy(runtime_pending)
+    if pending_ui:
+        pending_ui["expected_version"] = pending_ui.get("case_version")
+        action = pending_ui.get("action") if isinstance(pending_ui.get("action"), Mapping) else {}
+        pending_ui["scope"] = action.get("action_type") or pending_ui.get("kind")
+
+    products = {
+        item["product_id"]: item
+        for item in state.get("candidate_products", [])
+        if isinstance(item, Mapping) and isinstance(item.get("product_id"), str)
+    }
+    lots = {
+        item["lot_id"]: item
+        for item in state.get("candidate_lots", [])
+        if isinstance(item, Mapping) and isinstance(item.get("lot_id"), str)
+    }
+    trace_events = [
+        dict(item) for item in state.get("trace_events", []) if isinstance(item, Mapping)
+    ]
+    facilities_by_lot: dict[str, set[str]] = {}
+    for event in trace_events:
+        lot_id = str(event.get("lot_id") or "")
+        facilities_by_lot.setdefault(lot_id, set()).update(
+            str(value) for value in (event.get("from_facility"), event.get("to_facility")) if value
+        )
+    matches: list[dict[str, Any]] = []
+    for decision in state.get("match_decisions", []):
+        if not isinstance(decision, Mapping):
+            continue
+        lot = lots.get(str(decision.get("lot_id")), {})
+        product = products.get(str(decision.get("product_id")), {})
+        matches.append(
+            {
+                "product": product.get("name") or decision.get("product_id"),
+                "product_id": decision.get("product_id"),
+                "upc": product.get("upc"),
+                "lot_id": decision.get("lot_id"),
+                "plant_code": lot.get("plant_code"),
+                "julian_date": lot.get("julian_date"),
+                "classification": decision.get("classification"),
+                "rationale": decision.get("rationale"),
+                "evidence_ids": list(decision.get("evidence_ids") or []),
+                "facility_ids": sorted(facilities_by_lot.get(str(decision.get("lot_id")), set())),
+                "source": SYNTHETIC,
+            }
+        )
+
+    recall_record = state.get("recall") if isinstance(state.get("recall"), Mapping) else {}
+    official = (
+        state.get("official_evidence")
+        if isinstance(state.get("official_evidence"), Mapping)
+        else {}
+    )
+    predicate = (
+        copy.deepcopy(dict(state["recall_predicate"]))
+        if isinstance(state.get("recall_predicate"), Mapping)
+        else {}
+    )
+    if predicate.get("product_terms"):
+        predicate["product"] = (
+            f"Grade A shell eggs ({len(predicate['product_terms'])} listed configurations)"
+        )
+        predicate.pop("product_terms", None)
+    official_citations = [
+        {
+            "citation_id": citation,
+            "source": official.get("provenance") or recall_record.get("provenance"),
+            "url": official.get("source_url") or recall_record.get("source_url"),
+            "observation": "Official recall predicate and notice evidence.",
+        }
+        for citation in official.get("citations", [])
+    ]
+    evidence: list[dict[str, Any]] = []
+    for event in trace_events:
+        evidence.append(
+            {
+                "citation_id": event.get("event_id"),
+                "scope": event.get("lot_id"),
+                "source": event.get("origin") or SYNTHETIC,
+                "observation": (
+                    "Synthetic EPCIS-style event; it does not prove Northstar was involved "
+                    "in the public recall."
+                ),
+            }
+        )
+
+    reconciliations = [
+        dict(item) for item in state.get("reconciliations", []) if isinstance(item, Mapping)
+    ]
+    components = (
+        "received",
+        "on_hand",
+        "quarantined",
+        "sold",
+        "returned",
+        "disposed",
+        "unaccounted",
+    )
+    totals = {key: sum(int(item.get(key, 0)) for item in reconciliations) for key in components}
+    reconciliation_rows = []
+    for item in reconciliations:
+        lot = lots.get(str(item.get("lot_id")), {})
+        product = products.get(str(lot.get("product_id")), {})
+        reconciliation_rows.append(
+            {
+                "product": product.get("name") or lot.get("product_id"),
+                "lot_id": item.get("lot_id"),
+                "facility": ", ".join(sorted(facilities_by_lot.get(str(item.get("lot_id")), set())))
+                or "—",
+                **{key: item.get(key) for key in components},
+                "evidence_ids": list(item.get("evidence_ids") or []),
+                "source": SYNTHETIC,
+            }
+        )
+    gaps = [
+        {
+            "gap_type": "reconciliation evidence gap",
+            "impact": str(gap),
+            "evidence_id": str(gap).split(":", 1)[0],
+            "closure_implication": "Blocks closure",
+        }
+        for gap in state.get("evidence_gaps", [])
+    ]
+    gaps.extend(
+        {
+            "gap_type": "ambiguous lot",
+            "impact": f"{lot_id} requires human review and is excluded from auto-hold",
+            "evidence_id": str(lot_id),
+            "closure_implication": "Blocks closure",
+        }
+        for lot_id in state.get("ambiguous_lot_ids", [])
+    )
+
+    acknowledgements = (
+        state.get("acknowledgements") if isinstance(state.get("acknowledgements"), Mapping) else {}
+    )
+    facilities = [
+        {
+            "facility_id": facility,
+            "acknowledged": acknowledgements.get(facility),
+            "source": SYNTHETIC,
+        }
+        for facility in state.get("required_facilities", [])
+    ]
+    current_action = (
+        copy.deepcopy(dict(state["current_action"]))
+        if isinstance(state.get("current_action"), Mapping)
+        else None
+    )
+    proposed_actions: list[dict[str, Any]] = []
+    if current_action:
+        proposed_actions.append(
+            {
+                "action_id": current_action.get("action_id"),
+                "action_type": current_action.get("action_type"),
+                "summary": current_action.get("rationale"),
+                "target_ids": list(current_action.get("target_ids") or []),
+                "source": SYNTHETIC,
+                "digest": state.get("action_digest"),
+                "expected_version": current_action.get("expected_case_version"),
+            }
+        )
+
+    raw_approval = state.get("approval") if isinstance(state.get("approval"), Mapping) else {}
+    approval = None
+    if raw_approval:
+        bindings = raw_approval.get("action_bindings") or []
+        binding = bindings[0] if bindings and isinstance(bindings[0], Mapping) else {}
+        approval = {
+            "decision": raw_approval.get("decision"),
+            "case_id": raw_approval.get("approved_case_id"),
+            "thread_id": state.get("thread_id"),
+            "expected_version": raw_approval.get("approved_case_version"),
+            "action_digest": binding.get("action_digest"),
+            "actor": raw_approval.get("actor"),
+            "justification": raw_approval.get("justification"),
+            "idempotency_key": (
+                pending_ui.get("idempotency_key") if pending_ui else state.get("idempotency_key")
+            ),
+        }
+
+    receipts = [
+        {**dict(item), "source": SYNTHETIC}
+        for item in state.get("write_receipts", [])
+        if isinstance(item, Mapping)
+    ]
+    node_names = [str(item) for item in state.get("node_trace", [])]
+    node_trace = [
+        {
+            "order": index,
+            "node": node,
+            "route": f"{node_names[index - 2]} → {node}" if index > 1 else "START → intake",
+            "actor": "system",
+            "classification": "interrupt; no write"
+            if node.endswith("review") or node == "execution_confirmation"
+            else "read/reasoning",
+            "status": "pending" if index == len(node_names) and runtime_pending else "complete",
+            "case_version": state.get("case_version"),
+        }
+        for index, node in enumerate(node_names, start=1)
+    ]
+    tool_trace = [
+        _project_tool_trace(
+            item,
+            order=len(node_trace) + index,
+            case_version=state.get("case_version"),
+            official_source=str(official.get("provenance") or SNAPSHOT),
+        )
+        for index, item in enumerate(state.get("tool_trace", []), start=1)
+        if isinstance(item, Mapping)
+    ]
+    tool_trace.extend(
+        {
+            "order": len(node_trace) + len(tool_trace) + index,
+            "node": "execute_one_operation",
+            "route": "approved graph node → Operations MCP",
+            "actor": receipt.get("actor"),
+            "tool": receipt.get("action_type"),
+            "server": "Operations MCP",
+            "classification": "simulated-write",
+            "status": receipt.get("status"),
+            "case_version": receipt.get("case_version"),
+            "receipt_id": receipt.get("receipt_id"),
+            "source": SYNTHETIC,
+        }
+        for index, receipt in enumerate(receipts, start=1)
+    )
+
+    rag = state.get("rag_result") if isinstance(state.get("rag_result"), Mapping) else {}
+    rag_state = state.get("rag_state") if isinstance(state.get("rag_state"), Mapping) else {}
+    query_trace = []
+    for index, query in enumerate(rag.get("query_trace", []), start=1):
+        if not isinstance(query, Mapping):
+            continue
+        query_trace.append(
+            {
+                "hop": query.get("hop", index),
+                "query": query.get("query"),
+                "sparse_hits": None,
+                "dense_hits": None,
+                "fused_hits": None,
+                "reranked_hits": None,
+                "critic": rag.get("stop_reason")
+                if index == len(rag.get("query_trace", []))
+                else "continue",
+            }
+        )
+    retrieval = (
+        {
+            "mode": "agentic_rag",
+            "label": "Durable read-only agentic RAG trace",
+            "queries": query_trace,
+            "citations": [
+                item.get("citation_id")
+                for item in rag.get("citations", [])
+                if isinstance(item, Mapping) and item.get("citation_id")
+            ],
+            "bounds": rag_state.get("budgets", {}),
+            "stop_reason": rag.get("stop_reason"),
+            "coverage_satisfied": rag.get("coverage_satisfied"),
+            "evidence_gaps": list(rag.get("evidence_gaps") or []),
+            "phase_trace": rag.get("phase_trace", []),
+        }
+        if rag
+        else None
+    )
+    specialists = _project_specialists(state)
+
+    closure = None
+    if state.get("status") == "open_closure_blocked":
+        reason = (
+            state.get("closure_outcome", {}).get("reason")
+            if isinstance(state.get("closure_outcome"), Mapping)
+            else "Authoritative closure gate blocked"
+        )
+        closure = {
+            "status": "Open — closure blocked",
+            "gates": [
+                {"gate": "Authoritative Operations closure", "state": "block", "detail": reason}
+            ],
+            "blockers": [reason],
+        }
+
+    current_node = (
+        runtime_pending.get("kind")
+        if runtime_pending
+        else next_nodes[0]
+        if next_nodes
+        else node_names[-1]
+        if node_names
+        else None
+    )
+    return {
+        **state,
+        "runtime_mode": "Durable LangGraph + SQLite",
+        "transport_mode": DurableRuntimeAdapter.transport_label,
+        "model_mode": "deterministic",
+        "current_node": current_node,
+        "pending_interrupt": pending_ui,
+        "next_nodes": next_nodes,
+        "checkpoint_id": checkpoint_id,
+        "recall": {
+            "summary": _recall_summary(recall_record),
+            "predicate": predicate,
+            "citations": official_citations,
+        },
+        "matches": matches,
+        "lineage": [
+            {**item, "unit": "units", "source": item.get("origin") or SYNTHETIC}
+            for item in trace_events
+        ],
+        "evidence": evidence,
+        "reconciliation": {
+            "unit": "units",
+            "totals": totals,
+            "rows": reconciliation_rows,
+            "gaps": gaps,
+        }
+        if reconciliations
+        else None,
+        "facilities": facilities,
+        "proposed_actions": proposed_actions,
+        "approval": approval,
+        "receipts": receipts,
+        "specialists": specialists,
+        "retrieval": retrieval,
+        "node_trace": node_trace,
+        "tool_trace": tool_trace,
+        "closure": closure,
+    }
+
+
+def _project_tool_trace(
+    item: Mapping[str, Any],
+    *,
+    order: int,
+    case_version: Any,
+    official_source: str,
+) -> dict[str, Any]:
+    operation = str(item.get("operation") or item.get("tool_name") or "unknown")
+    if operation == "get_recall":
+        server, source, node = "Recall Registry MCP", official_source, "regulatory_intake"
+    else:
+        server, source = "Traceability MCP", SYNTHETIC
+        node = (
+            "product_lot_match"
+            if operation in {"find_candidate_products", "match_lots"}
+            else "reconcile"
+            if operation == "reconcile_units"
+            else "trace_forward_backward"
+        )
+    return {
+        "order": order,
+        "node": node,
+        "route": f"{server} read",
+        "actor": "system",
+        "tool": operation,
+        "server": server,
+        "classification": "read",
+        "status": item.get("status"),
+        "duration": item.get("duration_ms"),
+        "warning": item.get("error"),
+        "case_version": case_version,
+        "correlation_id": item.get("event_id"),
+        "source": source,
+    }
+
+
+def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    outputs = state.get("specialist_outputs")
+    if not isinstance(outputs, Mapping):
+        return []
+    plan = state.get("plan") if isinstance(state.get("plan"), Mapping) else {}
+    purpose_by_specialist = {
+        item.get("specialist"): item.get("task")
+        for item in plan.get("todos", [])
+        if isinstance(item, Mapping)
+    }
+    matching = outputs.get("product-lot-matching", {})
+    trace = outputs.get("traceability-reconciliation", {})
+    containment = outputs.get("containment-communications", {})
+    rows = [
+        {
+            "specialist": "Regulatory Intake",
+            "purpose": purpose_by_specialist.get(
+                "recall-intelligence", "Extract official recall predicate."
+            ),
+            "status": "complete",
+            "summary": "Official predicate and citations extracted.",
+            "citations": state.get("official_evidence", {}).get("citations", []),
+            "sources": ["OFFICIAL — openFDA snapshot"],
+        },
+        {
+            "specialist": "Product & Lot Matching",
+            "purpose": purpose_by_specialist.get(
+                "product-lot-matching", "Classify products and lots."
+            ),
+            "status": "complete",
+            "summary": f"{len(matching.get('decisions', []))} candidate lot decisions returned.",
+            "citations": [item.get("lot_id") for item in matching.get("decisions", [])[:4]],
+            "sources": ["OFFICIAL — openFDA snapshot", "SYNTHETIC — ACADEMIC DEMO"],
+        },
+        {
+            "specialist": "Traceability",
+            "purpose": purpose_by_specialist.get(
+                "traceability-reconciliation", "Trace and reconcile lots."
+            ),
+            "status": "complete",
+            "summary": f"{len(trace.get('lot_ids', []))} lots and {len(trace.get('affected_facilities', []))} facilities traced.",
+            "citations": trace.get("evidence_ids", [])[:4],
+            "sources": ["SYNTHETIC — ACADEMIC DEMO"],
+        },
+        {
+            "specialist": "Containment",
+            "purpose": purpose_by_specialist.get(
+                "containment-communications", "Draft containment actions."
+            ),
+            "status": "complete",
+            "summary": f"{len(containment.get('proposed_actions', []))} evidence-bound actions drafted; zero executed by the agent.",
+            "citations": containment.get("all_cited_evidence_ids", [])[:4],
+            "sources": ["SYNTHETIC — ACADEMIC DEMO"],
+        },
+        {
+            "specialist": "Independent Verification/Critic",
+            "purpose": "Verify citations, policy controls, contradictions and closure posture.",
+            "status": "complete"
+            if state.get("verification", {}).get("passed") is True
+            else "error",
+            "summary": "Structured controls are authoritative; RAG remains advisory.",
+            "citations": state.get("evidence_gaps", []),
+            "sources": ["OFFICIAL — openFDA snapshot", "SYNTHETIC — ACADEMIC DEMO"],
+        },
+    ]
+    return rows

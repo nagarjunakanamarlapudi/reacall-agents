@@ -5,14 +5,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot, validate_manifest
-from recallops.paths import DATA_DIR
-from recallops.ui.adapter import DeterministicDemoAdapter
+from recallops.paths import DATA_DIR, PROJECT_ROOT
+from recallops.ui.adapter import DurableRuntimeAdapter
 from recallops.ui.presenters import APPROVAL_JUSTIFICATION
 
 
@@ -46,7 +47,11 @@ def _data_validate() -> int:
 
 
 async def _run_demo(recall_number: str) -> int:
-    adapter = DeterministicDemoAdapter()
+    runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=runtime_dir / "checkpoints.sqlite3",
+        operations_path=runtime_dir / "operations.sqlite3",
+    )
     case = await adapter.open_case(recall_number)
     print("RecallOps Command Center")
     print(f"Recall number: {recall_number}")
@@ -54,6 +59,8 @@ async def _run_demo(recall_number: str) -> int:
     print("SYNTHETIC — ACADEMIC DEMO | Northstar is fictional training data")
     case = await adapter.run_investigation(case)
     print("Agentic RAG: BM25 sparse + LSA dense → RRF → deterministic rerank → critic")
+    print("Runtime: Durable LangGraph + SQLite")
+    print("Transport: direct gateway · same typed MCP contract")
     print(
         "Planner: deterministic | Specialists: Regulatory Intake, Product & Lot Matching, Traceability, Containment | Independent verifier"
     )
@@ -72,7 +79,7 @@ async def _run_demo(recall_number: str) -> int:
     receipt = case["receipts"][-1]
     print(
         f"Simulated action recorded | receipt={receipt['receipt_id']} | "
-        f"action={receipt['action']} | version={receipt['case_version']}"
+        f"action={receipt['action_type']} | version={receipt['case_version']}"
     )
     case = await adapter.request_closure(case)
     print(case["closure"]["status"])
