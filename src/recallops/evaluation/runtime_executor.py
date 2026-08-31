@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import tempfile
 from collections import Counter
+from collections.abc import Mapping, Sequence, Set
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +24,7 @@ from recallops.agents.middleware import (
     TransientCallError,
     with_retry,
 )
+from recallops.agents.policies import ProgressStalledError, ProgressWatchdog
 from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
 from recallops.agents.workflow import build_workflow
 from recallops.evaluation.runner import EvaluationObservation, load_scenarios, run_evaluations
@@ -126,6 +129,34 @@ def _reviewed(
     return action, approval
 
 
+def _capture_service_authorization(
+    evidence: list[dict[str, Any]] | None,
+    *,
+    receipt: Any,
+    action: ProposedAction,
+    approval: ApprovalDecision,
+    idempotency_key: str,
+) -> None:
+    """Capture call-time authorization independently of the persisted receipt payload."""
+
+    if evidence is None:
+        return
+    receipt_id = receipt.receipt_id if hasattr(receipt, "receipt_id") else receipt["receipt_id"]
+    evidence.append(
+        {
+            "receipt_id": receipt_id,
+            "decision": approval.decision,
+            "action_id": action.action_id,
+            "action_digest": proposed_action_digest(action),
+            "expected_case_version": action.expected_case_version,
+            "actor": approval.actor,
+            "justification": approval.justification,
+            "idempotency_key": idempotency_key,
+            "operation_call_observed": True,
+        }
+    )
+
+
 def _case_payload(traceability: TraceabilityService, lot_id: str) -> dict[str, Any]:
     events = traceability.trace_forward(lot_id)
     return {
@@ -153,6 +184,7 @@ def _create_case(
     *,
     lot_id: str = "LOT-PROBABLE-160",
     thread_id: str | None = None,
+    authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> None:
     payload = _case_payload(traceability, lot_id)
     action, approval = _reviewed(
@@ -162,13 +194,20 @@ def _create_case(
         payload["confirmed_lot_ids"],
         evidence_ids=payload["trace_event_ids"],
     )
-    service.create_case(
+    receipt = service.create_case(
         case_id=case_id,
         thread_id=thread_id,
         **payload,
         proposed_action=action,
         approval=approval,
         expected_case_version=0,
+        idempotency_key=f"{case_id}-create",
+    )
+    _capture_service_authorization(
+        authorization_evidence,
+        receipt=receipt,
+        action=action,
+        approval=approval,
         idempotency_key=f"{case_id}-create",
     )
 
@@ -206,9 +245,10 @@ def _create_tasks(
     version: int,
     *,
     key: str,
+    authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
     action, approval = _reviewed(case_id, "create_facility_tasks", version, facilities)
-    return service.create_facility_tasks(
+    receipt = service.create_facility_tasks(
         case_id=case_id,
         facility_ids=facilities,
         proposed_action=action,
@@ -216,6 +256,14 @@ def _create_tasks(
         expected_case_version=version,
         idempotency_key=key,
     )
+    _capture_service_authorization(
+        authorization_evidence,
+        receipt=receipt,
+        action=action,
+        approval=approval,
+        idempotency_key=key,
+    )
+    return receipt
 
 
 def _acknowledge(
@@ -225,9 +273,10 @@ def _acknowledge(
     version: int,
     *,
     key: str,
+    authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
     action, approval = _reviewed(case_id, "record_acknowledgment", version, [facility])
-    return service.record_acknowledgment(
+    receipt = service.record_acknowledgment(
         case_id=case_id,
         facility_id=facility,
         proposed_action=action,
@@ -235,6 +284,14 @@ def _acknowledge(
         expected_case_version=version,
         idempotency_key=key,
     )
+    _capture_service_authorization(
+        authorization_evidence,
+        receipt=receipt,
+        action=action,
+        approval=approval,
+        idempotency_key=key,
+    )
+    return receipt
 
 
 def _record_disposition(
@@ -245,6 +302,7 @@ def _record_disposition(
     *,
     evidence_id: str,
     key: str,
+    authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
     action, approval = _reviewed(
         case_id,
@@ -253,7 +311,7 @@ def _record_disposition(
         [lot_id],
         evidence_ids=[evidence_id],
     )
-    return service.record_disposition(
+    receipt = service.record_disposition(
         case_id=case_id,
         lot_id=lot_id,
         disposition="dispose_unaccounted",
@@ -263,6 +321,14 @@ def _record_disposition(
         expected_case_version=version,
         idempotency_key=key,
     )
+    _capture_service_authorization(
+        authorization_evidence,
+        receipt=receipt,
+        action=action,
+        approval=approval,
+        idempotency_key=key,
+    )
+    return receipt
 
 
 def _close(service: OperationsService, case_id: str, version: int, *, key: str) -> Any:
@@ -327,8 +393,178 @@ def _error_code(error: BaseException) -> str:
     return type(error).__name__
 
 
-def _declared_faults(scenario: EvaluationScenario) -> list[dict[str, Any]]:
-    return [fault.model_dump(mode="json") for fault in scenario.faults]
+def _observed_fault(
+    scenario: EvaluationScenario, index: int, *, observed_times: int
+) -> dict[str, Any]:
+    fault = scenario.faults[index]
+    if observed_times != fault.times:
+        raise AssertionError(
+            f"fault {fault.scenario} declared {fault.times} applications but observed "
+            f"{observed_times}"
+        )
+    return fault.model_dump(mode="json")
+
+
+def _receipts_match_authorization_evidence(
+    receipts: list[Any], evidence: list[dict[str, Any]]
+) -> bool:
+    if len(receipts) != len(evidence):
+        return False
+    for raw_receipt, binding in zip(receipts, evidence, strict=True):
+        receipt = (
+            raw_receipt.model_dump(mode="json")
+            if hasattr(raw_receipt, "model_dump")
+            else raw_receipt
+        )
+        try:
+            action = ProposedAction.model_validate(receipt["details"]["reviewed_action"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not (
+            binding["receipt_id"] == receipt.get("receipt_id")
+            and binding["decision"] == "approve"
+            and binding["action_id"] == action.action_id
+            and binding["action_digest"] == proposed_action_digest(action)
+            and binding["expected_case_version"] == action.expected_case_version
+            and binding["actor"] == receipt.get("actor")
+            and binding["justification"] == receipt.get("justification")
+            and binding["idempotency_key"] == receipt.get("idempotency_key")
+            and binding["operation_call_observed"] is True
+        ):
+            return False
+    return True
+
+
+def _mutation_rejected(target: Any, method: str, *args: Any) -> bool:
+    """Return whether an immutable public result rejects a concrete nested mutation."""
+
+    try:
+        getattr(target, method)(*args)
+    except (AttributeError, TypeError):
+        return True
+    return False
+
+
+def _immutable_container_audit(value: Any, *, path: str) -> dict[str, Any]:
+    """Recursively audit every JSON container on a public result surface."""
+
+    checks: dict[str, bool] = {}
+    seen: set[int] = set()
+
+    def visit(item: Any, current_path: str) -> None:
+        if isinstance(item, (str, bytes, bytearray)) or item is None:
+            return
+        if isinstance(item, (bool, int, float)):
+            return
+        if not isinstance(item, (Mapping, Sequence, Set)):
+            checks[current_path] = False
+            return
+        identity = id(item)
+        if identity in seen:
+            return
+        seen.add(identity)
+        if isinstance(item, Mapping):
+            mutators = (
+                "__setitem__",
+                "__delitem__",
+                "clear",
+                "pop",
+                "popitem",
+                "setdefault",
+                "update",
+            )
+            checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
+            for key, child in item.items():
+                visit(child, f"{current_path}/{key}")
+            return
+        if isinstance(item, Set):
+            mutators = (
+                "add",
+                "clear",
+                "difference_update",
+                "discard",
+                "intersection_update",
+                "pop",
+                "remove",
+                "symmetric_difference_update",
+                "update",
+            )
+            checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
+            for index, child in enumerate(item):
+                visit(child, f"{current_path}/{index}")
+            return
+        mutators = (
+            "__setitem__",
+            "__delitem__",
+            "append",
+            "clear",
+            "extend",
+            "insert",
+            "pop",
+            "remove",
+            "reverse",
+            "sort",
+        )
+        checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
+        for index, child in enumerate(item):
+            visit(child, f"{current_path}/{index}")
+
+    visit(value, path)
+    mutable_paths = sorted(path for path, immutable in checks.items() if not immutable)
+    return {
+        "container_count": len(checks),
+        "all_containers_immutable": bool(checks) and not mutable_paths,
+        "mutable_paths": mutable_paths,
+    }
+
+
+def _execution_confirmation_evidence(history: Sequence[RuntimeResult]) -> list[dict[str, Any]]:
+    """Extract durable post-confirm checkpoints from the public history API."""
+
+    evidence_by_execution: dict[str, dict[str, Any]] = {}
+    chronological = list(reversed(history))
+    for index, snapshot in enumerate(chronological):
+        if index == 0:
+            continue
+        prior = chronological[index - 1]
+        case = snapshot.case
+        if snapshot.pending_interrupt is not None:
+            continue
+        if case.get("status") != "approved_pending_execution":
+            continue
+        if (
+            prior.pending_interrupt is None
+            or prior.pending_interrupt.get("kind") != "execution_confirmation"
+        ):
+            continue
+        try:
+            action = ProposedAction.model_validate(case.get("current_action"))
+        except (TypeError, ValueError):
+            continue
+        execution_id = case.get("execution_id")
+        idempotency_key = case.get("idempotency_key")
+        digest = case.get("action_digest")
+        checkpoint_id = snapshot.checkpoint_id
+        if prior.case.get("execution_id") != execution_id:
+            continue
+        if not all(
+            isinstance(value, str) and bool(value.strip())
+            for value in (execution_id, idempotency_key, digest, checkpoint_id)
+        ):
+            continue
+        if digest != proposed_action_digest(action):
+            continue
+        evidence_by_execution[execution_id] = {
+            "confirmed": True,
+            "case_id": action.case_id,
+            "case_version": action.expected_case_version,
+            "action_id": action.action_id,
+            "action_digest": digest,
+            "execution_id": execution_id,
+            "idempotency_key": idempotency_key,
+            "checkpoint_id": checkpoint_id,
+        }
+    return list(evidence_by_execution.values())
 
 
 def _normalize_warning_codes(warnings: list[str]) -> list[str]:
@@ -506,11 +742,9 @@ class RecallOpsEvaluationExecutor:
                 checkpoint_path=checkpoint,
                 operations_path=operations,
             ) as runtime:
-                runtime_faults_applied: list[dict[str, Any]] = []
                 for fault in scenario.faults:
                     if fault.scenario in _SUPPORTED_START_FAILURES:
                         runtime.inject_failure(fault.scenario, times=fault.times)
-                        runtime_faults_applied.append(fault.model_dump(mode="json"))
                 if scenario.id == "R12":
                     return await self._consent_and_idempotency(runtime, scenario, operations)
                 if scenario.id == "R17":
@@ -521,25 +755,20 @@ class RecallOpsEvaluationExecutor:
                     ) = await _drive_to_end_with_review_lifecycle(
                         runtime, await _start(runtime, scenario)
                     )
+                    confirmation_history = _execution_confirmation_evidence(
+                        await runtime.get_case_history(thread_id=completed.case["thread_id"])
+                    )
                     return self._observation(
                         completed,
                         state_updates={
                             "review_lifecycle": lifecycle,
                             "closure_edit_preserved": closure_edit_preserved,
+                            "execution_confirmation_history": confirmation_history,
                         },
                     )
                 if scenario.id == "R21":
                     return await self._ambiguous_scope(runtime, scenario, root)
                 result = await _start(runtime, scenario)
-                if runtime_faults_applied:
-                    result = result.model_copy(
-                        update={
-                            "case": {
-                                **result.case,
-                                "_evaluation_failure_injection": runtime_faults_applied,
-                            }
-                        }
-                    )
 
             return await self._augment(scenario, result, root, operations)
 
@@ -567,11 +796,7 @@ class RecallOpsEvaluationExecutor:
             "false_close_count": 0,
         }
         derived.update(counters or {})
-        applied_faults = (
-            failure_injection
-            if failure_injection is not None
-            else list(result.case.get("_evaluation_failure_injection", []))
-        )
+        applied_faults = failure_injection or []
         return EvaluationObservation(
             state=state,
             route_actual=route_actual or list(result.case.get("node_trace", [])),
@@ -654,6 +879,21 @@ class RecallOpsEvaluationExecutor:
             },
         )
 
+    async def _scenario_r02(
+        self,
+        scenario: EvaluationScenario,
+        result: RuntimeResult,
+        root: Path,
+        operations_path: Path,
+    ) -> EvaluationObservation:
+        del root, operations_path
+        get_recall_attempts = result.case.get("retry_state", {}).get("read_attempts", 0)
+        observed_failures = max(get_recall_attempts - 1, 0)
+        return self._observation(
+            result,
+            failure_injection=[_observed_fault(scenario, 0, observed_times=observed_failures)],
+        )
+
     async def _scenario_r05(
         self,
         scenario: EvaluationScenario,
@@ -664,7 +904,9 @@ class RecallOpsEvaluationExecutor:
         del root, operations_path
         dataset = deepcopy(TraceabilityService().dataset)
         event = next(item for item in dataset["events"] if item["event_id"] == "EV-003")
+        original_occurred_at = event["occurred_at"]
         event["occurred_at"] = "2026-05-01T00:00:00Z"
+        transformed_event_count = int(event["occurred_at"] != original_occurred_at)
         service = TraceabilityService(dataset=dataset)
         backward = service.trace_backward("LOT-EXACT-170")
         positions = {item["event_id"]: index for index, item in enumerate(backward)}
@@ -673,15 +915,16 @@ class RecallOpsEvaluationExecutor:
             for item in backward
             if item.get("parent_event_id")
         )
-        verification = {
-            **result.case.get("verification", {}),
+        trace_fixture_probe = {
             "causal_parent_links_complete": causal,
             "cross_lot_event_count": sum(item["lot_id"] != "LOT-EXACT-170" for item in backward),
         }
         return self._observation(
             result,
-            state_updates={"verification": verification},
-            failure_injection=_declared_faults(scenario),
+            state_updates={"trace_fixture_probe": trace_fixture_probe},
+            failure_injection=[
+                _observed_fault(scenario, 0, observed_times=transformed_event_count)
+            ],
         )
 
     async def _scenario_r07(
@@ -693,7 +936,9 @@ class RecallOpsEvaluationExecutor:
     ) -> EvaluationObservation:
         del operations_path
         dataset = deepcopy(TraceabilityService().dataset)
+        original_event_count = len(dataset["events"])
         dataset["events"] = [item for item in dataset["events"] if item["event_id"] != "EV-003"]
+        removed_event_count = original_event_count - len(dataset["events"])
         transformed = TraceabilityService(dataset=dataset).trace_forward("LOT-EXACT-170")
         facilities = {
             facility
@@ -709,20 +954,14 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             result,
             state_updates={
-                "evidence_gaps": [*_normalize_gaps(result.case), gap],
+                "trace_fixture_probe": {
+                    "evidence_gaps": [gap] if gap else [],
+                    "removed_event_count": removed_event_count,
+                },
                 "dependency_failure_terminal_count": terminal_count,
                 "dependency_failure_outcomes": dependency_outcomes,
             },
-            failure_injection=_declared_faults(scenario)
-            + [
-                {
-                    "scenario": failure,
-                    "target": "runtime_dependency_read",
-                    "times": 1,
-                    "parameters": {},
-                }
-                for failure in _REQUIRED_DEPENDENCY_FAILURES
-            ],
+            failure_injection=[_observed_fault(scenario, 0, observed_times=removed_event_count)],
         )
 
     async def _probe_dependency_failures(
@@ -799,7 +1038,7 @@ class RecallOpsEvaluationExecutor:
                 },
             },
             counters={"match_lots_calls": calls},
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[_observed_fault(scenario, 0, observed_times=calls - 1)],
         )
 
     async def _scenario_r09(
@@ -847,7 +1086,7 @@ class RecallOpsEvaluationExecutor:
                 },
             },
             counters={"trace_forward_transport_calls": transport_calls},
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[_observed_fault(scenario, 0, observed_times=transport_calls)],
         )
 
     async def _scenario_r10(
@@ -865,6 +1104,9 @@ class RecallOpsEvaluationExecutor:
                 budget.consume()
             except CallBudgetExceeded:
                 budget_blocked = True
+        model_fallbacks = sum(
+            item.get("status") == "fallback" for item in result.case.get("model_trace", [])
+        )
         return self._observation(
             result,
             state_updates={
@@ -875,7 +1117,10 @@ class RecallOpsEvaluationExecutor:
                 }
             },
             counters={"model_calls": len(result.case.get("model_trace", []))},
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(scenario, 0, observed_times=model_fallbacks),
+                _observed_fault(scenario, 1, observed_times=int(budget_blocked)),
+            ],
         )
 
     async def _scenario_r11(
@@ -930,7 +1175,6 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             rejected,
             state_updates={"service_probe_error_code": error_code},
-            route_actual=[*result.case.get("node_trace", []), "action_review"],
         )
 
     async def _scenario_r14(
@@ -968,11 +1212,20 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             result,
             state_updates={
-                "case_version": state.case_version,
-                "created_tasks": [],
-                "service_probe_error_code": error_code,
+                "service_probe": {
+                    "case_id": state.case_id,
+                    "case_version": state.case_version,
+                    "created_tasks": [],
+                    "error_code": error_code,
+                },
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(error_code == "stale_case_version"),
+                )
+            ],
         )
 
     async def _scenario_r15(
@@ -987,12 +1240,14 @@ class RecallOpsEvaluationExecutor:
         traceability = TraceabilityService()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
         case_id = scenario.input.model_extra["case_id"]
+        authorization_evidence: list[dict[str, Any]] = []
         _create_case(
             service,
             traceability,
             case_id,
             lot_id="LOT-EXACT-170",
             thread_id=scenario.input.model_extra["thread_id"],
+            authorization_evidence=authorization_evidence,
         )
         _record_disposition(
             service,
@@ -1001,10 +1256,18 @@ class RecallOpsEvaluationExecutor:
             1,
             evidence_id="EV-D-LOT-EXACT-170",
             key="r15-disposition",
+            authorization_evidence=authorization_evidence,
         )
         extra = scenario.input.model_extra or {}
         facilities = extra["facilities"]
-        _create_tasks(service, case_id, facilities, 2, key="r15-tasks")
+        _create_tasks(
+            service,
+            case_id,
+            facilities,
+            2,
+            key="r15-tasks",
+            authorization_evidence=authorization_evidence,
+        )
         acknowledged = extra["acknowledge"]
         for offset, facility in enumerate(acknowledged):
             _acknowledge(
@@ -1013,6 +1276,7 @@ class RecallOpsEvaluationExecutor:
                 facility,
                 3 + offset,
                 key=f"r15-ack-{facility}",
+                authorization_evidence=authorization_evidence,
             )
         version = 3 + len(acknowledged)
         error_code = ""
@@ -1026,15 +1290,29 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             result,
             state_updates={
-                **state.model_dump(mode="json"),
-                "evidence_gaps": [
-                    f"pending_acknowledgement:{facility}" for facility in missing_acknowledgements
-                ],
-                "service_probe_error_code": error_code,
+                "service_probe": {
+                    **state.model_dump(mode="json"),
+                    "evidence_gaps": [
+                        f"pending_acknowledgement:{facility}"
+                        for facility in missing_acknowledgements
+                    ],
+                    "error_code": error_code,
+                    "action_sequence": [receipt.action_type for receipt in state.write_receipts],
+                    "authorization_evidence": authorization_evidence,
+                    "receipts_authorized": _receipts_match_authorization_evidence(
+                        state.write_receipts, authorization_evidence
+                    ),
+                },
                 "disposition_lifecycle": disposition_lifecycle,
                 "concurrency_probe": concurrency_probe,
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(scenario.faults[0].target in missing_acknowledgements),
+                )
+            ],
         )
 
     async def _probe_disposition_lifecycle(
@@ -1093,18 +1371,34 @@ class RecallOpsEvaluationExecutor:
         traceability = _resolved_exact_traceability()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
         case_id = scenario.input.model_extra["case_id"]
+        authorization_evidence: list[dict[str, Any]] = []
         _create_case(
             service,
             traceability,
             case_id,
             lot_id="LOT-EXACT-170",
             thread_id=scenario.input.model_extra["thread_id"],
+            authorization_evidence=authorization_evidence,
         )
         facilities = (scenario.input.model_extra or {})["facilities"]
-        _create_tasks(service, case_id, facilities, 1, key="r16-tasks")
+        _create_tasks(
+            service,
+            case_id,
+            facilities,
+            1,
+            key="r16-tasks",
+            authorization_evidence=authorization_evidence,
+        )
         version = 2
         for facility in facilities:
-            _acknowledge(service, case_id, facility, version, key=f"r16-ack-{facility}")
+            _acknowledge(
+                service,
+                case_id,
+                facility,
+                version,
+                key=f"r16-ack-{facility}",
+                authorization_evidence=authorization_evidence,
+            )
             version += 1
         error_code = ""
         try:
@@ -1117,18 +1411,30 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             result,
             state_updates={
-                **state.model_dump(mode="json"),
-                "evidence_gaps": [
-                    f"unacknowledged_or_untasked_facility:{facility}"
-                    for facility in omitted_facilities
-                ],
-                "service_probe_error_code": error_code,
+                "service_probe": {
+                    **state.model_dump(mode="json"),
+                    "evidence_gaps": [
+                        f"unacknowledged_or_untasked_facility:{facility}"
+                        for facility in omitted_facilities
+                    ],
+                    "error_code": error_code,
+                    "authorization_evidence": authorization_evidence,
+                    "receipts_authorized": _receipts_match_authorization_evidence(
+                        state.write_receipts, authorization_evidence
+                    ),
+                },
                 "concurrency_probe": {
                     "invariants_safe": all(race["invariants_safe"] for race in concurrency_races),
                     "race_evidence": concurrency_races,
                 },
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(scenario.faults[0].target in omitted_facilities),
+                )
+            ],
         )
 
     async def _scenario_r20(
@@ -1165,7 +1471,7 @@ class RecallOpsEvaluationExecutor:
                     version_deltas[0] if version_deltas and len(set(version_deltas)) == 1 else -1
                 ),
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[_observed_fault(scenario, 0, observed_times=len(race_results))],
         )
 
     async def _scenario_r19(
@@ -1176,10 +1482,35 @@ class RecallOpsEvaluationExecutor:
         operations_path: Path,
     ) -> EvaluationObservation:
         del root, operations_path
+        watchdog = result.case.get("watchdog", {})
+        configured_limit = scenario.setup["watchdog_limit"]
+        policy_watchdog = ProgressWatchdog(max_repeats=configured_limit)
+        signature_observations = 0
+        policy_blocked = False
+        for _ in range(configured_limit + 1):
+            signature_observations += 1
+            try:
+                policy_watchdog.observe({"progress": "unchanged"})
+            except ProgressStalledError:
+                policy_blocked = True
+                break
+        triggered = (
+            result.case.get("status") == "escalated"
+            and watchdog.get("repeat_count", 0) > 0
+            and any("watchdog" in warning.lower() for warning in result.case.get("warnings", []))
+        )
         return self._observation(
             result,
-            counters={"progress_cycles": result.case.get("watchdog", {}).get("repeat_count", 0)},
-            failure_injection=_declared_faults(scenario),
+            state_updates={
+                "watchdog_probe": {
+                    "configured_limit": configured_limit,
+                    "signature_observations": signature_observations,
+                    "terminal_repeat_count": policy_watchdog.repeat_count,
+                    "blocked": policy_blocked,
+                }
+            },
+            counters={"progress_cycles": signature_observations},
+            failure_injection=[_observed_fault(scenario, 0, observed_times=int(triggered))],
         )
 
     def _run_toctou_races(
@@ -1426,6 +1757,10 @@ class RecallOpsEvaluationExecutor:
                 response=_bound_response(approved.pending_interrupt, decision="confirm"),
             )
             assert unknown.case["status"] == "write_outcome_unknown"
+            lost_response_observed = unknown.case.get("failure_state", {}).get("scenario") in {
+                "lost_write_response",
+                "receipt_or_write_failure",
+            }
         async with RecallOpsRuntime.open(
             checkpoint_path=checkpoint,
             operations_path=operations,
@@ -1436,15 +1771,27 @@ class RecallOpsEvaluationExecutor:
                 thread_id=restored.case["thread_id"],
                 response=_bound_response(restored.pending_interrupt, decision="retry"),
             )
+            confirmation_history = _execution_confirmation_evidence(
+                await runtime.get_case_history(thread_id=recovered.case["thread_id"])
+            )
         keys = [item["idempotency_key"] for item in recovered.case["write_receipts"]]
         return self._observation(
             recovered,
-            state_updates={"replayed_receipt_same": keys.count(key) == 1},
+            state_updates={
+                "replayed_receipt_same": keys.count(key) == 1,
+                "execution_confirmation_history": confirmation_history,
+            },
             counters={
                 "logical_write_count": len(set(keys)),
                 "retried_logical_write_count": int(keys.count(key) == 1),
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(lost_response_observed),
+                )
+            ],
         )
 
     async def _restart(
@@ -1464,16 +1811,148 @@ class RecallOpsEvaluationExecutor:
         ) as runtime:
             restored = await runtime.get_case(thread_id=review.case["thread_id"])
             assert restored == review
+            history_before = await runtime.get_case_history(thread_id=review.case["thread_id"])
+            immutable_probe = await runtime.get_case(thread_id=review.case["thread_id"])
+            assert immutable_probe is not None
+            candidate_lots = immutable_probe.case["candidate_lots"]
+            node_trace = immutable_probe.case["node_trace"]
+            pending = immutable_probe.pending_interrupt
+            assert candidate_lots and pending is not None
+            immutability_audits = [
+                _immutable_container_audit(immutable_probe.case, path="case"),
+                _immutable_container_audit(pending, path="pending_interrupt"),
+                _immutable_container_audit(immutable_probe.next_nodes, path="next_nodes"),
+            ]
+            mutation_checks = {
+                "case_mapping": _mutation_rejected(
+                    immutable_probe.case, "__setitem__", "status", "forged"
+                ),
+                "case_sequence": _mutation_rejected(node_trace, "append", "forged_node"),
+                "nested_case_mapping": _mutation_rejected(
+                    candidate_lots[0], "__setitem__", "classification", "forged"
+                ),
+                "interrupt_mapping": _mutation_rejected(pending, "__setitem__", "kind", "forged"),
+                "nested_interrupt_mapping": _mutation_rejected(
+                    pending["action"], "__setitem__", "action_type", "close_case"
+                ),
+            }
+            result_deeply_immutable = all(mutation_checks.values()) and all(
+                audit["all_containers_immutable"] for audit in immutability_audits
+            )
+            durable_after_mutation = await runtime.get_case(thread_id=review.case["thread_id"])
+            mutation_did_not_persist = durable_after_mutation == review
+            runtime_surface_sealed = all(
+                not hasattr(runtime, attribute)
+                for attribute in ("graph", "_graph", "_execute", "workflow")
+            )
             created = await _approve_and_confirm(runtime, restored)
+            history_after = await runtime.get_case_history(thread_id=review.case["thread_id"])
+        copied_store_probe = await self._probe_copied_checkpoint_head_fencing(
+            scenario, checkpoint.parent
+        )
         compiled_guard_results = await self._probe_compiled_workflow_guards(
             scenario,
             checkpoint.parent,
         )
         return self._observation(
             created,
-            state_updates={"compiled_guard_results": compiled_guard_results},
-            failure_injection=_declared_faults(scenario),
+            state_updates={
+                "compiled_guard_results": {
+                    **compiled_guard_results,
+                    "runtime_surface_sealed": runtime_surface_sealed,
+                },
+                "public_history_probe": {
+                    "review_checkpoint_retained": any(
+                        item.pending_interrupt == review.pending_interrupt
+                        for item in history_before
+                    ),
+                    "history_grew_after_resume": len(history_after) > len(history_before),
+                    "history_count": len(history_after),
+                },
+                "execution_confirmation_history": _execution_confirmation_evidence(history_after),
+                "runtime_result_probe": {
+                    "deeply_immutable": result_deeply_immutable,
+                    "mutation_did_not_persist": mutation_did_not_persist,
+                    "mutation_checks": mutation_checks,
+                    "container_count": sum(
+                        audit["container_count"] for audit in immutability_audits
+                    ),
+                    "mutable_paths": sorted(
+                        path for audit in immutability_audits for path in audit["mutable_paths"]
+                    ),
+                },
+                "copied_checkpoint_probe": copied_store_probe,
+            },
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(restored == review and bool(history_before)),
+                ),
+                _observed_fault(
+                    scenario,
+                    1,
+                    observed_times=int(compiled_guard_results["old_checkpoint_rewind"]),
+                ),
+            ],
         )
+
+    async def _probe_copied_checkpoint_head_fencing(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> dict[str, Any]:
+        seed_checkpoint = root / "copied-seed-checkpoints.sqlite3"
+        operations = root / "copied-shared-operations.sqlite3"
+        case_id = "CASE-R18-COPIED-HEAD"
+        thread_id = "thread-r18-copied-head"
+        async with RecallOpsRuntime.open(
+            checkpoint_path=seed_checkpoint,
+            operations_path=operations,
+        ) as runtime:
+            review = await runtime.start_case(
+                recall_number=scenario.input.recall_number,
+                question="Fence cloned durable checkpoint heads before accepting consent.",
+                case_id=case_id,
+                thread_id=thread_id,
+            )
+            assert review.pending_interrupt is not None
+        first_copy = root / "copied-head-a.sqlite3"
+        second_copy = root / "copied-head-b.sqlite3"
+        shutil.copy2(seed_checkpoint, first_copy)
+        shutil.copy2(seed_checkpoint, second_copy)
+        response = _bound_response(review.pending_interrupt, decision="approve")
+        async with (
+            RecallOpsRuntime.open(
+                checkpoint_path=first_copy,
+                operations_path=operations,
+            ) as first,
+            RecallOpsRuntime.open(
+                checkpoint_path=second_copy,
+                operations_path=operations,
+            ) as second,
+        ):
+            concurrent = await asyncio.gather(
+                first.resume_case(thread_id=thread_id, response=response),
+                second.resume_case(thread_id=thread_id, response=response),
+                return_exceptions=True,
+            )
+            successes = [item for item in concurrent if isinstance(item, RuntimeResult)]
+            failures = [item for item in concurrent if isinstance(item, BaseException)]
+            concurrent_fenced = len(successes) == 1 and len(failures) == 1
+            sequential_fenced = False
+            if concurrent_fenced:
+                loser = first if isinstance(concurrent[0], BaseException) else second
+                try:
+                    await loser.resume_case(thread_id=thread_id, response=response)
+                except (RuntimeError, ValueError):
+                    sequential_fenced = True
+        return {
+            "concurrent_fenced": concurrent_fenced,
+            "sequential_fenced": sequential_fenced,
+            "success_count": len(successes),
+            "failure_count": len(failures),
+        }
 
     async def _probe_compiled_workflow_guards(
         self,
@@ -1616,6 +2095,9 @@ class RecallOpsEvaluationExecutor:
             )
         except IdempotencyConflictError as error:
             error_code = _error_code(error)
+        confirmation_history = _execution_confirmation_evidence(
+            await runtime.get_case_history(thread_id=held.case["thread_id"])
+        )
         return self._observation(
             held,
             state_updates={
@@ -1625,9 +2107,26 @@ class RecallOpsEvaluationExecutor:
                 "identity_conflict_probe_codes": identity_conflict_codes,
                 "concurrent_resume_one_effect": concurrent_one_effect,
                 "cross_runtime_start_one_effect": cross_runtime_start_one_effect,
+                "execution_confirmation_history": confirmation_history,
             },
             counters={"logical_write_count": 1 if first else 0},
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(error_code == "idempotency_conflict"),
+                ),
+                _observed_fault(
+                    scenario,
+                    1,
+                    observed_times=int("action_digest_mismatch" in codes),
+                ),
+                _observed_fault(
+                    scenario,
+                    2,
+                    observed_times=int("stale_or_replayed_consent" in codes),
+                ),
+            ],
         )
 
     async def _probe_resume_bindings(
@@ -1872,13 +2371,31 @@ class RecallOpsEvaluationExecutor:
         result = await _approve_and_confirm(runtime, await _start(runtime, scenario))
         result = await _approve_and_confirm(runtime, result)
         sequence = [item["action_type"] for item in result.case["write_receipts"]]
+        ambiguous_lots = set(result.case.get("ambiguous_lot_ids", []))
+        held_lots = {
+            lot_id
+            for receipt in result.case.get("write_receipts", [])
+            if receipt.get("action_type") == "apply_inventory_hold"
+            for lot_id in receipt.get("details", {}).get("lot_ids", [])
+        }
+        ambiguous_scope_observed = bool(ambiguous_lots) and not (ambiguous_lots & held_lots)
+        confirmation_history = _execution_confirmation_evidence(
+            await runtime.get_case_history(thread_id=result.case["thread_id"])
+        )
         return self._observation(
             result,
             state_updates={
                 "premature_facility_edit_rejected": premature_rejected,
                 "action_sequence": sequence,
+                "execution_confirmation_history": confirmation_history,
             },
-            failure_injection=_declared_faults(scenario),
+            failure_injection=[
+                _observed_fault(
+                    scenario,
+                    0,
+                    observed_times=int(ambiguous_scope_observed),
+                )
+            ],
         )
 
 

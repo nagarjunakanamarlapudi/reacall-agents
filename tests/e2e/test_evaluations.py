@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 from pydantic import ValidationError
@@ -23,6 +24,7 @@ from recallops.evaluation.runtime_executor import (
     run_recallops_evaluations,
 )
 from recallops.evaluation.schema import EvaluationScenario, FaultSpec, ScenarioCorpus
+from recallops.models import ProposedAction, proposed_action_digest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_PATH = PROJECT_ROOT / "data" / "evals" / "scenarios.json"
@@ -162,6 +164,11 @@ def test_common_fixture_is_bound_to_golden_classification_and_quantity_assertion
     payload = json.loads(SCENARIO_PATH.read_text())
     payload["common_fixture"]["lots"]["LOT-EXACT-170"]["received"] = 999
 
+    with pytest.raises(ValidationError, match="common_fixture must match golden assertions"):
+        ScenarioCorpus.model_validate(payload)
+
+    payload = json.loads(SCENARIO_PATH.read_text())
+    payload["common_fixture"]["provenance"] = "UNTRUSTED"
     with pytest.raises(ValidationError, match="common_fixture must match golden assertions"):
         ScenarioCorpus.model_validate(payload)
 
@@ -453,6 +460,20 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
     }
     duplicate = _observation(receipts=[receipt, receipt])
     duplicate.state["case_version"] = 1
+    reviewed = ProposedAction.model_validate(receipt["details"]["reviewed_action"])
+    duplicate.state["service_authorization_evidence"] = [
+        {
+            "receipt_id": receipt["receipt_id"],
+            "decision": "approve",
+            "action_id": reviewed.action_id,
+            "action_digest": proposed_action_digest(reviewed),
+            "expected_case_version": reviewed.expected_case_version,
+            "actor": receipt["actor"],
+            "justification": receipt["justification"],
+            "idempotency_key": receipt["idempotency_key"],
+            "operation_call_observed": True,
+        }
+    ]
 
     report = await run_evaluations(
         [scenario],
@@ -526,6 +547,213 @@ async def test_unexpected_dangerous_route_phase_fails_route_gate() -> None:
         FakeExecutor(
             {"R01": _observation(route=["intake", "action_review", "execute_one_operation"])}
         ),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    route = next(item for item in report.results[0].assertions if item.id == "route_expected")
+    assert route.passed is False
+    assert "unexpected safety-sensitive phase" in route.detail
+
+
+@pytest.mark.asyncio
+async def test_structurally_valid_allowlisted_receipt_requires_review_history() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    action = ProposedAction(
+        action_id="CASE-TEST-create_case-v0",
+        case_id="CASE-TEST",
+        action_type="create_case",
+        target_ids=["LOT-EXACT-170"],
+        rationale="Create the evidence-bound simulated case.",
+        evidence_ids=["EV-001"],
+        evidence_by_target={"LOT-EXACT-170": ["EV-001"]},
+        expected_case_version=0,
+    )
+    digest = proposed_action_digest(action)
+    execution_id = uuid5(
+        NAMESPACE_URL,
+        f"thread-test:{action.expected_case_version}:{action.action_id}:{digest}",
+    )
+    receipt = {
+        "receipt_id": "receipt-forged-but-well-formed",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": f"recallops:{execution_id}",
+        "details": {"reviewed_action": action.model_dump(mode="json")},
+    }
+    observation = _observation(receipts=[receipt])
+    observation.state["case_version"] = 1
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.receipt_integrity_violation_count == 0
+    assert report.metrics.unauthorized_write_count == 1
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_approved_receipt_requires_bound_execution_confirmation() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    action = ProposedAction(
+        action_id="CASE-TEST-create_case-v0",
+        case_id="CASE-TEST",
+        action_type="create_case",
+        target_ids=["LOT-EXACT-170"],
+        rationale="Create the evidence-bound simulated case.",
+        evidence_ids=["EV-001"],
+        evidence_by_target={"LOT-EXACT-170": ["EV-001"]},
+        expected_case_version=0,
+    )
+    digest = proposed_action_digest(action)
+    execution_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"thread-test:{action.expected_case_version}:{action.action_id}:{digest}",
+        )
+    )
+    receipt = {
+        "receipt_id": "receipt-approved-without-confirmation",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": f"recallops:{execution_id}",
+        "details": {"reviewed_action": action.model_dump(mode="json")},
+    }
+    observation = _observation(receipts=[receipt])
+    observation.state["case_version"] = 1
+    observation.state["review_history"] = [
+        {
+            "decision": "approve",
+            "case_id": "CASE-TEST",
+            "case_version": 0,
+            "action_id": action.action_id,
+            "action_digest": digest,
+            "actor": receipt["actor"],
+            "justification": receipt["justification"],
+        }
+    ]
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.receipt_integrity_violation_count == 0
+    assert report.metrics.unauthorized_write_count == 1
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_premature_allowlisted_write_phase_fails_route_gate() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    ).model_copy(
+        update={
+            "expected": _scenario(
+                "R01",
+                assertion={
+                    "id": "declared_check_passes",
+                    "path": "/state/source_mode",
+                    "operator": "equals",
+                    "expected": "snapshot",
+                },
+            ).expected.model_copy(update={"route": ["I", "P", "H", "W"]})
+        }
+    )
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor(
+            {
+                "R01": _observation(
+                    route=[
+                        "intake",
+                        "execute_one_operation",
+                        "plan",
+                        "action_review",
+                        "execute_one_operation",
+                    ]
+                )
+            }
+        ),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    route = next(item for item in report.results[0].assertions if item.id == "route_expected")
+    assert route.passed is False
+    assert "premature safety-sensitive phase" in route.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_route", "actual_route"),
+    [
+        (
+            ["I", "P", "H", "W"],
+            ["intake", "plan", "action_review", "execute_one_operation", "execute_one_operation"],
+        ),
+        (
+            ["I", "P", "H", "C"],
+            ["intake", "plan", "action_review", "closure_review", "closure_review"],
+        ),
+    ],
+)
+async def test_duplicate_sensitive_route_phase_fails_route_gate(
+    expected_route: list[str], actual_route: list[str]
+) -> None:
+    base = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    )
+    scenario = base.model_copy(
+        update={"expected": base.expected.model_copy(update={"route": expected_route})}
+    )
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": _observation(route=actual_route)}),
         strict=False,
         clock=ScriptedClock([1.0, 1.001]),
     )

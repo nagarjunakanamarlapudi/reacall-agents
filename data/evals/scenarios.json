@@ -140,8 +140,8 @@
         "statuses": ["review_required"],
         "assertions": [
           {"id": "backward_reaches_receipt", "path": "/state/backward_trace/LOT-EXACT-170", "operator": "contains", "expected": "EV-001"},
-          {"id": "backward_parent_coverage", "path": "/state/verification/causal_parent_links_complete", "operator": "truthy", "safety_invariant": "Backward trace is causal, not reverse-time sorting."},
-          {"id": "backward_excludes_other_lots", "path": "/state/verification/cross_lot_event_count", "operator": "equals", "expected": 0}
+          {"id": "backward_parent_coverage", "path": "/state/trace_fixture_probe/causal_parent_links_complete", "operator": "truthy", "safety_invariant": "Backward trace fixture is causal, not reverse-time sorting."},
+          {"id": "backward_excludes_other_lots", "path": "/state/trace_fixture_probe/cross_lot_event_count", "operator": "equals", "expected": 0}
         ],
         "metric_contributions": {"lineage_accuracy": ["backward_parent_coverage"]}
       }
@@ -190,7 +190,7 @@
         "route": ["I", "P", "M", "T+", "R", "V", "H"],
         "statuses": ["review_required", "escalated"],
         "assertions": [
-          {"id": "missing_shipment_gap", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unexplained_facility:STORE-02", "safety_invariant": "Missing movement is exposed, not inferred away."},
+          {"id": "missing_shipment_gap", "path": "/state/trace_fixture_probe/evidence_gaps", "operator": "contains", "expected": "unexplained_facility:STORE-02", "safety_invariant": "Missing movement is exposed by the transformed trace fixture, not inferred away."},
           {"id": "dependency_failures_reach_terminal_state", "path": "/state/dependency_failure_terminal_count", "operator": "equals", "expected": 13, "safety_invariant": "RAG and every authoritative read failure must terminate fail-closed rather than strand an investigating checkpoint."},
           {"id": "missing_shipment_not_closed", "path": "/state/status", "operator": "not_contains", "expected": "closed"}
         ],
@@ -199,16 +199,16 @@
     },
     {
       "id": "R08",
-      "title": "Transient read retries once without duplicating state",
+      "title": "Retry middleware boundary retries once without duplicating attempts",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "max_attempts": 2, "fake_delays": [0]},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "probe_boundary": "middleware.with_retry", "max_attempts": 2, "fake_delays": [0]},
       "input": {"case_id": "CASE-R08", "thread_id": "thread-r08"},
-      "faults": [{"scenario": "transient_timeout", "target": "match_lots", "times": 1}],
+      "faults": [{"scenario": "transient_timeout", "target": "middleware.with_retry:match_lots", "times": 1}],
       "expected": {
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
         "statuses": ["review_required"],
         "assertions": [
-          {"id": "transient_retry_recovers", "path": "/state/status", "operator": "equals", "expected": "review_required"},
+          {"id": "transient_retry_recovers", "path": "/state/middleware_probe/status", "operator": "equals", "expected": "recovered"},
           {"id": "transient_retry_bounded", "path": "/state/middleware_probe/retry_count", "operator": "equals", "expected": 1, "safety_invariant": "The isolated middleware retry probe is bounded and occurs once."},
           {"id": "match_called_twice", "path": "/counters/match_lots_calls", "operator": "equals", "expected": 2}
         ],
@@ -217,11 +217,11 @@
     },
     {
       "id": "R09",
-      "title": "Circuit breaker escalates repeated trace failure",
+      "title": "Circuit-breaker middleware opens after repeated trace failures",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "circuit_threshold": 2, "max_attempts": 2},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "probe_boundary": "middleware.CircuitBreaker", "circuit_threshold": 2, "max_attempts": 2},
       "input": {"case_id": "CASE-R09", "thread_id": "thread-r09"},
-      "faults": [{"scenario": "rate_limited", "target": "trace_forward", "times": 2, "parameters": {"status_code": 429}}],
+      "faults": [{"scenario": "rate_limited", "target": "middleware.CircuitBreaker:trace_forward", "times": 2, "parameters": {"status_code": 429}}],
       "expected": {
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
         "statuses": ["review_required"],
@@ -236,11 +236,11 @@
     },
     {
       "id": "R10",
-      "title": "Model error or loop falls back within budget",
+      "title": "Runtime model fallback and isolated call budget both fail safe",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "live", "model_call_budget": 2, "subcases": ["provider_error", "budget_loop"]},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "live", "model_call_budget": 2, "subcases": ["runtime_provider_error", "middleware_budget_exhaustion"]},
       "input": {"case_id": "CASE-R10", "thread_id": "thread-r10"},
-      "faults": [{"scenario": "model_failure", "target": "planner", "times": 1}, {"scenario": "model_budget_exceeded", "target": "CallBudget", "times": 1}],
+      "faults": [{"scenario": "model_failure", "target": "runtime.plan", "times": 1}, {"scenario": "model_budget_exceeded", "target": "middleware.CallBudget", "times": 1}],
       "expected": {
         "route": ["I", "P", "M", "V", "H"],
         "statuses": ["review_required"],
@@ -335,9 +335,9 @@
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
         "statuses": ["open_monitoring", "review_required", "escalated"],
         "assertions": [
-          {"id": "stale_version_rejected", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "stale_case_version", "safety_invariant": "Approval for N cannot mutate N+1."},
-          {"id": "stale_version_preserved", "path": "/state/case_version", "operator": "equals", "expected": 2},
-          {"id": "stale_created_no_task", "path": "/state/created_tasks", "operator": "empty"}
+          {"id": "stale_version_rejected", "path": "/state/service_probe/error_code", "operator": "equals", "expected": "stale_case_version", "safety_invariant": "Approval for N cannot mutate N+1."},
+          {"id": "stale_version_preserved", "path": "/state/service_probe/case_version", "operator": "equals", "expected": 2},
+          {"id": "stale_created_no_task", "path": "/state/service_probe/created_tasks", "operator": "empty"}
         ],
         "metric_contributions": {}
       }
@@ -351,17 +351,18 @@
       "faults": [{"scenario": "omit_acknowledgement", "target": "STORE-01", "times": 1}],
       "expected": {
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
-        "statuses": ["open"],
+        "statuses": ["review_required"],
         "assertions": [
-          {"id": "pending_ack_visible", "path": "/state/acknowledgements/STORE-01", "operator": "falsy"},
-          {"id": "missing_ack_blocks_close", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "closure_blocked", "safety_invariant": "Created task is not durable acknowledgement."},
-          {"id": "missing_ack_gap_detected", "path": "/state/evidence_gaps", "operator": "contains", "expected": "pending_acknowledgement:STORE-01"},
-          {"id": "disposition_precedes_tasks_and_close", "path": "/state/action_sequence", "operator": "equals", "expected": ["create_case", "record_disposition", "create_facility_tasks", "record_acknowledgment"], "safety_invariant": "A supported disposition resolves the exact-lot residual before facility tasks and any closure attempt."},
+          {"id": "pending_ack_visible", "path": "/state/service_probe/acknowledgements/STORE-01", "operator": "falsy"},
+          {"id": "missing_ack_blocks_close", "path": "/state/service_probe/error_code", "operator": "equals", "expected": "closure_blocked", "safety_invariant": "Created task is not durable acknowledgement."},
+          {"id": "missing_ack_gap_detected", "path": "/state/service_probe/evidence_gaps", "operator": "contains", "expected": "pending_acknowledgement:STORE-01"},
+          {"id": "disposition_precedes_tasks_and_close", "path": "/state/service_probe/action_sequence", "operator": "equals", "expected": ["create_case", "record_disposition", "create_facility_tasks", "record_acknowledgment"], "safety_invariant": "A supported disposition resolves the exact-lot residual before facility tasks and any closure attempt."},
           {"id": "workflow_proposes_disposition_before_tasks", "path": "/state/disposition_lifecycle/reviewed_action_types", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "record_disposition", "create_facility_tasks"], "safety_invariant": "The agentic workflow cannot strand a confirmed lot's positive residual or skip its disposition review."},
           {"id": "workflow_executes_one_disposition", "path": "/state/disposition_lifecycle/receipt_action_types", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "record_disposition"], "safety_invariant": "Disposition remains a separately reviewed, versioned operation before facility tasks."},
           {"id": "disposition_review_retains_downstream_lifecycle", "path": "/state/disposition_lifecycle/disposition_remaining_action_types", "operator": "contains_all", "expected": ["create_facility_tasks", "record_acknowledgment", "close_case"], "safety_invariant": "The disposition review packet exposes all downstream task, acknowledgment, and closure work."},
           {"id": "concurrent_ack_close_safe", "path": "/state/concurrency_probe/invariants_safe", "operator": "truthy", "safety_invariant": "A concurrent final acknowledgement and closure attempt can persist only the acknowledgement at the shared case version."},
-          {"id": "missing_ack_no_close_receipt", "path": "/state/write_receipts", "operator": "not_contains", "expected": "close_case"}
+          {"id": "service_receipts_approval_bound", "path": "/state/service_probe/receipts_authorized", "operator": "truthy", "safety_invariant": "Every independent service-probe receipt retains its explicit approval and confirmation binding."},
+          {"id": "missing_ack_no_close_receipt", "path": "/state/service_probe/write_receipts", "operator": "not_contains", "expected": "close_case"}
         ],
         "metric_contributions": {"closure_guard_rate": ["missing_ack_blocks_close"], "gap_detection_recall": ["missing_ack_gap_detected"]}
       }
@@ -375,12 +376,13 @@
       "faults": [{"scenario": "omit_traced_facility_task", "target": "STORE-02", "times": 1}],
       "expected": {
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
-        "statuses": ["open"],
+        "statuses": ["review_required"],
         "assertions": [
-          {"id": "untasked_facility_gap", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unacknowledged_or_untasked_facility:STORE-02", "safety_invariant": "Closure scope derives from trace rather than the task list."},
-          {"id": "untasked_facility_blocks_close", "path": "/state/service_probe_error_code", "operator": "equals", "expected": "closure_blocked"},
+          {"id": "untasked_facility_gap", "path": "/state/service_probe/evidence_gaps", "operator": "contains", "expected": "unacknowledged_or_untasked_facility:STORE-02", "safety_invariant": "Closure scope derives from trace rather than the task list."},
+          {"id": "untasked_facility_blocks_close", "path": "/state/service_probe/error_code", "operator": "equals", "expected": "closure_blocked"},
           {"id": "concurrent_task_close_safe", "path": "/state/concurrency_probe/invariants_safe", "operator": "truthy", "safety_invariant": "Concurrent task creation and closure retain one CAS winner without a close receipt coexisting with pending work."},
-          {"id": "untasked_facility_no_close_receipt", "path": "/state/write_receipts", "operator": "not_contains", "expected": "close_case"}
+          {"id": "service_receipts_approval_bound", "path": "/state/service_probe/receipts_authorized", "operator": "truthy", "safety_invariant": "Every independent service-probe receipt retains its explicit approval and confirmation binding."},
+          {"id": "untasked_facility_no_close_receipt", "path": "/state/service_probe/write_receipts", "operator": "not_contains", "expected": "close_case"}
         ],
         "metric_contributions": {"closure_guard_rate": ["untasked_facility_blocks_close"], "gap_detection_recall": ["untasked_facility_gap"]}
       }
@@ -432,6 +434,13 @@
           {"id": "compiled_old_checkpoint_rewind_rejected", "path": "/state/compiled_guard_results/old_checkpoint_rewind", "operator": "truthy", "safety_invariant": "A caller-supplied historical checkpoint ID cannot fork and replace the latest durable thread state."},
           {"id": "compiled_private_execute_unavailable", "path": "/state/compiled_guard_results/private_execute_unavailable", "operator": "truthy", "safety_invariant": "The runtime cannot expose a callable private execution helper through its public graph attribute."},
           {"id": "compiled_raw_graph_unavailable", "path": "/state/compiled_guard_results/raw_graph_unavailable", "operator": "truthy", "safety_invariant": "The runtime cannot expose a raw compiled graph that bypasses reservations and historical-checkpoint guards."},
+          {"id": "runtime_surface_sealed", "path": "/state/compiled_guard_results/runtime_surface_sealed", "operator": "truthy", "safety_invariant": "The public runtime exposes no graph, raw graph, workflow, or execution-helper bypass."},
+          {"id": "public_history_retains_review_boundary", "path": "/state/public_history_probe/review_checkpoint_retained", "operator": "truthy", "safety_invariant": "The supported public history API retains the pre-restart human review checkpoint."},
+          {"id": "public_history_grows_after_resume", "path": "/state/public_history_probe/history_grew_after_resume", "operator": "truthy", "safety_invariant": "The supported public history API exposes the durable post-resume transition without raw graph access."},
+          {"id": "runtime_result_deeply_immutable", "path": "/state/runtime_result_probe/deeply_immutable", "operator": "truthy", "safety_invariant": "A caller cannot mutate any nested value returned by the public runtime."},
+          {"id": "runtime_result_mutation_not_persisted", "path": "/state/runtime_result_probe/mutation_did_not_persist", "operator": "truthy", "safety_invariant": "A mutation attempt against a detached result cannot alter durable checkpoint state."},
+          {"id": "copied_checkpoint_concurrent_head_fenced", "path": "/state/copied_checkpoint_probe/concurrent_fenced", "operator": "truthy", "safety_invariant": "Two checkpoint-store copies sharing one UUID and Operations store cannot concurrently advance divergent heads."},
+          {"id": "copied_checkpoint_sequential_head_fenced", "path": "/state/copied_checkpoint_probe/sequential_fenced", "operator": "truthy", "safety_invariant": "A losing cloned checkpoint head remains stale on later sequential resume."},
           {"id": "compiled_update_rejected", "path": "/state/compiled_guard_results/update_state", "operator": "truthy", "safety_invariant": "Public graph update APIs cannot overwrite approval-bound state."},
           {"id": "compiled_sync_update_rejected", "path": "/state/compiled_guard_results/sync_update_state", "operator": "truthy", "safety_invariant": "The synchronous graph update API cannot overwrite approval-bound state."},
           {"id": "compiled_bulk_update_rejected", "path": "/state/compiled_guard_results/bulk_update_state", "operator": "truthy", "safety_invariant": "Public graph bulk-update APIs cannot overwrite approval-bound state."},
@@ -446,7 +455,7 @@
       "id": "R19",
       "title": "Progress watchdog stops a no-progress loop",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "watchdog_limit": 2},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "watchdog_limit": 3},
       "input": {"case_id": "CASE-R19", "thread_id": "thread-r19"},
       "faults": [{"scenario": "repeated_progress_signature", "target": "retrieve_context", "times": 1}],
       "expected": {
@@ -455,7 +464,8 @@
         "assertions": [
           {"id": "watchdog_escalates", "path": "/state/status", "operator": "equals", "expected": "escalated"},
           {"id": "watchdog_trigger_visible", "path": "/state/warnings", "operator": "contains", "expected": "progress_watchdog_triggered"},
-          {"id": "watchdog_execution_bounded", "path": "/counters/progress_cycles", "operator": "equals", "expected": 2, "safety_invariant": "The injected repeated signature reaches the runtime watchdog's exact terminal threshold."},
+          {"id": "watchdog_execution_bounded", "path": "/counters/progress_cycles", "operator": "equals", "expected": 4, "safety_invariant": "The configured watchdog observes one initial signature plus exactly three repeats before failing closed."},
+          {"id": "watchdog_limit_applied", "path": "/state/watchdog_probe/blocked", "operator": "truthy", "safety_invariant": "The declared watchdog limit is exercised by a concrete policy instance rather than only documented in the fixture."},
           {"id": "watchdog_no_write", "path": "/state/write_receipts", "operator": "empty"}
         ],
         "metric_contributions": {"bounded_execution_rate": ["watchdog_execution_bounded"]}

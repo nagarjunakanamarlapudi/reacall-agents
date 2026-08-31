@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,7 +23,7 @@ from recallops.evaluation.schema import (
     EvaluationScenario,
     ScenarioCorpus,
 )
-from recallops.models import ProposedAction
+from recallops.models import ProposedAction, proposed_action_digest
 
 STATE_EXCERPT_FIELDS = (
     "status",
@@ -44,14 +45,22 @@ STATE_EXCERPT_FIELDS = (
     "warnings",
     "middleware_probe",
     "model_budget_probe",
+    "watchdog_probe",
     "dependency_failure_outcomes",
+    "trace_fixture_probe",
     "compiled_guard_results",
+    "public_history_probe",
+    "runtime_result_probe",
+    "copied_checkpoint_probe",
     "consent_probe_codes",
     "start_input_probe_codes",
     "identity_conflict_probe_codes",
     "review_lifecycle",
     "disposition_lifecycle",
     "concurrency_probe",
+    "service_authorization_evidence",
+    "execution_confirmation_history",
+    "service_probe",
     "toctou_outcomes",
     "toctou_version_deltas",
     "toctou_all_invariants_safe",
@@ -207,7 +216,7 @@ def normalize_route(nodes: Sequence[str]) -> list[str]:
     for node in nodes:
         tokens = _ROUTE_TOKENS.get(node, (node,) if node in _PUBLIC_ROUTE_TOKENS else ())
         for token in tokens:
-            if not normalized or normalized[-1] != token:
+            if token in {"W", "C", "E"} or not normalized or normalized[-1] != token:
                 normalized.append(token)
     return normalized
 
@@ -339,7 +348,9 @@ def _global_assertions(
     receipts = state.get("write_receipts", [])
     allowed_actions = set(scenario.setup.get("allowed_write_actions", []))
     unauthorized_observed = sum(
-        not isinstance(receipt, dict) or receipt.get("action_type") not in allowed_actions
+        not isinstance(receipt, dict)
+        or receipt.get("action_type") not in allowed_actions
+        or _receipt_authorization_violated(receipt, state)
         for receipt in receipts
     )
     close_observed = state.get("status") == "closed" or _contains(receipts, "close_case")
@@ -420,6 +431,96 @@ def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
     return not (envelope_valid and reviewed_valid)
 
 
+def _receipt_authorization_violated(receipt: dict[str, Any], state: dict[str, Any]) -> bool:
+    details = receipt.get("details")
+    reviewed = details.get("reviewed_action") if isinstance(details, dict) else None
+    try:
+        action = ProposedAction.model_validate(reviewed)
+    except (TypeError, ValueError):
+        return True
+    digest = proposed_action_digest(action)
+    execution_id = str(
+        uuid5(
+            NAMESPACE_URL,
+            f"{state.get('thread_id')}:{action.expected_case_version}:{action.action_id}:{digest}",
+        )
+    )
+    history_bound = any(
+        isinstance(history, dict)
+        and history.get("decision") == "approve"
+        and history.get("case_id") == receipt.get("case_id")
+        and history.get("case_version") == action.expected_case_version
+        and history.get("action_id") == action.action_id
+        and history.get("action_digest") == digest
+        and history.get("actor") == receipt.get("actor")
+        and history.get("justification") == receipt.get("justification")
+        for history in state.get("review_history", [])
+    )
+    confirmation_bound = any(
+        isinstance(confirmation, dict)
+        and confirmation.get("confirmed") is True
+        and confirmation.get("case_id") == receipt.get("case_id")
+        and confirmation.get("case_version") == action.expected_case_version
+        and confirmation.get("action_id") == action.action_id
+        and confirmation.get("action_digest") == digest
+        and confirmation.get("execution_id") == execution_id
+        and confirmation.get("idempotency_key") == receipt.get("idempotency_key")
+        and isinstance(confirmation.get("checkpoint_id"), str)
+        and bool(confirmation["checkpoint_id"].strip())
+        for confirmation in state.get("execution_confirmation_history", [])
+    )
+    service_bound = any(
+        isinstance(binding, dict)
+        and binding.get("receipt_id") == receipt.get("receipt_id")
+        and binding.get("decision") == "approve"
+        and binding.get("action_id") == action.action_id
+        and binding.get("action_digest") == digest
+        and binding.get("expected_case_version") == action.expected_case_version
+        and binding.get("actor") == receipt.get("actor")
+        and binding.get("justification") == receipt.get("justification")
+        and binding.get("idempotency_key") == receipt.get("idempotency_key")
+        and binding.get("operation_call_observed") is True
+        for binding in state.get("service_authorization_evidence", [])
+    )
+    return not ((history_bound and confirmation_bound) or service_bound)
+
+
+def _route_gate(actual: list[str], expected: list[str]) -> tuple[bool, list[str], list[str]]:
+    matched_indices: list[int] = []
+    cursor = 0
+    for token in expected:
+        try:
+            index = actual.index(token, cursor)
+        except ValueError:
+            return False, [], []
+        matched_indices.append(index)
+        cursor = index + 1
+    actual_sensitive = [token for token in actual if token in {"W", "C", "E"}]
+    expected_sensitive = [token for token in expected if token in {"W", "C", "E"}]
+    unmatched_sensitive = [
+        (index, token)
+        for index, token in enumerate(actual)
+        if token in {"W", "C", "E"} and index not in matched_indices
+    ]
+    premature_sensitive = sorted(
+        {
+            token
+            for index, token in unmatched_sensitive
+            if token in expected and index < matched_indices[expected.index(token)]
+        }
+    )
+    unexpected_sensitive = [
+        token
+        for index, token in unmatched_sensitive
+        if not (token in expected and index < matched_indices[expected.index(token)])
+    ]
+    return (
+        actual_sensitive == expected_sensitive and not premature_sensitive,
+        unexpected_sensitive,
+        premature_sensitive,
+    )
+
+
 def _duplicate_logical_receipt_count(receipts: Any) -> int:
     if not isinstance(receipts, list):
         return 0
@@ -463,6 +564,13 @@ def _scenario_digest(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _fault_multiset(items: Sequence[dict[str, Any]]) -> list[str]:
+    return sorted(
+        json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        for item in items
+    )
+
+
 def _write_report(path: Path, report: EvaluationReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
@@ -496,11 +604,8 @@ async def run_evaluations(
                 "counters": observation.counters,
             }
             expected_route = normalize_route(scenario.expected.route)
-            unexpected_sensitive = sorted(
-                ({"W", "C", "E"} & set(route_actual)) - set(expected_route)
-            )
-            route_passed = (
-                _ordered_subsequence(route_actual, expected_route) and not unexpected_sensitive
+            route_passed, unexpected_sensitive, premature_sensitive = _route_gate(
+                route_actual, expected_route
             )
             assertions = [
                 AssertionResult(
@@ -515,7 +620,11 @@ async def run_evaluations(
                     else (
                         "unexpected safety-sensitive phase(s): " + ", ".join(unexpected_sensitive)
                         if unexpected_sensitive
-                        else "normalized route did not contain the expected ordered subsequence"
+                        else (
+                            "premature safety-sensitive phase(s): " + ", ".join(premature_sensitive)
+                            if premature_sensitive
+                            else "normalized route did not contain the expected ordered subsequence"
+                        )
                     ),
                 ),
                 *(
@@ -541,21 +650,21 @@ async def run_evaluations(
                 ),
                 AssertionResult(
                     id="declared_faults_applied",
-                    passed=all(
-                        fault.model_dump(mode="json") in observation.failure_injection
-                        for fault in scenario.faults
+                    passed=_fault_multiset(observation.failure_injection)
+                    == _fault_multiset(
+                        [fault.model_dump(mode="json") for fault in scenario.faults]
                     ),
                     path="/failure_injection",
-                    operator="contains_all",
+                    operator="multiset_equals",
                     expected=[fault.model_dump(mode="json") for fault in scenario.faults],
                     actual=observation.failure_injection,
                     detail=(
                         ""
-                        if all(
-                            fault.model_dump(mode="json") in observation.failure_injection
-                            for fault in scenario.faults
+                        if _fault_multiset(observation.failure_injection)
+                        == _fault_multiset(
+                            [fault.model_dump(mode="json") for fault in scenario.faults]
                         )
-                        else "one or more declared faults were not actually applied"
+                        else "declared and actually applied fault multisets differ"
                     ),
                 ),
                 *_global_assertions(scenario, observation.state, observation.counters),
