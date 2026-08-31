@@ -240,3 +240,122 @@ async def test_closure_presentation_preserves_review_and_closed_lifecycle_states
     completed = await adapter.request_closure(closed)
     assert completed["status"] == "closed"
     assert completed["closure"]["status"] == "Closed — simulated"
+
+
+@pytest.mark.asyncio
+async def test_product_adapter_runs_every_probable_lot_action_through_closure(
+    tmp_path: Path,
+) -> None:
+    operations = tmp_path / "operations.sqlite3"
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations,
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    opened["scope_lot_ids"] = ["LOT-PROBABLE-160"]
+    case = await adapter.run_investigation(opened)
+    reviewed_actions: list[str] = []
+    receipt_counts: list[int] = []
+    edited_closure = False
+
+    while case.get("pending_interrupt") is not None:
+        pending = case["pending_interrupt"]
+        if pending["kind"] in {"action_review", "closure_review"}:
+            action_type = pending["action"]["action_type"]
+            reviewed_actions.append(action_type)
+            if pending["kind"] == "closure_review" and not edited_closure:
+                case = await adapter.resume_review(
+                    case,
+                    decision="edit",
+                    actor="Food-safety manager",
+                    justification="Clarify closure rationale without changing action or scope.",
+                    edited_action="Close only after every disposition and acknowledgement.",
+                )
+                assert case["status"] == "closure_review_required"
+                assert case["pending_interrupt"]["kind"] == "closure_review"
+                edited_closure = True
+            else:
+                case = await adapter.resume_review(
+                    case,
+                    decision="approve",
+                    actor="Food-safety manager",
+                    justification=APPROVAL_JUSTIFICATION,
+                    edited_action="",
+                )
+        elif pending["kind"] == "execution_confirmation":
+            before = len(case["receipts"])
+            case = await adapter.simulate_approved_actions(case)
+            assert len(case["receipts"]) == before + 1
+            receipt_counts.append(len(case["receipts"]))
+        else:  # pragma: no cover - explicit contract assertion is clearer
+            raise AssertionError(f"unexpected interrupt: {pending['kind']}")
+
+    assert reviewed_actions == [
+        "create_case",
+        "apply_inventory_hold",
+        "create_facility_tasks",
+        "record_acknowledgment",
+        "record_acknowledgment",
+        "close_case",
+        "close_case",
+    ]
+    assert receipt_counts == list(range(1, 7))
+    assert [item["action_type"] for item in case["receipts"]].count("record_acknowledgment") == 2
+    assert all(item["action_type"] != "record_disposition" for item in case["receipts"])
+    assert case["status"] == "closed"
+    assert _receipt_count(operations) == 6
+
+
+@pytest.mark.asyncio
+async def test_product_adapter_routes_exact_lot_through_required_disposition(
+    tmp_path: Path,
+) -> None:
+    operations = tmp_path / "operations.sqlite3"
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations,
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    opened["scope_lot_ids"] = ["LOT-EXACT-170"]
+    case = await adapter.run_investigation(opened)
+    reviewed_actions: list[str] = []
+    receipt_versions: list[int] = []
+
+    while case.get("pending_interrupt") is not None:
+        pending = case["pending_interrupt"]
+        if pending["kind"] in {"action_review", "closure_review"}:
+            reviewed_actions.append(pending["action"]["action_type"])
+            case = await adapter.resume_review(
+                case,
+                decision="approve",
+                actor="Food-safety manager",
+                justification=APPROVAL_JUSTIFICATION,
+                edited_action="",
+            )
+        elif pending["kind"] == "execution_confirmation":
+            before = len(case["receipts"])
+            action_type = pending["action"]["action_type"]
+            case = await adapter.simulate_approved_actions(case)
+            if action_type == "close_case" and case["status"] == "open_closure_blocked":
+                assert len(case["receipts"]) == before
+            else:
+                assert len(case["receipts"]) == before + 1
+                receipt_versions.append(case["receipts"][-1]["case_version"])
+        else:  # pragma: no cover - explicit contract assertion is clearer
+            raise AssertionError(f"unexpected interrupt: {pending['kind']}")
+
+    assert reviewed_actions[:3] == [
+        "create_case",
+        "apply_inventory_hold",
+        "record_disposition",
+    ]
+    assert reviewed_actions.index("record_disposition") < reviewed_actions.index(
+        "create_facility_tasks"
+    )
+    assert reviewed_actions[-1] == "close_case"
+    assert receipt_versions == list(range(1, len(receipt_versions) + 1))
+    assert [item["action_type"] for item in case["receipts"]] == reviewed_actions[:-1]
+    assert case["status"] == "open_closure_blocked"
+    assert case["closure_outcome"]["eligible"] is False
+    assert case["closure_outcome"].get("closed") is not True
+    assert _receipt_count(operations) == len(reviewed_actions) - 1
