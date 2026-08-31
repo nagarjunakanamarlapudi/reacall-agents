@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import sys
+import weakref
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, ClassVar, Literal
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict
 
 from recallops.agents.policies import strict_json_value
-from recallops.agents.workflow import FailureController, build_workflow
+from recallops.agents.workflow import (
+    FailureController,
+    ReadOnlyWorkflow,
+    _execute_workflow,
+    build_workflow,
+)
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.paths import DATA_DIR, PROJECT_ROOT
 from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
@@ -36,6 +43,44 @@ class RuntimeResult(BaseModel):
     checkpoint_id: str | None
 
 
+_RUNTIME_WORKFLOWS: weakref.WeakKeyDictionary[Any, ReadOnlyWorkflow] = weakref.WeakKeyDictionary()
+
+
+def _checkpoint_store_owner(path: Path) -> str:
+    """Return the random UUID durably embedded in this checkpoint SQLite database."""
+    connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS recallops_runtime_metadata "
+            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        row = connection.execute(
+            "SELECT value FROM recallops_runtime_metadata WHERE key='checkpoint_store_id'"
+        ).fetchone()
+        if row is None:
+            owner_token = str(uuid4())
+            connection.execute(
+                "INSERT INTO recallops_runtime_metadata (key, value) VALUES (?, ?)",
+                ("checkpoint_store_id", owner_token),
+            )
+        else:
+            owner_token = row[0]
+            parsed = UUID(owner_token)
+            if parsed.version != 4 or str(parsed) != owner_token:
+                raise ValueError("checkpoint store identity must be a canonical random UUID")
+        connection.execute("COMMIT")
+        return owner_token
+    except BaseException:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    finally:
+        connection.close()
+
+
 class _LockEntry:
     __slots__ = ("lock", "users")
 
@@ -52,14 +97,14 @@ class RecallOpsRuntime:
     def __init__(
         self,
         *,
-        graph: Any,
+        workflow: ReadOnlyWorkflow,
         failures: FailureController,
         checkpointer: AsyncSqliteSaver,
         checkpoint_key: str,
         operations_service: OperationsService,
         checkpoint_owner_token: str,
     ) -> None:
-        self.graph = graph
+        _RUNTIME_WORKFLOWS[self] = workflow
         self._failures = failures
         self._checkpointer = checkpointer
         self._checkpoint_key = checkpoint_key
@@ -104,6 +149,7 @@ class RecallOpsRuntime:
         operations = Path(operations_path).expanduser().resolve()
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         operations.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_owner_token = _checkpoint_store_owner(checkpoint)
         traceability = TraceabilityService(
             data_dir=DATA_DIR,
             source_mode="snapshot",
@@ -159,14 +205,12 @@ class RecallOpsRuntime:
                 checkpointer=saver,
             )
             yield cls(
-                graph=graph,
+                workflow=graph,
                 failures=failures,
                 checkpointer=saver,
                 checkpoint_key=str(checkpoint),
                 operations_service=operations_service,
-                checkpoint_owner_token=str(
-                    uuid5(NAMESPACE_URL, f"recallops-checkpoint-owner:{checkpoint}")
-                ),
+                checkpoint_owner_token=checkpoint_owner_token,
             )
 
     @staticmethod
@@ -272,7 +316,8 @@ class RecallOpsRuntime:
         }
         async with self._thread_lock("start", namespace="identity"):
             async with self._thread_lock(generated_thread):
-                existing = await self.graph.aget_state(config)
+                workflow = _RUNTIME_WORKFLOWS[self]
+                existing = await workflow.aget_state(config)
                 if self._checkpoint_id(existing) is not None:
                     raise ValueError(
                         f"thread {generated_thread!r} already has a durable checkpoint"
@@ -284,9 +329,9 @@ class RecallOpsRuntime:
                     self._checkpoint_owner_token,
                 )
                 try:
-                    await self.graph._execute(initial, config)
+                    await _execute_workflow(workflow, initial, config)
                 except BaseException:
-                    created = await self.graph.aget_state(config)
+                    created = await workflow.aget_state(config)
                     if reserved and self._checkpoint_id(created) is None:
                         self._operations_service.release_workflow_identity(
                             generated_case,
@@ -294,7 +339,7 @@ class RecallOpsRuntime:
                             self._checkpoint_owner_token,
                         )
                     raise
-                return self._result(await self.graph.aget_state(config))
+                return self._result(await workflow.aget_state(config))
 
     @staticmethod
     def _require_equal(response: Mapping[str, Any], pending: Mapping[str, Any], key: str) -> None:
@@ -336,13 +381,30 @@ class RecallOpsRuntime:
     async def resume_case(self, *, thread_id: str, response: Any) -> RuntimeResult:
         config = self._config(thread_id)
         async with self._thread_lock(thread_id):
-            before = await self.graph.aget_state(config)
+            workflow = _RUNTIME_WORKFLOWS[self]
+            before = await workflow.aget_state(config)
             before_checkpoint_id = self._checkpoint_id(before)
             if before_checkpoint_id is None:
                 raise KeyError(f"unknown thread {thread_id!r}")
             pending = self._pending(before)
             if pending is None:
                 raise ValueError(f"thread {thread_id!r} has no pending interrupt")
+            checkpoint_case_id = before.values.get("case_id")
+            checkpoint_thread_id = before.values.get("thread_id")
+            self._operations_service.validate_or_claim_workflow_identity(
+                checkpoint_case_id,
+                thread_id,
+                self._checkpoint_owner_token,
+                legacy_owner_token=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"recallops-checkpoint-owner:{self._checkpoint_key}",
+                    )
+                ),
+                checkpoint_case_id=checkpoint_case_id,
+                checkpoint_thread_id=checkpoint_thread_id,
+                checkpoint_id=before_checkpoint_id,
+            )
             if self._failures.consume("stale_decision_version"):
                 raise ValueError("injected stale decision/version rejected before resume")
             if self._failures.consume("changed_action_digest"):
@@ -352,17 +414,25 @@ class RecallOpsRuntime:
                 response=response,
                 pending=pending,
             )
-            current = await self.graph.aget_state(config)
+            current = await workflow.aget_state(config)
             if self._checkpoint_id(current) != before_checkpoint_id:
                 raise RuntimeError("checkpoint changed during resume binding validation")
-            await self.graph._execute(Command(resume=normalized), config)
-            return self._result(await self.graph.aget_state(config))
+            await _execute_workflow(workflow, Command(resume=normalized), config)
+            return self._result(await workflow.aget_state(config))
 
     async def get_case(self, *, thread_id: str) -> RuntimeResult | None:
-        snapshot = await self.graph.aget_state(self._config(thread_id))
+        snapshot = await _RUNTIME_WORKFLOWS[self].aget_state(self._config(thread_id))
         if self._checkpoint_id(snapshot) is None:
             return None
         return self._result(snapshot)
+
+    async def get_case_history(self, *, thread_id: str) -> tuple[RuntimeResult, ...]:
+        config = self._config(thread_id)
+        snapshots = [
+            self._result(snapshot)
+            async for snapshot in _RUNTIME_WORKFLOWS[self].aget_state_history(config)
+        ]
+        return tuple(snapshots)
 
     def inject_failure(self, scenario: str, *, times: int = 1) -> None:
         self._failures.inject(scenario, times)

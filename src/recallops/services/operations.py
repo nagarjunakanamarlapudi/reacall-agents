@@ -418,6 +418,80 @@ class OperationsService:
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to reserve workflow identity: {error}") from error
 
+    def validate_or_claim_workflow_identity(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+        *,
+        legacy_owner_token: str,
+        checkpoint_case_id: str,
+        checkpoint_thread_id: str,
+        checkpoint_id: str,
+    ) -> None:
+        """Validate every resume and atomically migrate only proven legacy ownership."""
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("owner_token", owner_token),
+            ("legacy_owner_token", legacy_owner_token),
+            ("checkpoint_case_id", checkpoint_case_id),
+            ("checkpoint_thread_id", checkpoint_thread_id),
+            ("checkpoint_id", checkpoint_id),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        if checkpoint_case_id != case_id or checkpoint_thread_id != thread_id:
+            raise ValueError("checkpoint identity does not match the requested case/thread")
+        try:
+            with self._transaction() as conn:
+                by_case = conn.execute(
+                    "SELECT thread_id, owner_token FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                by_thread = conn.execute(
+                    "SELECT case_id, owner_token FROM workflow_identities WHERE thread_id=?",
+                    (thread_id,),
+                ).fetchone()
+                if by_case is None or by_thread is None:
+                    raise ValueError("workflow identity is not reserved in this Operations store")
+                if by_case["thread_id"] != thread_id or by_thread["case_id"] != case_id:
+                    raise ValueError("workflow identity is bound to another case or thread")
+                stored_owner = by_case["owner_token"]
+                if stored_owner is None:
+                    updated = conn.execute(
+                        "UPDATE workflow_identities SET owner_token=? "
+                        "WHERE case_id=? AND thread_id=? AND owner_token IS NULL",
+                        (owner_token, case_id, thread_id),
+                    )
+                    if updated.rowcount != 1:
+                        stored_owner = conn.execute(
+                            "SELECT owner_token FROM workflow_identities WHERE case_id=?",
+                            (case_id,),
+                        ).fetchone()["owner_token"]
+                        if stored_owner != owner_token:
+                            raise ValueError(
+                                f"case_id {case_id!r} is reserved by another checkpoint store"
+                            )
+                elif stored_owner != owner_token:
+                    if stored_owner != legacy_owner_token:
+                        raise ValueError(
+                            f"case_id {case_id!r} is reserved by another checkpoint store"
+                        )
+                    updated = conn.execute(
+                        "UPDATE workflow_identities SET owner_token=? "
+                        "WHERE case_id=? AND thread_id=? AND owner_token=?",
+                        (owner_token, case_id, thread_id, stored_owner),
+                    )
+                    if updated.rowcount != 1:
+                        raise ValueError(
+                            f"case_id {case_id!r} is reserved by another checkpoint store"
+                        )
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to validate workflow identity: {error}") from error
+
     def release_workflow_identity(
         self,
         case_id: str,

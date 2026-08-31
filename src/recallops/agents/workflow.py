@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import weakref
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -51,100 +52,116 @@ OFFICIAL_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
 
 
-class GuardedCompiledWorkflow:
-    """Serialize one thread and reject a second initial-state invocation."""
-
-    _EXPOSED_READS = frozenset(
-        {
-            "aget_state",
-            "aget_state_history",
-            "get_state",
-            "get_state_history",
-        }
-    )
+class _WorkflowInternals:
+    __slots__ = ("graph", "locks")
 
     def __init__(self, graph: Any) -> None:
-        self._graph = graph
-        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        self.graph = graph
+        self.locks: dict[str, tuple[asyncio.Lock, int]] = {}
 
-    def _active_lock_count(self) -> int:
-        return len(self._locks)
+
+class ReadOnlyWorkflow:
+    """An opaque checkpoint reader whose executor capability is stored out-of-object."""
+
+    __slots__ = ("__weakref__",)
+
+    async def aget_state(self, config: Mapping[str, Any]) -> Any:
+        return await _workflow_internals(self).graph.aget_state(config)
+
+    def aget_state_history(self, config: Mapping[str, Any], **kwargs: Any) -> Any:
+        return _workflow_internals(self).graph.aget_state_history(config, **kwargs)
+
+    def get_state(self, config: Mapping[str, Any]) -> Any:
+        return _workflow_internals(self).graph.get_state(config)
+
+    def get_state_history(self, config: Mapping[str, Any], **kwargs: Any) -> Any:
+        return _workflow_internals(self).graph.get_state_history(config, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
-        if name in self._EXPOSED_READS:
-            return getattr(self._graph, name)
         raise AttributeError(f"compiled graph surface {name!r} is disabled and not exposed")
 
-    def __dir__(self) -> list[str]:
-        return sorted({*super().__dir__(), *self._EXPOSED_READS})
 
-    @staticmethod
-    def _execution_thread_id(config: Mapping[str, Any] | None) -> str:
-        if type(config) is not dict or set(config) != {"configurable"}:
-            raise ValueError("execution config must contain only configurable.thread_id")
-        configurable = config.get("configurable")
-        if type(configurable) is not dict or set(configurable) != {"thread_id"}:
-            raise ValueError("execution configurable keys must contain only thread_id")
-        thread_id = configurable.get("thread_id")
-        if type(thread_id) is not str or not thread_id.strip():
-            raise ValueError("configurable.thread_id must be a nonblank string")
-        return thread_id
+_WORKFLOW_INTERNALS: weakref.WeakKeyDictionary[ReadOnlyWorkflow, _WorkflowInternals] = (
+    weakref.WeakKeyDictionary()
+)
 
-    @staticmethod
-    def _has_checkpoint(snapshot: Any) -> bool:
-        config = snapshot.config or {}
-        checkpoint_id = config.get("configurable", {}).get("checkpoint_id")
-        return type(checkpoint_id) is str and bool(checkpoint_id)
 
-    async def _execute(
-        self,
-        input: Any,
-        config: Mapping[str, Any] | None = None,
-    ) -> Any:
-        """Execute through the trusted runtime path with fixed durability settings."""
-        thread_id = self._execution_thread_id(config)
-        lock, users = self._locks.get(thread_id, (asyncio.Lock(), 0))
-        self._locks[thread_id] = (lock, users + 1)
-        try:
-            async with lock:
-                if isinstance(input, dict):
-                    if (
-                        type(input.get("case_id")) is not str
-                        or not input.get("case_id", "").strip()
-                        or type(input.get("thread_id")) is not str
-                        or input.get("thread_id") != thread_id
-                    ):
-                        raise ValueError(
-                            "initial case_id must be nonblank and thread_id must equal config "
-                            "thread_id"
-                        )
-                    if self._has_checkpoint(await self._graph.aget_state(config)):
-                        raise ValueError(f"thread {thread_id!r} already has a durable checkpoint")
-                elif isinstance(input, Command):
-                    if (
-                        input.resume is None
-                        or input.update is not None
-                        or input.graph is not None
-                        or input.goto != ()
-                    ):
-                        raise ValueError("compiled graph accepts resume-only Command values")
-                else:
-                    raise TypeError(
-                        "compiled graph input must be initial state or resume-only Command"
+def _workflow_internals(workflow: ReadOnlyWorkflow) -> _WorkflowInternals:
+    try:
+        return _WORKFLOW_INTERNALS[workflow]
+    except KeyError as error:  # pragma: no cover - only possible after invalid manual construction
+        raise RuntimeError("workflow capability is unavailable") from error
+
+
+def _execution_thread_id(config: Mapping[str, Any] | None) -> str:
+    if type(config) is not dict or set(config) != {"configurable"}:
+        raise ValueError("execution config must contain only configurable.thread_id")
+    configurable = config.get("configurable")
+    if type(configurable) is not dict or set(configurable) != {"thread_id"}:
+        raise ValueError("execution configurable keys must contain only thread_id")
+    thread_id = configurable.get("thread_id")
+    if type(thread_id) is not str or not thread_id.strip():
+        raise ValueError("configurable.thread_id must be a nonblank string")
+    return thread_id
+
+
+def _has_checkpoint(snapshot: Any) -> bool:
+    config = snapshot.config or {}
+    checkpoint_id = config.get("configurable", {}).get("checkpoint_id")
+    return type(checkpoint_id) is str and bool(checkpoint_id)
+
+
+def _workflow_active_lock_count(workflow: ReadOnlyWorkflow) -> int:
+    return len(_workflow_internals(workflow).locks)
+
+
+async def _execute_workflow(
+    workflow: ReadOnlyWorkflow,
+    input: Any,
+    config: Mapping[str, Any] | None = None,
+) -> Any:
+    """Execute only for trusted module callers with fixed durability settings."""
+    internals = _workflow_internals(workflow)
+    thread_id = _execution_thread_id(config)
+    lock, users = internals.locks.get(thread_id, (asyncio.Lock(), 0))
+    internals.locks[thread_id] = (lock, users + 1)
+    try:
+        async with lock:
+            if isinstance(input, dict):
+                if (
+                    type(input.get("case_id")) is not str
+                    or not input.get("case_id", "").strip()
+                    or type(input.get("thread_id")) is not str
+                    or input.get("thread_id") != thread_id
+                ):
+                    raise ValueError(
+                        "initial case_id must be nonblank and thread_id must equal config thread_id"
                     )
-                return await self._graph.ainvoke(
-                    input,
-                    config,
-                    version="v2",
-                    stream_mode="values",
-                    durability="sync",
-                )
-        finally:
-            current_lock, current_users = self._locks[thread_id]
-            if current_lock is lock and current_users == 1:
-                self._locks.pop(thread_id)
-            elif current_lock is lock:
-                self._locks[thread_id] = (lock, current_users - 1)
+                if _has_checkpoint(await internals.graph.aget_state(config)):
+                    raise ValueError(f"thread {thread_id!r} already has a durable checkpoint")
+            elif isinstance(input, Command):
+                if (
+                    input.resume is None
+                    or input.update is not None
+                    or input.graph is not None
+                    or input.goto != ()
+                ):
+                    raise ValueError("compiled graph accepts resume-only Command values")
+            else:
+                raise TypeError("compiled graph input must be initial state or resume-only Command")
+            return await internals.graph.ainvoke(
+                input,
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+    finally:
+        current_lock, current_users = internals.locks[thread_id]
+        if current_lock is lock and current_users == 1:
+            internals.locks.pop(thread_id)
+        elif current_lock is lock:
+            internals.locks[thread_id] = (lock, current_users - 1)
 
 
 class FailureController:
@@ -1467,6 +1484,8 @@ def build_workflow(
         route_recovery,
         {"retry": "execute_one_operation", "end": END},
     )
-    return GuardedCompiledWorkflow(
+    workflow = ReadOnlyWorkflow()
+    _WORKFLOW_INTERNALS[workflow] = _WorkflowInternals(
         graph.compile(checkpointer=checkpointer, name="recallops-runtime")
     )
+    return workflow

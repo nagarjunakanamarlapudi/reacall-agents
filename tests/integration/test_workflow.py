@@ -11,6 +11,18 @@ from pathlib import Path
 import pytest
 
 
+async def _execute_workflow(workflow, input, config):
+    from recallops.agents.workflow import _execute_workflow as execute_workflow
+
+    return await execute_workflow(workflow, input, config)
+
+
+def _workflow_active_lock_count(workflow) -> int:
+    from recallops.agents.workflow import _workflow_active_lock_count as active_lock_count
+
+    return active_lock_count(workflow)
+
+
 def _operation_count(path: Path) -> int:
     connection = sqlite3.connect(path)
     try:
@@ -315,6 +327,346 @@ async def test_exact_identity_cannot_start_in_a_second_checkpoint_store(tmp_path
         operations_path=operations_path,
     ) as runtime:
         assert await runtime.get_case(thread_id="THREAD-OWNED") == original
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_store_owner_survives_database_move(tmp_path: Path) -> None:
+    """Break caught: ownership is derived from a filename instead of checkpoint identity."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    original_path = tmp_path / "original-checkpoints.sqlite3"
+    moved_path = tmp_path / "moved-checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=original_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="The durable store identity follows the SQLite database.",
+            case_id="CASE-MOVED-STORE",
+            thread_id="THREAD-MOVED-STORE",
+        )
+
+    original_path.replace(moved_path)
+    async with RecallOpsRuntime.open(
+        checkpoint_path=moved_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-MOVED-STORE")
+        assert restored == review
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-MOVED-STORE",
+            response=_bound_response(restored.pending_interrupt, decision="approve"),
+        )
+
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+
+
+@pytest.mark.asyncio
+async def test_new_database_at_old_path_cannot_reuse_checkpoint_owner(tmp_path: Path) -> None:
+    """Break caught: deleting/replacing a checkpoint file preserves path-derived ownership."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Only the original durable checkpoint store may own this identity.",
+            case_id="CASE-REPLACED-STORE",
+            thread_id="THREAD-REPLACED-STORE",
+        )
+
+    checkpoint_path.replace(tmp_path / "archived-checkpoints.sqlite3")
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        with pytest.raises(ValueError, match="reserved|checkpoint store|owner"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="A replacement database is a different owner.",
+                case_id="CASE-REPLACED-STORE",
+                thread_id="THREAD-REPLACED-STORE",
+            )
+
+
+@pytest.mark.asyncio
+async def test_path_owned_checkpoint_migrates_to_embedded_random_owner(tmp_path: Path) -> None:
+    """Break caught: a pre-metadata checkpoint cannot reopen after ownership hardening."""
+    from uuid import NAMESPACE_URL, UUID, uuid5
+
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = (tmp_path / "checkpoints.sqlite3").resolve()
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Migrate a durable checkpoint created by the path-owned runtime.",
+            case_id="CASE-PATH-OWNER-MIGRATION",
+            thread_id="THREAD-PATH-OWNER-MIGRATION",
+        )
+
+    legacy_owner = str(uuid5(NAMESPACE_URL, f"recallops-checkpoint-owner:{checkpoint_path}"))
+    with sqlite3.connect(checkpoint_path) as connection:
+        connection.execute("DROP TABLE recallops_runtime_metadata")
+    with sqlite3.connect(operations_path) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET owner_token=? WHERE case_id=?",
+            (legacy_owner, "CASE-PATH-OWNER-MIGRATION"),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-PATH-OWNER-MIGRATION")
+        assert restored == review
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-PATH-OWNER-MIGRATION",
+            response=_bound_response(restored.pending_interrupt, decision="approve"),
+        )
+
+    with sqlite3.connect(operations_path) as connection:
+        migrated_owner = connection.execute(
+            "SELECT owner_token FROM workflow_identities WHERE case_id=?",
+            ("CASE-PATH-OWNER-MIGRATION",),
+        ).fetchone()[0]
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+    assert UUID(migrated_owner).version == 4
+    assert migrated_owner != legacy_owner
+
+
+@pytest.mark.asyncio
+async def test_unrelated_version_five_owner_is_not_treated_as_a_path_legacy(
+    tmp_path: Path,
+) -> None:
+    """Break caught: any UUIDv5 token can impersonate the one legacy path owner."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Only the exact former path token is eligible for migration.",
+            case_id="CASE-HOSTILE-V5",
+            thread_id="THREAD-HOSTILE-V5",
+        )
+
+    hostile_owner = str(uuid5(NAMESPACE_URL, "unrelated-checkpoint-store"))
+    with sqlite3.connect(operations_path) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET owner_token=? WHERE case_id=?",
+            (hostile_owner, "CASE-HOSTILE-V5"),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        before = await runtime.get_case_history(thread_id="THREAD-HOSTILE-V5")
+        with pytest.raises(ValueError, match="reserved|checkpoint store|owner"):
+            await runtime.resume_case(
+                thread_id="THREAD-HOSTILE-V5",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            )
+        assert await runtime.get_case_history(thread_id="THREAD-HOSTILE-V5") == before
+
+
+@pytest.mark.asyncio
+async def test_unreserved_checkpoint_can_be_read_but_cannot_resume_into_operations(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a checkpoint copied onto an unrelated Operations DB can mutate it."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    owner_operations = tmp_path / "owner-operations.sqlite3"
+    unrelated_operations = tmp_path / "unrelated-operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=owner_operations,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reads survive, but resumes require the checkpoint's Operations owner.",
+            case_id="CASE-UNRESERVED-RESUME",
+            thread_id="THREAD-UNRESERVED-RESUME",
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=unrelated_operations,
+    ) as runtime:
+        assert await runtime.get_case(thread_id="THREAD-UNRESERVED-RESUME") == review
+        history_before = await runtime.get_case_history(thread_id="THREAD-UNRESERVED-RESUME")
+        with pytest.raises(ValueError, match="reserved|owner|identity"):
+            await runtime.resume_case(
+                thread_id="THREAD-UNRESERVED-RESUME",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            )
+        assert (
+            await runtime.get_case_history(thread_id="THREAD-UNRESERVED-RESUME") == history_before
+        )
+
+    assert _case_count(unrelated_operations) == 0
+    assert _operation_count(unrelated_operations) == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_null_owner_is_claimed_atomically_from_matching_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Break caught: an authentic pre-owner reservation stays nullable after resume."""
+    from uuid import UUID
+
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Claim the legacy identity only from its matching checkpoint.",
+            case_id="CASE-LEGACY-NULL",
+            thread_id="THREAD-LEGACY-NULL",
+        )
+
+    with sqlite3.connect(operations_path) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET owner_token=NULL WHERE case_id=?",
+            ("CASE-LEGACY-NULL",),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-LEGACY-NULL",
+            response=_bound_response(review.pending_interrupt, decision="approve"),
+        )
+
+    with sqlite3.connect(operations_path) as connection:
+        owner = connection.execute(
+            "SELECT owner_token FROM workflow_identities WHERE case_id=?",
+            ("CASE-LEGACY-NULL",),
+        ).fetchone()[0]
+    assert confirmation.pending_interrupt["kind"] == "execution_confirmation"
+    assert UUID(owner).version == 4
+
+
+@pytest.mark.asyncio
+async def test_hostile_null_identity_cannot_claim_a_different_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Break caught: any NULL identity row is accepted without exact checkpoint proof."""
+    from recallops.agents.runtime import RecallOpsRuntime
+    from recallops.services.operations import OperationsService
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    owner_operations = tmp_path / "owner-operations.sqlite3"
+    hostile_operations = tmp_path / "hostile-operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=owner_operations,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reject an unrelated nullable Operations identity.",
+            case_id="CASE-NULL-PROOF",
+            thread_id="THREAD-NULL-PROOF",
+        )
+
+    OperationsService(storage_path=hostile_operations)
+    with sqlite3.connect(hostile_operations) as connection:
+        connection.execute(
+            "INSERT INTO workflow_identities (case_id, thread_id, owner_token) VALUES (?, ?, NULL)",
+            ("CASE-HOSTILE", "THREAD-NULL-PROOF"),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=hostile_operations,
+    ) as runtime:
+        before = await runtime.get_case_history(thread_id="THREAD-NULL-PROOF")
+        with pytest.raises(ValueError, match="identity|reserved|bound"):
+            await runtime.resume_case(
+                thread_id="THREAD-NULL-PROOF",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            )
+        assert await runtime.get_case_history(thread_id="THREAD-NULL-PROOF") == before
+
+
+@pytest.mark.asyncio
+async def test_legacy_resume_wins_against_concurrent_replacement_store_start(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a replacement store races a NULL legacy claim into dual ownership."""
+    from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Atomically claim one legacy owner during a competing start.",
+            case_id="CASE-CONCURRENT-LEGACY",
+            thread_id="THREAD-CONCURRENT-LEGACY",
+        )
+
+    with sqlite3.connect(operations_path) as connection:
+        connection.execute(
+            "UPDATE workflow_identities SET owner_token=NULL WHERE case_id=?",
+            ("CASE-CONCURRENT-LEGACY",),
+        )
+
+    async with (
+        RecallOpsRuntime.open(
+            checkpoint_path=checkpoint_path,
+            operations_path=operations_path,
+        ) as legitimate,
+        RecallOpsRuntime.open(
+            checkpoint_path=tmp_path / "replacement-checkpoints.sqlite3",
+            operations_path=operations_path,
+        ) as replacement,
+    ):
+        outcomes = await asyncio.gather(
+            legitimate.resume_case(
+                thread_id="THREAD-CONCURRENT-LEGACY",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            ),
+            replacement.start_case(
+                recall_number="H-1230-2026",
+                question="A replacement store must not take the legacy identity.",
+                case_id="CASE-CONCURRENT-LEGACY",
+                thread_id="THREAD-CONCURRENT-LEGACY",
+            ),
+            return_exceptions=True,
+        )
+
+    assert sum(isinstance(item, RuntimeResult) for item in outcomes) == 1
+    assert sum(isinstance(item, ValueError) for item in outcomes) == 1
 
 
 @pytest.mark.asyncio
@@ -715,7 +1067,8 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     )
     thread_id = f"THREAD-RECEIPT-{field}"
     config = {"configurable": {"thread_id": thread_id}}
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         {
             "case_id": f"CASE-RECEIPT-{field}",
             "thread_id": thread_id,
@@ -726,13 +1079,15 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
         config,
     )
     review = (await graph.aget_state(config)).interrupts[0].value
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         Command(resume=_bound_response(review, decision="approve")),
         config,
     )
     confirmation = (await graph.aget_state(config)).interrupts[0].value
     original_key = confirmation["idempotency_key"]
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         Command(resume=_bound_response(confirmation, decision="confirm")),
         config,
     )
@@ -746,7 +1101,8 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     assert recovery["idempotency_key"] == original_key
     assert _operation_count(operations_path) == 1
 
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         Command(resume=_bound_response(recovery, decision="retry")),
         config,
     )
@@ -796,7 +1152,8 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "THREAD-NO-COMMIT"}}
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         {
             "case_id": "CASE-NO-COMMIT",
             "thread_id": "THREAD-NO-COMMIT",
@@ -807,12 +1164,14 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
         config,
     )
     review = (await graph.aget_state(config)).interrupts[0].value
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         Command(resume=_bound_response(review, decision="approve")),
         config,
     )
     confirmation = (await graph.aget_state(config)).interrupts[0].value
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         Command(resume=_bound_response(confirmation, decision="confirm")),
         config,
     )
@@ -985,7 +1344,8 @@ async def test_compiled_graph_also_rejects_a_direct_unbound_command(tmp_path: Pa
     )
     graph = build_workflow(gateway=gateway, checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "THREAD-DIRECT"}}
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         {
             "case_id": "THREAD-DIRECT",
             "thread_id": "THREAD-DIRECT",
@@ -1000,7 +1360,8 @@ async def test_compiled_graph_also_rejects_a_direct_unbound_command(tmp_path: Pa
     response["case_id"] = "CASE-ATTACKER"
 
     with pytest.raises(ValueError, match="case_id"):
-        await graph._execute(
+        await _execute_workflow(
+            graph,
             Command(resume=response),
             config,
         )
@@ -1066,8 +1427,48 @@ def test_compiled_graph_public_surface_is_read_only(tmp_path: Path) -> None:
 
     assert callable(graph.aget_state)
     assert callable(graph.aget_state_history)
-    with pytest.raises(AttributeError, match="not exposed|disabled"):
-        getattr(graph, "ainvoke")
+    for surface in ("ainvoke", "_execute", "_graph", "compiled_graph", "runner"):
+        with pytest.raises(AttributeError, match="not exposed|disabled"):
+            getattr(graph, surface)
+
+
+@pytest.mark.asyncio
+async def test_runtime_object_exposes_no_graph_or_executor_capability(tmp_path: Path) -> None:
+    """Break caught: normal Runtime attribute access reveals any executable graph object."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        for surface in ("graph", "_graph", "_execute", "compiled_graph", "runner"):
+            with pytest.raises(AttributeError):
+                getattr(runtime, surface)
+
+
+@pytest.mark.asyncio
+async def test_runtime_exposes_detached_checkpoint_history_without_a_runner(tmp_path: Path) -> None:
+    """Break caught: removing graph access also removes legitimate historical inspection."""
+    from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Keep checkpoint history available as detached read models.",
+            case_id="CASE-READ-HISTORY",
+            thread_id="THREAD-READ-HISTORY",
+        )
+        history = await runtime.get_case_history(thread_id="THREAD-READ-HISTORY")
+
+    assert history
+    assert history[0] == review
+    assert all(isinstance(item, RuntimeResult) for item in history)
+    assert all(item.model_config["frozen"] for item in history)
 
 
 @pytest.mark.asyncio
@@ -1100,7 +1501,8 @@ async def test_private_executor_rejects_branching_or_extra_config_without_state_
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": thread_id}}
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         {
             "case_id": f"CASE-CONFIG-{extra_key}",
             "thread_id": thread_id,
@@ -1119,7 +1521,8 @@ async def test_private_executor_rejects_branching_or_extra_config_without_state_
     attack_config = {"configurable": {"thread_id": thread_id, extra_key: value}}
 
     with pytest.raises(ValueError, match="configurable|execution config"):
-        await graph._execute(
+        await _execute_workflow(
+            graph,
             Command(resume=_bound_response(pending, decision="reject")),
             attack_config,
         )
@@ -1153,7 +1556,8 @@ async def test_private_executor_rejects_caller_runtime_setting_overrides(tmp_pat
     config = {"configurable": {"thread_id": "THREAD-FIXED-SETTINGS"}}
 
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        await graph._execute(
+        await _execute_workflow(
+            graph,
             {
                 "case_id": "CASE-FIXED-SETTINGS",
                 "thread_id": "THREAD-FIXED-SETTINGS",
@@ -1191,11 +1595,12 @@ async def test_compiled_graph_rejects_reinitializing_a_paused_thread(tmp_path: P
         "question": "Original investigation question.",
         "scope_lot_ids": [],
     }
-    await graph._execute(initial, config)
+    await _execute_workflow(graph, initial, config)
     before = await graph.aget_state(config)
 
     with pytest.raises(ValueError, match="already has a durable checkpoint"):
-        await graph._execute(
+        await _execute_workflow(
+            graph,
             {**initial, "question": "Overwrite the paused investigation."},
             config,
         )
@@ -1204,7 +1609,7 @@ async def test_compiled_graph_rejects_reinitializing_a_paused_thread(tmp_path: P
     assert after.values == before.values
     assert after.interrupts == before.interrupts
     assert after.config == before.config
-    assert graph._active_lock_count() == 0
+    assert _workflow_active_lock_count(graph) == 0
 
     with pytest.raises(AttributeError, match="disabled"):
         await graph.aupdate_state(config, {"case_id": "CASE-OVERWRITE"})
@@ -1231,7 +1636,8 @@ async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "THREAD-SEALED-RUNNERS"}}
-    await graph._execute(
+    await _execute_workflow(
+        graph,
         {
             "case_id": "CASE-SEALED-RUNNERS",
             "thread_id": "THREAD-SEALED-RUNNERS",
@@ -1282,7 +1688,8 @@ async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
 
     pending = before.interrupts[0].value
     with pytest.raises(ValueError, match="resume-only"):
-        await graph._execute(
+        await _execute_workflow(
+            graph,
             Command(
                 update={"case_id": "CASE-COMMAND-OVERWRITE"},
                 resume=_bound_response(pending, decision="reject"),
