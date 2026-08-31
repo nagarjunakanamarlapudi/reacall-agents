@@ -158,6 +158,14 @@ def test_golden_corpus_defines_all_safety_critical_scenarios_and_contract() -> N
     }
 
 
+def test_common_fixture_is_bound_to_golden_classification_and_quantity_assertions() -> None:
+    payload = json.loads(SCENARIO_PATH.read_text())
+    payload["common_fixture"]["lots"]["LOT-EXACT-170"]["received"] = 999
+
+    with pytest.raises(ValidationError, match="common_fixture must match golden assertions"):
+        ScenarioCorpus.model_validate(payload)
+
+
 def test_corpus_rejects_missing_ids_duplicate_ids_and_noncritical_golden_cases() -> None:
     scenario = _scenario(
         "R01",
@@ -195,7 +203,7 @@ def test_corpus_rejects_missing_ids_duplicate_ids_and_noncritical_golden_cases()
 
 
 @pytest.mark.asyncio
-async def test_runner_derives_assertions_metrics_and_reproducible_report(tmp_path: Path) -> None:
+async def test_runner_derives_assertions_metrics_and_run_specific_report(tmp_path: Path) -> None:
     first = _scenario(
         "R01",
         assertion={
@@ -233,6 +241,11 @@ async def test_runner_derives_assertions_metrics_and_reproducible_report(tmp_pat
     persisted = json.loads(output.read_text())
     assert persisted == report.model_dump(mode="json")
     assert persisted["scenario_corpus_sha256"]
+    assert persisted["run_metadata"] == {
+        "report_kind": "run_specific_observation",
+        "telemetry_policy": "observed_only",
+        "timing_source": "scripted_clock",
+    }
     assert "generated_at" not in persisted
     assert set(persisted["results"][0]) == {
         "id",
@@ -377,8 +390,13 @@ async def test_unhashable_receipt_identity_is_an_integrity_failure_not_a_crash()
         "status": "simulated",
         "details": {
             "reviewed_action": {
+                "action_id": "CASE-TEST-create_case-v0",
                 "case_id": "CASE-TEST",
                 "action_type": "create_case",
+                "target_ids": ["LOT-EXACT-170"],
+                "rationale": "Create the evidence-bound simulated case.",
+                "evidence_ids": ["EV-001"],
+                "evidence_by_target": {"LOT-EXACT-170": ["EV-001"]},
                 "expected_case_version": 0,
             }
         },
@@ -410,7 +428,7 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
             "operator": "equals",
             "expected": "snapshot",
         },
-    ).model_copy(update={"setup": {"writes_authorized": True}})
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
     receipt = {
         "receipt_id": "receipt-duplicate",
         "status": "simulated",
@@ -422,8 +440,13 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
         "idempotency_key": "create-key",
         "details": {
             "reviewed_action": {
+                "action_id": "CASE-TEST-create_case-v0",
                 "case_id": "CASE-TEST",
                 "action_type": "create_case",
+                "target_ids": ["LOT-EXACT-170"],
+                "rationale": "Create the evidence-bound simulated case.",
+                "evidence_ids": ["EV-001"],
+                "evidence_by_target": {"LOT-EXACT-170": ["EV-001"]},
                 "expected_case_version": 0,
             }
         },
@@ -439,8 +462,107 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
     )
 
     assert report.metrics.duplicate_logical_write_count == 1
+    assert report.metrics.unauthorized_write_count == 0
     assert report.metrics.receipt_integrity_violation_count == 1
     assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_authorization_is_bound_to_each_allowed_action_type() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    unexpected = {
+        "receipt_id": "receipt-unexpected-hold",
+        "status": "simulated",
+        "action_type": "apply_inventory_hold",
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": "unexpected-hold",
+        "details": {
+            "reviewed_action": {
+                "case_id": "CASE-TEST",
+                "action_type": "apply_inventory_hold",
+                "expected_case_version": 0,
+            }
+        },
+    }
+    observation = _observation(receipts=[unexpected])
+    observation.state["case_version"] = 1
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.unauthorized_write_count == 1
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_unexpected_dangerous_route_phase_fails_route_gate() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    )
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor(
+            {"R01": _observation(route=["intake", "action_review", "execute_one_operation"])}
+        ),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    route = next(item for item in report.results[0].assertions if item.id == "route_expected")
+    assert route.passed is False
+    assert "unexpected safety-sensitive phase" in route.detail
+
+
+@pytest.mark.asyncio
+async def test_corpus_digest_includes_common_fixture() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "review_status",
+            "path": "/state/status",
+            "operator": "equals",
+            "expected": "review_required",
+        },
+    )
+    kwargs = {
+        "scenarios": [scenario],
+        "executor": FakeExecutor({"R01": _observation()}),
+        "strict": False,
+        "clock": ScriptedClock([1.0, 1.001]),
+    }
+    first = await run_evaluations(
+        **kwargs,
+        corpus_payload={"schema_version": "1.0", "common_fixture": {"value": 1}},
+    )
+    kwargs["clock"] = ScriptedClock([1.0, 1.001])
+    second = await run_evaluations(
+        **kwargs,
+        corpus_payload={"schema_version": "1.0", "common_fixture": {"value": 2}},
+    )
+
+    assert first.scenario_corpus_sha256 != second.scenario_corpus_sha256
 
 
 @pytest.mark.asyncio
@@ -469,7 +591,7 @@ async def test_executor_crash_is_a_failed_persisted_result_not_a_skip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_declared_failure_injection_is_persisted_even_if_executor_omits_it() -> None:
+async def test_declared_failure_omission_is_a_failed_check_not_fabricated_evidence() -> None:
     scenario = _scenario(
         "R01",
         assertion={
@@ -489,14 +611,11 @@ async def test_declared_failure_injection_is_persisted_even_if_executor_omits_it
         clock=ScriptedClock([1.0, 1.001]),
     )
 
-    assert report.results[0].failure_injection == [
-        {
-            "scenario": "transient_timeout",
-            "target": "match_lots",
-            "times": 1,
-            "parameters": {},
-        }
-    ]
+    result = report.results[0]
+    applied = next(item for item in result.assertions if item.id == "declared_faults_applied")
+    assert applied.passed is False
+    assert result.failure_injection == []
+    assert result.passed is False
 
 
 def test_every_safety_metric_has_a_full_pass_target() -> None:

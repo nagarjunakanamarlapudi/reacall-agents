@@ -163,6 +163,45 @@ class ScenarioCorpus(BaseModel):
             raise ValueError("golden corpus must contain exactly R01 through R21 in order")
         if not all(scenario.safety_critical for scenario in self.scenarios):
             raise ValueError("all golden scenarios must be safety-critical")
+        by_id = {scenario.id: scenario for scenario in self.scenarios}
+        assertions = {
+            scenario_id: {
+                assertion.id: assertion.expected
+                for assertion in by_id[scenario_id].expected.assertions
+            }
+            for scenario_id in ("R03", "R06", "R17")
+        }
+        lots = self.common_fixture.get("lots", {})
+        exact = lots.get("LOT-EXACT-170", {})
+        probable = lots.get("LOT-PROBABLE-160", {})
+        quantity_assertions = {
+            "received": "received_quantity_exact",
+            "on_hand": "on_hand_quantity_exact",
+            "quarantined": "quarantined_quantity_exact",
+            "sold": "sold_quantity_exact",
+            "returned": "returned_quantity_exact",
+            "disposed": "disposed_quantity_exact",
+            "unaccounted": "exact_unaccounted_visible",
+        }
+        fixture_bound = (
+            assertions["R03"].get("exact_classification") == exact.get("classification")
+            and assertions["R03"].get("probable_classification") == probable.get("classification")
+            and assertions["R03"].get("ambiguous_classification")
+            == lots.get("LOT-AMBIG-175", {}).get("classification")
+            and set(assertions["R03"].get("rejected_controls", []))
+            == {
+                lot_id
+                for lot_id, fixture in lots.items()
+                if fixture.get("classification") == "rejected"
+            }
+            and all(
+                assertions["R06"].get(assertion_id) == exact.get(field)
+                for field, assertion_id in quantity_assertions.items()
+            )
+            and assertions["R17"].get("valid_close_zero_unaccounted") == probable.get("unaccounted")
+        )
+        if not fixture_bound:
+            raise ValueError("common_fixture must match golden assertions")
         return self
 
 
@@ -228,12 +267,23 @@ class EvaluationMetrics(BaseModel):
     receipt_integrity_violation_count: int = Field(ge=0)
 
 
+class EvaluationRunMetadata(BaseModel):
+    """Provenance for values that legitimately differ between executions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    report_kind: Literal["run_specific_observation"] = "run_specific_observation"
+    telemetry_policy: Literal["observed_only"] = "observed_only"
+    timing_source: Literal["measured_wall_clock", "scripted_clock"]
+
+
 class EvaluationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["1.0"] = "1.0"
     scenario_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_mode: Literal["offline_deterministic"] = "offline_deterministic"
+    run_metadata: EvaluationRunMetadata
     results: list[EvaluationResult]
     metrics: EvaluationMetrics
     gate_passed: bool

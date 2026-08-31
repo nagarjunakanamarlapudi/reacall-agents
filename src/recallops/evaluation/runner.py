@@ -18,9 +18,11 @@ from recallops.evaluation.schema import (
     AssertionSpec,
     EvaluationReport,
     EvaluationResult,
+    EvaluationRunMetadata,
     EvaluationScenario,
     ScenarioCorpus,
 )
+from recallops.models import ProposedAction
 
 STATE_EXCERPT_FIELDS = (
     "status",
@@ -40,6 +42,20 @@ STATE_EXCERPT_FIELDS = (
     "retry_count",
     "progress_signature",
     "warnings",
+    "middleware_probe",
+    "model_budget_probe",
+    "dependency_failure_outcomes",
+    "compiled_guard_results",
+    "consent_probe_codes",
+    "start_input_probe_codes",
+    "identity_conflict_probe_codes",
+    "review_lifecycle",
+    "disposition_lifecycle",
+    "concurrency_probe",
+    "toctou_outcomes",
+    "toctou_version_deltas",
+    "toctou_all_invariants_safe",
+    "toctou_race_evidence",
 )
 
 _EMPTY_LIST_FIELDS = {
@@ -321,8 +337,11 @@ def _global_assertions(
     scenario: EvaluationScenario, state: dict[str, Any], counters: dict[str, int]
 ) -> list[AssertionResult]:
     receipts = state.get("write_receipts", [])
-    writes_authorized = scenario.setup.get("writes_authorized", "W" in scenario.expected.route)
-    unauthorized_observed = len(receipts) if not writes_authorized else 0
+    allowed_actions = set(scenario.setup.get("allowed_write_actions", []))
+    unauthorized_observed = sum(
+        not isinstance(receipt, dict) or receipt.get("action_type") not in allowed_actions
+        for receipt in receipts
+    )
     close_observed = state.get("status") == "closed" or _contains(receipts, "close_case")
     false_close_observed = close_observed and "closed" not in scenario.expected.statuses
     receipt_integrity_violations = sum(
@@ -387,13 +406,16 @@ def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
         and version > 0
         and nonblank
     )
+    try:
+        reviewed_action = ProposedAction.model_validate(reviewed)
+    except (TypeError, ValueError):
+        reviewed_action = None
     reviewed_valid = (
-        isinstance(reviewed, dict)
-        and reviewed.get("case_id") == case_id
-        and reviewed.get("action_type") == receipt.get("action_type")
-        and type(reviewed.get("expected_case_version")) is int
+        reviewed_action is not None
+        and reviewed_action.case_id == case_id
+        and reviewed_action.action_type == receipt.get("action_type")
         and type(version) is int
-        and reviewed.get("expected_case_version") == version - 1
+        and reviewed_action.expected_case_version == version - 1
     )
     return not (envelope_valid and reviewed_valid)
 
@@ -431,8 +453,12 @@ def _duplicate_logical_receipt_count(receipts: Any) -> int:
     )
 
 
-def _scenario_digest(scenarios: Sequence[EvaluationScenario]) -> str:
-    payload = [scenario.model_dump(mode="json") for scenario in scenarios]
+def _scenario_digest(
+    scenarios: Sequence[EvaluationScenario], corpus_payload: dict[str, Any] | None = None
+) -> str:
+    payload: Any = corpus_payload or {
+        "scenarios": [scenario.model_dump(mode="json") for scenario in scenarios]
+    }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -452,6 +478,7 @@ async def run_evaluations(
     output_path: Path | str | None = None,
     strict: bool = True,
     clock: Callable[[], float] = time.perf_counter,
+    corpus_payload: dict[str, Any] | None = None,
 ) -> EvaluationReport:
     """Execute scenarios serially, persist complete outcomes, and enforce hard gates."""
 
@@ -468,17 +495,28 @@ async def run_evaluations(
                 "tool_trace": observation.tool_trace,
                 "counters": observation.counters,
             }
+            expected_route = normalize_route(scenario.expected.route)
+            unexpected_sensitive = sorted(
+                ({"W", "C", "E"} & set(route_actual)) - set(expected_route)
+            )
+            route_passed = (
+                _ordered_subsequence(route_actual, expected_route) and not unexpected_sensitive
+            )
             assertions = [
                 AssertionResult(
                     id="route_expected",
-                    passed=_ordered_subsequence(route_actual, scenario.expected.route),
+                    passed=route_passed,
                     path="/route_actual",
                     operator="ordered_subsequence",
-                    expected=scenario.expected.route,
+                    expected=expected_route,
                     actual=route_actual,
                     detail=""
-                    if _ordered_subsequence(route_actual, scenario.expected.route)
-                    else "normalized route did not contain the expected ordered subsequence",
+                    if route_passed
+                    else (
+                        "unexpected safety-sensitive phase(s): " + ", ".join(unexpected_sensitive)
+                        if unexpected_sensitive
+                        else "normalized route did not contain the expected ordered subsequence"
+                    ),
                 ),
                 *(
                     [
@@ -501,21 +539,46 @@ async def run_evaluations(
                     _evaluate_assertion(assertion, document)
                     for assertion in scenario.expected.assertions
                 ),
+                AssertionResult(
+                    id="declared_faults_applied",
+                    passed=all(
+                        fault.model_dump(mode="json") in observation.failure_injection
+                        for fault in scenario.faults
+                    ),
+                    path="/failure_injection",
+                    operator="contains_all",
+                    expected=[fault.model_dump(mode="json") for fault in scenario.faults],
+                    actual=observation.failure_injection,
+                    detail=(
+                        ""
+                        if all(
+                            fault.model_dump(mode="json") in observation.failure_injection
+                            for fault in scenario.faults
+                        )
+                        else "one or more declared faults were not actually applied"
+                    ),
+                ),
                 *_global_assertions(scenario, observation.state, observation.counters),
             ]
             error = None
             state_excerpt = _state_excerpt(observation.state)
             tool_trace = observation.tool_trace
             failure_injection = []
-            for injected in [
-                *(fault.model_dump(mode="json") for fault in scenario.faults),
-                *observation.failure_injection,
-            ]:
+            for injected in observation.failure_injection:
                 if injected not in failure_injection:
                     failure_injection.append(injected)
         except Exception as exc:  # noqa: BLE001 - crashes must become explicit failed results
             route_actual = []
             assertions = [
+                AssertionResult(
+                    id="route_expected",
+                    passed=False,
+                    path="/route_actual",
+                    operator="ordered_subsequence",
+                    expected=normalize_route(scenario.expected.route),
+                    actual=[],
+                    detail="scenario executor raised before a route was observed",
+                ),
                 AssertionResult(
                     id="executor_completed",
                     passed=False,
@@ -524,12 +587,12 @@ async def run_evaluations(
                     expected=True,
                     actual=False,
                     detail="scenario executor raised",
-                )
+                ),
             ]
             error = f"{type(exc).__name__}: {exc}"
             state_excerpt = _state_excerpt({})
             tool_trace = []
-            failure_injection = [fault.model_dump(mode="json") for fault in scenario.faults]
+            failure_injection = []
         duration_ms = max(0, round((clock() - started) * 1000))
         latency_budget_ms = scenario.setup.get("latency_budget_ms", 60_000)
         assertions.append(
@@ -563,7 +626,12 @@ async def run_evaluations(
 
     metrics = calculate_metrics(scenario_list, results)
     report = EvaluationReport(
-        scenario_corpus_sha256=_scenario_digest(scenario_list),
+        scenario_corpus_sha256=_scenario_digest(scenario_list, corpus_payload),
+        run_metadata=EvaluationRunMetadata(
+            timing_source=(
+                "measured_wall_clock" if clock is time.perf_counter else "scripted_clock"
+            )
+        ),
         results=results,
         metrics=metrics,
         gate_passed=safety_gate_passes(metrics),

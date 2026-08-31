@@ -8,15 +8,15 @@ from collections import Counter
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import Command, StateUpdate
 
 from recallops.agents.middleware import (
     CallBudget,
+    CallBudgetExceeded,
     CircuitBreaker,
     CircuitOpenError,
     TransientCallError,
@@ -44,9 +44,9 @@ from recallops.services.operations import (
 from recallops.services.traceability import TraceabilityService
 
 _SUPPORTED_START_FAILURES = {
-    "R02": ("registry_transient_failure",),
-    "R10": ("model_failure",),
-    "R19": ("repeated_progress_signature",),
+    "registry_transient_failure",
+    "model_failure",
+    "repeated_progress_signature",
 }
 
 _REQUIRED_DEPENDENCY_FAILURES = (
@@ -152,6 +152,7 @@ def _create_case(
     case_id: str,
     *,
     lot_id: str = "LOT-PROBABLE-160",
+    thread_id: str | None = None,
 ) -> None:
     payload = _case_payload(traceability, lot_id)
     action, approval = _reviewed(
@@ -163,6 +164,7 @@ def _create_case(
     )
     service.create_case(
         case_id=case_id,
+        thread_id=thread_id,
         **payload,
         proposed_action=action,
         approval=approval,
@@ -323,6 +325,10 @@ def _error_code(error: BaseException) -> str:
     if isinstance(error, CircuitOpenError):
         return "circuit_open"
     return type(error).__name__
+
+
+def _declared_faults(scenario: EvaluationScenario) -> list[dict[str, Any]]:
+    return [fault.model_dump(mode="json") for fault in scenario.faults]
 
 
 def _normalize_warning_codes(warnings: list[str]) -> list[str]:
@@ -500,8 +506,11 @@ class RecallOpsEvaluationExecutor:
                 checkpoint_path=checkpoint,
                 operations_path=operations,
             ) as runtime:
-                for failure in _SUPPORTED_START_FAILURES.get(scenario.id, ()):
-                    runtime.inject_failure(failure)
+                runtime_faults_applied: list[dict[str, Any]] = []
+                for fault in scenario.faults:
+                    if fault.scenario in _SUPPORTED_START_FAILURES:
+                        runtime.inject_failure(fault.scenario, times=fault.times)
+                        runtime_faults_applied.append(fault.model_dump(mode="json"))
                 if scenario.id == "R12":
                     return await self._consent_and_idempotency(runtime, scenario, operations)
                 if scenario.id == "R17":
@@ -522,6 +531,15 @@ class RecallOpsEvaluationExecutor:
                 if scenario.id == "R21":
                     return await self._ambiguous_scope(runtime, scenario, root)
                 result = await _start(runtime, scenario)
+                if runtime_faults_applied:
+                    result = result.model_copy(
+                        update={
+                            "case": {
+                                **result.case,
+                                "_evaluation_failure_injection": runtime_faults_applied,
+                            }
+                        }
+                    )
 
             return await self._augment(scenario, result, root, operations)
 
@@ -549,12 +567,17 @@ class RecallOpsEvaluationExecutor:
             "false_close_count": 0,
         }
         derived.update(counters or {})
+        applied_faults = (
+            failure_injection
+            if failure_injection is not None
+            else list(result.case.get("_evaluation_failure_injection", []))
+        )
         return EvaluationObservation(
             state=state,
             route_actual=route_actual or list(result.case.get("node_trace", [])),
             tool_trace=trace,
             counters=derived,
-            failure_injection=failure_injection or [],
+            failure_injection=applied_faults,
         )
 
     async def _augment(
@@ -622,22 +645,13 @@ class RecallOpsEvaluationExecutor:
                 and result.next_nodes == stdio_result.next_nodes
                 and not stdio_result.case.get("write_receipts")
             )
-        trace = [
-            *result.case.get("tool_trace", []),
-            {
-                "boundary": "evaluation_probe",
-                "operation": "get_sales",
-                "status": "success",
-                "result_count": len(sales),
-            },
-        ]
         return self._observation(
             result,
             state_updates={
                 "mcp_direct_stdio_parity": parity,
                 "stdio_runtime_parity": runtime_parity,
+                "gateway_sales_probe_count": len(sales),
             },
-            tool_trace=trace,
         )
 
     async def _scenario_r05(
@@ -647,7 +661,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del root, operations_path
         dataset = deepcopy(TraceabilityService().dataset)
         event = next(item for item in dataset["events"] if item["event_id"] == "EV-003")
         event["occurred_at"] = "2026-05-01T00:00:00Z"
@@ -664,7 +678,11 @@ class RecallOpsEvaluationExecutor:
             "causal_parent_links_complete": causal,
             "cross_lot_event_count": sum(item["lot_id"] != "LOT-EXACT-170" for item in backward),
         }
-        return self._observation(result, state_updates={"verification": verification})
+        return self._observation(
+            result,
+            state_updates={"verification": verification},
+            failure_injection=_declared_faults(scenario),
+        )
 
     async def _scenario_r07(
         self,
@@ -695,7 +713,8 @@ class RecallOpsEvaluationExecutor:
                 "dependency_failure_terminal_count": terminal_count,
                 "dependency_failure_outcomes": dependency_outcomes,
             },
-            failure_injection=[
+            failure_injection=_declared_faults(scenario)
+            + [
                 {
                     "scenario": failure,
                     "target": "runtime_dependency_read",
@@ -750,7 +769,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del root, operations_path
         calls = 0
 
         async def transient() -> str:
@@ -762,22 +781,25 @@ class RecallOpsEvaluationExecutor:
 
         wrapped = with_retry(
             transient,
-            max_attempts=2,
+            max_attempts=scenario.setup["max_attempts"],
             base_delay_seconds=0,
             sleep=lambda _: None,
-            budget=CallBudget(2),
+            budget=CallBudget(scenario.setup["max_attempts"]),
         )
         assert await wrapped() == "ok"
         return self._observation(
             result,
             state_updates={
-                "retry_count": {"match_lots": calls - 1, "get_recall": 0},
-                "warnings": [
-                    *_normalize_warning_codes(result.case.get("warnings", [])),
-                    "transient_read_recovered",
-                ],
+                "middleware_probe": {
+                    "component": "with_retry",
+                    "operation": "match_lots",
+                    "status": "recovered",
+                    "retry_count": calls - 1,
+                    "transport_calls": calls,
+                },
             },
             counters={"match_lots_calls": calls},
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r09(
@@ -787,18 +809,19 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del root, operations_path
         transport_calls = 0
+        status_code = scenario.faults[0].parameters["status_code"]
 
         async def limited() -> None:
             nonlocal transport_calls
             transport_calls += 1
-            raise TransientCallError("scripted 429")
+            raise TransientCallError(f"scripted {status_code}")
 
-        breaker = CircuitBreaker(2, 60)
+        breaker = CircuitBreaker(scenario.setup["circuit_threshold"], 60)
         wrapped = with_retry(
             limited,
-            max_attempts=2,
+            max_attempts=scenario.setup["max_attempts"],
             base_delay_seconds=0,
             sleep=lambda _: None,
             breaker=breaker,
@@ -815,14 +838,16 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             result,
             state_updates={
-                "status": "escalated",
-                "warnings": [
-                    *_normalize_warning_codes(result.case.get("warnings", [])),
-                    error_code,
-                ],
+                "middleware_probe": {
+                    "component": "CircuitBreaker",
+                    "operation": "trace_forward",
+                    "status": error_code,
+                    "transport_calls": transport_calls,
+                    "injected_status_code": status_code,
+                },
             },
-            route_actual=["intake", "plan", "product_lot_match", "trace_forward", "end"],
             counters={"trace_forward_transport_calls": transport_calls},
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r10(
@@ -832,10 +857,25 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del root, operations_path
+        budget = CallBudget(scenario.setup["model_call_budget"])
+        budget_blocked = False
+        for _ in range(3):
+            try:
+                budget.consume()
+            except CallBudgetExceeded:
+                budget_blocked = True
         return self._observation(
             result,
+            state_updates={
+                "model_budget_probe": {
+                    "limit": budget.limit,
+                    "calls_admitted": budget.used,
+                    "third_call_blocked": budget_blocked,
+                }
+            },
             counters={"model_calls": len(result.case.get("model_trace", []))},
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r11(
@@ -900,7 +940,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root
+        del root
         traceability = TraceabilityService()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
         _create_case(service, traceability, "CASE-R14-SERVICE")
@@ -912,13 +952,14 @@ class RecallOpsEvaluationExecutor:
             key="r14-hold",
         )
         error_code = ""
+        extra = scenario.input.model_extra or {}
         try:
             _create_tasks(
                 service,
                 "CASE-R14-SERVICE",
                 ["DC-SOUTH", "STORE-03"],
-                1,
-                key="tasks-r14-stale",
+                extra["expected_case_version"],
+                key=extra["idempotency_key"],
             )
         except StaleCaseVersionError as error:
             error_code = _error_code(error)
@@ -931,7 +972,7 @@ class RecallOpsEvaluationExecutor:
                 "created_tasks": [],
                 "service_probe_error_code": error_code,
             },
-            route_actual=[*result.case.get("node_trace", []), "execute_one_operation"],
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r15(
@@ -942,10 +983,17 @@ class RecallOpsEvaluationExecutor:
         operations_path: Path,
     ) -> EvaluationObservation:
         disposition_lifecycle = await self._probe_disposition_lifecycle(scenario, root)
+        concurrency_probe = await asyncio.to_thread(self._run_ack_close_race, root)
         traceability = TraceabilityService()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
-        case_id = "CASE-R15-SERVICE"
-        _create_case(service, traceability, case_id, lot_id="LOT-EXACT-170")
+        case_id = scenario.input.model_extra["case_id"]
+        _create_case(
+            service,
+            traceability,
+            case_id,
+            lot_id="LOT-EXACT-170",
+            thread_id=scenario.input.model_extra["thread_id"],
+        )
         _record_disposition(
             service,
             case_id,
@@ -954,10 +1002,19 @@ class RecallOpsEvaluationExecutor:
             evidence_id="EV-D-LOT-EXACT-170",
             key="r15-disposition",
         )
-        facilities = ["DC-NORTH", "STORE-01"]
+        extra = scenario.input.model_extra or {}
+        facilities = extra["facilities"]
         _create_tasks(service, case_id, facilities, 2, key="r15-tasks")
-        _acknowledge(service, case_id, "DC-NORTH", 3, key="r15-ack-DC-NORTH")
-        version = 4
+        acknowledged = extra["acknowledge"]
+        for offset, facility in enumerate(acknowledged):
+            _acknowledge(
+                service,
+                case_id,
+                facility,
+                3 + offset,
+                key=f"r15-ack-{facility}",
+            )
+        version = 3 + len(acknowledged)
         error_code = ""
         try:
             _close(service, case_id, version, key="r15-close")
@@ -965,16 +1022,19 @@ class RecallOpsEvaluationExecutor:
             error_code = _error_code(error)
         state = service.get_case(case_id)
         assert state is not None
+        missing_acknowledgements = sorted(set(facilities) - set(acknowledged))
         return self._observation(
             result,
             state_updates={
                 **state.model_dump(mode="json"),
-                "status": "open_closure_blocked",
-                "evidence_gaps": ["pending_acknowledgement:STORE-01"],
+                "evidence_gaps": [
+                    f"pending_acknowledgement:{facility}" for facility in missing_acknowledgements
+                ],
                 "service_probe_error_code": error_code,
                 "disposition_lifecycle": disposition_lifecycle,
+                "concurrency_probe": concurrency_probe,
             },
-            route_actual=["execute_one_operation", "monitor", "closure_review", "end"],
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _probe_disposition_lifecycle(
@@ -1022,12 +1082,25 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root
+        concurrency_races = await asyncio.to_thread(
+            self._run_toctou_races,
+            root,
+            2,
+            "r16-concurrent-close",
+            "r16-concurrent-task",
+            "STORE-03",
+        )
         traceability = _resolved_exact_traceability()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
-        case_id = "CASE-R16-SERVICE"
-        _create_case(service, traceability, case_id, lot_id="LOT-EXACT-170")
-        facilities = ["DC-NORTH", "STORE-01"]
+        case_id = scenario.input.model_extra["case_id"]
+        _create_case(
+            service,
+            traceability,
+            case_id,
+            lot_id="LOT-EXACT-170",
+            thread_id=scenario.input.model_extra["thread_id"],
+        )
+        facilities = (scenario.input.model_extra or {})["facilities"]
         _create_tasks(service, case_id, facilities, 1, key="r16-tasks")
         version = 2
         for facility in facilities:
@@ -1040,26 +1113,22 @@ class RecallOpsEvaluationExecutor:
             error_code = _error_code(error)
         state = service.get_case(case_id)
         assert state is not None
+        omitted_facilities = sorted(set(state.required_facilities) - set(facilities))
         return self._observation(
             result,
             state_updates={
                 **state.model_dump(mode="json"),
-                "status": "open_closure_blocked",
-                "evidence_gaps": ["unacknowledged_or_untasked_facility:STORE-02"],
+                "evidence_gaps": [
+                    f"unacknowledged_or_untasked_facility:{facility}"
+                    for facility in omitted_facilities
+                ],
                 "service_probe_error_code": error_code,
+                "concurrency_probe": {
+                    "invariants_safe": all(race["invariants_safe"] for race in concurrency_races),
+                    "race_evidence": concurrency_races,
+                },
             },
-            route_actual=[
-                "intake",
-                "product_lot_match",
-                "trace_forward",
-                "reconcile",
-                "verify",
-                "action_review",
-                "execute_one_operation",
-                "monitor",
-                "closure_review",
-                "end",
-            ],
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r20(
@@ -1069,18 +1138,34 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, operations_path
-        safe_outcomes = await asyncio.to_thread(self._run_toctou_races, root)
-        last = safe_outcomes[-1]
-        status = "closed" if last == "close_won_no_late_task" else "open_closure_blocked"
+        del operations_path
+        extra = scenario.input.model_extra or {}
+        race_results = await asyncio.to_thread(
+            self._run_toctou_races,
+            root,
+            scenario.setup["repeat"],
+            extra["close_key"],
+            extra["late_task_key"],
+            extra["late_facility"],
+        )
+        outcomes = [race["outcome"] for race in race_results]
+        version_deltas = [race["version_delta"] for race in race_results]
         return self._observation(
             result,
-            state_updates={"status": status, "toctou_terminal_outcome": last},
-            route_actual=["monitor", "closure_review"],
-            counters={
-                "safe_race_outcomes": len(safe_outcomes),
-                "version_increments_per_race": 1,
+            state_updates={
+                "toctou_terminal_outcome": race_results[-1]["outcome"],
+                "toctou_outcomes": outcomes,
+                "toctou_version_deltas": version_deltas,
+                "toctou_all_invariants_safe": all(race["invariants_safe"] for race in race_results),
+                "toctou_race_evidence": race_results,
             },
+            counters={
+                "safe_race_outcomes": sum(race["invariants_safe"] for race in race_results),
+                "version_increments_per_race": (
+                    version_deltas[0] if version_deltas and len(set(version_deltas)) == 1 else -1
+                ),
+            },
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _scenario_r19(
@@ -1090,15 +1175,23 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del root, operations_path
         return self._observation(
             result,
             counters={"progress_cycles": result.case.get("watchdog", {}).get("repeat_count", 0)},
+            failure_injection=_declared_faults(scenario),
         )
 
-    def _run_toctou_races(self, root: Path) -> list[str]:
-        outcomes: list[str] = []
-        for iteration in range(10):
+    def _run_toctou_races(
+        self,
+        root: Path,
+        repeat: int,
+        close_key: str,
+        late_task_key: str,
+        late_facility: str,
+    ) -> list[dict[str, Any]]:
+        outcomes: list[dict[str, Any]] = []
+        for iteration in range(repeat):
             database = root / f"race-{iteration}.sqlite3"
             traceability = TraceabilityService()
             seed = OperationsService(storage_path=database, traceability=traceability)
@@ -1132,7 +1225,7 @@ class RecallOpsEvaluationExecutor:
                 if winner != "close_case":
                     second_started.set()
                 try:
-                    _close(close_service, case_id, version, key=f"r20-close-{iteration}")
+                    _close(close_service, case_id, version, key=f"{close_key}-{iteration}")
                     results["close"] = "won"
                 except (StaleCaseVersionError, ClosureBlockedError):
                     results["close"] = "stale_or_blocked"
@@ -1144,9 +1237,9 @@ class RecallOpsEvaluationExecutor:
                     _create_tasks(
                         task_service,
                         case_id,
-                        ["STORE-03"],
+                        [late_facility],
                         version,
-                        key=f"r20-task-{iteration}",
+                        key=f"{late_task_key}-{iteration}",
                     )
                     results["task"] = "won"
                 except StaleCaseVersionError:
@@ -1169,17 +1262,146 @@ class RecallOpsEvaluationExecutor:
                 raise RuntimeError("TOCTOU worker did not terminate")
             state = seed.get_case(case_id)
             assert state is not None
-            if results == {"close": "won", "task": "stale"} and state.status == "closed":
-                outcomes.append("close_won_no_late_task")
+            new_receipts = [
+                receipt for receipt in state.write_receipts if receipt.case_version > version
+            ]
+            close_receipts = [
+                receipt for receipt in new_receipts if receipt.action_type == "close_case"
+            ]
+            late_task_receipts = [
+                receipt
+                for receipt in new_receipts
+                if receipt.action_type == "create_facility_tasks"
+                and late_facility in receipt.details.get("facility_ids", [])
+            ]
+            pending_late_task = state.acknowledgements.get(late_facility) is False
+            version_delta = state.case_version - version
+            outcome = "unsafe"
+            invariants_safe = False
+            if (
+                results == {"close": "won", "task": "stale"}
+                and state.status == "closed"
+                and len(close_receipts) == 1
+                and not late_task_receipts
+                and not pending_late_task
+                and version_delta == 1
+            ):
+                outcome = "close_won_no_late_task"
+                invariants_safe = True
             elif (
                 results == {"task": "won", "close": "stale_or_blocked"}
                 and state.status == "open"
-                and state.acknowledgements.get("STORE-03") is False
+                and pending_late_task
+                and len(late_task_receipts) == 1
+                and not close_receipts
+                and version_delta == 1
             ):
-                outcomes.append("late_task_won_close_blocked")
-            else:
+                outcome = "late_task_won_close_blocked"
+                invariants_safe = True
+            if not invariants_safe:
                 raise AssertionError(f"unsafe TOCTOU outcome: {results}, {state.status}")
+            outcomes.append(
+                {
+                    "iteration": iteration,
+                    "winner_barrier": winner,
+                    "outcome": outcome,
+                    "status": state.status,
+                    "version_before": version,
+                    "version_after": state.case_version,
+                    "version_delta": version_delta,
+                    "close_receipt_count": len(close_receipts),
+                    "late_task_receipt_count": len(late_task_receipts),
+                    "pending_late_task": pending_late_task,
+                    "invariants_safe": invariants_safe,
+                }
+            )
         return outcomes
+
+    def _run_ack_close_race(self, root: Path) -> dict[str, Any]:
+        database = root / "ack-close-race.sqlite3"
+        traceability = TraceabilityService()
+        seed = OperationsService(storage_path=database, traceability=traceability)
+        case_id = "CASE-R15-ACK-CLOSE-RACE"
+        _create_case(seed, traceability, case_id, lot_id="LOT-EXACT-170")
+        _record_disposition(
+            seed,
+            case_id,
+            "LOT-EXACT-170",
+            1,
+            evidence_id="EV-D-LOT-EXACT-170",
+            key="r15-race-disposition",
+        )
+        _create_tasks(seed, case_id, ["DC-NORTH", "STORE-01"], 2, key="r15-race-tasks")
+        _acknowledge(seed, case_id, "DC-NORTH", 3, key="r15-race-ack-north")
+        version = 4
+        start = Barrier(3)
+        outcomes: dict[str, str] = {}
+
+        def acknowledge() -> None:
+            start.wait(timeout=5)
+            try:
+                _acknowledge(
+                    OperationsService(storage_path=database, traceability=traceability),
+                    case_id,
+                    "STORE-01",
+                    version,
+                    key="r15-race-ack-store",
+                )
+                outcomes["acknowledgment"] = "won"
+            except StaleCaseVersionError:
+                outcomes["acknowledgment"] = "stale"
+
+        def close() -> None:
+            start.wait(timeout=5)
+            try:
+                _close(
+                    OperationsService(storage_path=database, traceability=traceability),
+                    case_id,
+                    version,
+                    key="r15-race-close",
+                )
+                outcomes["close"] = "won"
+            except (ClosureBlockedError, StaleCaseVersionError):
+                outcomes["close"] = "blocked_or_stale"
+
+        workers = [Thread(target=acknowledge), Thread(target=close)]
+        for worker in workers:
+            worker.start()
+        start.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=5)
+        if any(worker.is_alive() for worker in workers):
+            raise RuntimeError("acknowledgment/closure race did not terminate")
+        state = seed.get_case(case_id)
+        assert state is not None
+        new_receipts = [
+            receipt for receipt in state.write_receipts if receipt.case_version > version
+        ]
+        acknowledgment_receipts = [
+            receipt for receipt in new_receipts if receipt.action_type == "record_acknowledgment"
+        ]
+        close_receipts = [
+            receipt for receipt in new_receipts if receipt.action_type == "close_case"
+        ]
+        invariants_safe = (
+            outcomes.get("acknowledgment") == "won"
+            and outcomes.get("close") == "blocked_or_stale"
+            and state.status == "open"
+            and state.case_version == version + 1
+            and state.acknowledgements.get("STORE-01") is True
+            and len(acknowledgment_receipts) == 1
+            and not close_receipts
+        )
+        if not invariants_safe:
+            raise AssertionError(f"unsafe acknowledgment/closure race: {outcomes}")
+        return {
+            "outcomes": outcomes,
+            "version_before": version,
+            "version_after": state.case_version,
+            "acknowledgment_receipt_count": len(acknowledgment_receipts),
+            "close_receipt_count": len(close_receipts),
+            "invariants_safe": invariants_safe,
+        }
 
     async def _lost_response(
         self,
@@ -1222,6 +1444,7 @@ class RecallOpsEvaluationExecutor:
                 "logical_write_count": len(set(keys)),
                 "retried_logical_write_count": int(keys.count(key) == 1),
             },
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _restart(
@@ -1249,6 +1472,7 @@ class RecallOpsEvaluationExecutor:
         return self._observation(
             created,
             state_updates={"compiled_guard_results": compiled_guard_results},
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _probe_compiled_workflow_guards(
@@ -1256,184 +1480,38 @@ class RecallOpsEvaluationExecutor:
         scenario: EvaluationScenario,
         root: Path,
     ) -> dict[str, bool]:
+        del scenario
+
         def graph_for(label: str) -> Any:
             gateway = DirectGateway(
                 operations=OperationsService(storage_path=root / f"{label}-operations.sqlite3")
             )
             return build_workflow(gateway=gateway, checkpointer=InMemorySaver())
 
-        async def initialized(label: str) -> tuple[Any, dict[str, Any], Any]:
+        def surface_disabled(label: str, surface: str) -> bool:
             graph = graph_for(label)
-            identity = f"THREAD-R18-{label.upper()}"
-            config = {"configurable": {"thread_id": identity}}
-            initial = {
-                "case_id": identity,
-                "thread_id": identity,
-                "recall_number": scenario.input.recall_number,
-                "question": "Protect this paused graph from direct state replacement.",
-                "scope_lot_ids": [],
-            }
-            await graph.ainvoke(
-                initial,
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-            return graph, config, initial
-
-        def unchanged(before: Any, after: Any) -> bool:
-            return (
-                after.values == before.values
-                and after.interrupts == before.interrupts
-                and after.config == before.config
-            )
-
-        async def guarded(label: str, attempt: Any) -> bool:
-            graph, config, initial = await initialized(label)
-            before = await graph.aget_state(config)
-            rejected = False
             try:
-                await attempt(graph, config, {**initial, "question": "Attempted overwrite."})
-            except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
-                rejected = True
-            return rejected and unchanged(before, await graph.aget_state(config))
-
-        async def ainvoke(graph: Any, config: Any, payload: Any) -> None:
-            await graph.ainvoke(
-                payload,
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-
-        async def astream(graph: Any, config: Any, payload: Any) -> None:
-            async for _ in graph.astream(
-                payload,
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            ):
-                pass
-
-        async def invoke(graph: Any, config: Any, payload: Any) -> None:
-            await asyncio.to_thread(
-                graph.invoke,
-                payload,
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-
-        async def stream(graph: Any, config: Any, payload: Any) -> None:
-            await asyncio.to_thread(
-                lambda: tuple(
-                    graph.stream(
-                        payload,
-                        config,
-                        version="v2",
-                        stream_mode="values",
-                        durability="sync",
-                    )
-                )
-            )
-
-        async def abatch(graph: Any, config: Any, payload: Any) -> None:
-            await graph.abatch(
-                [payload],
-                config=[config],
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-
-        async def batch(graph: Any, config: Any, payload: Any) -> None:
-            await asyncio.to_thread(
-                graph.batch,
-                [payload],
-                [config],
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-
-        async def with_config(graph: Any, config: Any, payload: Any) -> None:
-            await graph.with_config(config).ainvoke(
-                payload,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-
-        async def update(graph: Any, config: Any, _: Any) -> None:
-            await graph.aupdate_state(config, {"case_id": "CASE-FORGED"})
-
-        async def sync_update(graph: Any, config: Any, _: Any) -> None:
-            await asyncio.to_thread(
-                graph.update_state,
-                config,
-                {"case_id": "CASE-FORGED"},
-            )
-
-        updates = [[StateUpdate(values={"case_id": "CASE-FORGED"}, as_node="intake")]]
-
-        async def bulk_update(graph: Any, config: Any, _: Any) -> None:
-            await graph.abulk_update_state(config, updates)
-
-        async def sync_bulk_update(graph: Any, config: Any, _: Any) -> None:
-            await asyncio.to_thread(graph.bulk_update_state, config, updates)
+                getattr(graph, surface)
+            except AttributeError:
+                return True
+            return False
 
         guard_results = {
-            "reinitialize": await guarded("reinitialize", ainvoke),
-            "stream_reinitialize": await guarded("stream-reinitialize", astream),
-            "invoke_reinitialize": await guarded("invoke-reinitialize", invoke),
-            "sync_stream_reinitialize": await guarded("sync-stream-reinitialize", stream),
-            "abatch_reinitialize": await guarded("abatch-reinitialize", abatch),
-            "batch_reinitialize": await guarded("batch-reinitialize", batch),
-            "with_config_reinitialize": await guarded("with-config-reinitialize", with_config),
-            "update_state": await guarded("update", update),
-            "sync_update_state": await guarded("sync-update", sync_update),
-            "bulk_update_state": await guarded("bulk-update", bulk_update),
-            "sync_bulk_update_state": await guarded("sync-bulk-update", sync_bulk_update),
+            "reinitialize": surface_disabled("reinitialize", "ainvoke"),
+            "stream_reinitialize": surface_disabled("stream-reinitialize", "astream"),
+            "invoke_reinitialize": surface_disabled("invoke-reinitialize", "invoke"),
+            "sync_stream_reinitialize": surface_disabled("sync-stream-reinitialize", "stream"),
+            "abatch_reinitialize": surface_disabled("abatch-reinitialize", "abatch"),
+            "batch_reinitialize": surface_disabled("batch-reinitialize", "batch"),
+            "with_config_reinitialize": surface_disabled("with-config-reinitialize", "with_config"),
+            "old_checkpoint_rewind": surface_disabled("old-checkpoint-rewind", "ainvoke"),
+            "private_execute_unavailable": surface_disabled("private-execute", "_execute"),
+            "raw_graph_unavailable": surface_disabled("raw-graph", "_graph"),
+            "update_state": surface_disabled("update", "aupdate_state"),
+            "sync_update_state": surface_disabled("sync-update", "update_state"),
+            "bulk_update_state": surface_disabled("bulk-update", "abulk_update_state"),
+            "sync_bulk_update_state": surface_disabled("sync-bulk-update", "bulk_update_state"),
         }
-
-        graph, config, _ = await initialized("old-checkpoint-rewind")
-        historical = await graph.aget_state(config)
-        historical_pending = historical.interrupts[0].value
-        await graph.ainvoke(
-            Command(resume=_bound_response(historical_pending, decision="approve")),
-            config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
-        )
-        confirmation = await graph.aget_state(config)
-        confirmation_pending = confirmation.interrupts[0].value
-        await graph.ainvoke(
-            Command(resume=_bound_response(confirmation_pending, decision="confirm")),
-            config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
-        )
-        latest = await graph.aget_state(config)
-        rewind_rejected = False
-        try:
-            await graph.ainvoke(
-                Command(resume=_bound_response(historical_pending, decision="approve")),
-                historical.config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
-            rewind_rejected = True
-        guard_results["old_checkpoint_rewind"] = rewind_rejected and unchanged(
-            latest, await graph.aget_state(config)
-        )
 
         checkpointer_required = False
         try:
@@ -1549,6 +1627,7 @@ class RecallOpsEvaluationExecutor:
                 "cross_runtime_start_one_effect": cross_runtime_start_one_effect,
             },
             counters={"logical_write_count": 1 if first else 0},
+            failure_injection=_declared_faults(scenario),
         )
 
     async def _probe_resume_bindings(
@@ -1799,6 +1878,7 @@ class RecallOpsEvaluationExecutor:
                 "premature_facility_edit_rejected": premature_rejected,
                 "action_sequence": sequence,
             },
+            failure_injection=_declared_faults(scenario),
         )
 
 
@@ -1822,6 +1902,7 @@ async def run_recallops_evaluations(
                 ),
                 output_path=output_path,
                 strict=strict,
+                corpus_payload=corpus.model_dump(mode="json"),
             )
     return await run_evaluations(
         corpus.scenarios,
@@ -1831,4 +1912,5 @@ async def run_recallops_evaluations(
         ),
         output_path=output_path,
         strict=strict,
+        corpus_payload=corpus.model_dump(mode="json"),
     )
