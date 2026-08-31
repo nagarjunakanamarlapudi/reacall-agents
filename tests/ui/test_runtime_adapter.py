@@ -45,9 +45,7 @@ async def test_durable_adapter_projects_compact_checkpoint_history(tmp_path: Pat
         "pending_kind": "action_review",
         "next_nodes": ["action_review"],
     }
-    assert json.loads(json.dumps(reviewed["checkpoint_history"])) == reviewed[
-        "checkpoint_history"
-    ]
+    assert json.loads(json.dumps(reviewed["checkpoint_history"])) == reviewed["checkpoint_history"]
 
 
 @pytest.mark.asyncio
@@ -289,6 +287,57 @@ async def test_durable_lost_response_is_observed_then_recovers_with_same_key(
 
     recovered = await adapter.simulate_approved_actions(unknown)
     assert recovered["case_version"] == 1
+    assert recovered["receipts"][0]["idempotency_key"] == original_key
+    assert _receipt_count(operations) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["direct", "stdio"])
+async def test_restarted_product_adapter_exposes_exact_key_unknown_outcome_recovery(
+    tmp_path: Path, transport: str
+) -> None:
+    """Break caught: restart restores the recovery interrupt but the product disables retry."""
+
+    checkpoint = tmp_path / f"{transport}-checkpoints.sqlite3"
+    operations = tmp_path / f"{transport}-operations.sqlite3"
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=checkpoint,
+        operations_path=operations,
+        transport=transport,  # type: ignore[arg-type]
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    opened["scope_lot_ids"] = ["LOT-PROBABLE-160"]
+    reviewed = await adapter.run_investigation(opened)
+    approved = await adapter.resume_review(
+        reviewed,
+        decision="approve",
+        actor="Food-safety manager",
+        justification=APPROVAL_JUSTIFICATION,
+        edited_action="",
+    )
+    original_execution = approved["pending_interrupt"]["execution_id"]
+    original_key = approved["pending_interrupt"]["idempotency_key"]
+    armed = await adapter.inject_failure(approved, "lost write response → same-key replay")
+    unknown = await adapter.simulate_approved_actions(armed)
+    assert unknown["status"] == "write_outcome_unknown"
+    assert _receipt_count(operations) == 1
+
+    restarted = DurableRuntimeAdapter(
+        checkpoint_path=checkpoint,
+        operations_path=operations,
+        transport=transport,  # type: ignore[arg-type]
+    )
+    restored = await restarted.load_case(unknown["thread_id"])
+    assert restored["pending_interrupt"]["execution_id"] == original_execution
+    assert restored["pending_interrupt"]["idempotency_key"] == original_key
+    assert can_simulate(reduce_case_snapshot(restored)) == (
+        True,
+        "Recover the recorded outcome using the exact original idempotency key.",
+    )
+
+    recovered = await restarted.simulate_approved_actions(restored)
+    assert recovered["case_version"] == 1
+    assert len(recovered["receipts"]) == 1
     assert recovered["receipts"][0]["idempotency_key"] == original_key
     assert _receipt_count(operations) == 1
 

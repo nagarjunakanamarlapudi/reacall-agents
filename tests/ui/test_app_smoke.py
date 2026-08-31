@@ -124,3 +124,40 @@ def test_app_durable_audit_shows_detached_checkpoint_history(monkeypatch, tmp_pa
     history = app.session_state.ui_case["checkpoint_history"]
     assert history[0]["checkpoint_id"] == app.session_state.ui_case["checkpoint_id"]
     assert history[0]["pending_kind"] == "action_review"
+
+
+def test_app_recovers_unknown_write_with_one_exact_key_receipt(monkeypatch, tmp_path) -> None:
+    """Break caught: the public UI disables the runtime's exact-key recovery interrupt."""
+
+    runtime_dir = tmp_path / "runtime"
+    monkeypatch.delenv("RECALLOPS_UI_MODE", raising=False)
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(runtime_dir))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.button(key="open_case_button").click().run()
+    app.radio(key="ui_active_view").set_value("Investigation").run()
+    app.button(key="run_investigation_button").click().run(timeout=30)
+    app.radio(key="ui_active_view").set_value("Human Review").run()
+    app.button(key="approve_button").click().run(timeout=30)
+
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    app.selectbox(key="ui_failure_scenario").set_value("lost write response → same-key replay")
+    app.button(key="inject_failure_button").click().run()
+    app.radio(key="ui_active_view").set_value("Human Review").run()
+    original_key = app.session_state.ui_case["pending_interrupt"]["idempotency_key"]
+    app.button(key="simulate_button").click().run(timeout=30)
+    assert app.session_state.ui_case["status"] == "write_outcome_unknown"
+
+    app.run()
+    recovery = app.button(key="simulate_button")
+    assert recovery.label == "Recover recorded outcome (same key)"
+    assert not recovery.disabled
+    recovery.click().run(timeout=30)
+    assert app.session_state.ui_case_version == 1
+    assert len(app.session_state.ui_write_receipts) == 1
+    assert app.session_state.ui_write_receipts[0]["idempotency_key"] == original_key
+
+    connection = sqlite3.connect(runtime_dir / "operations.sqlite3")
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 1
+    finally:
+        connection.close()

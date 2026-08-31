@@ -483,10 +483,13 @@ def _render_human_review() -> None:
 
     st.markdown("### Approved action")
     allowed, reason = can_simulate(case)
+    recovery_pending = bool(
+        case and case.raw.get("pending_interrupt", {}).get("kind") == "write_outcome_recovery"
+    )
     st.write("Simulated operation only")
     st.caption(reason)
     st.button(
-        "Simulate approved actions",
+        "Recover recorded outcome (same key)" if recovery_pending else "Simulate approved actions",
         key="simulate_button",
         type="primary",
         disabled=not allowed,

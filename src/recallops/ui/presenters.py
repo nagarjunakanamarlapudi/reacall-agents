@@ -585,8 +585,9 @@ def can_simulate(case: CasePresentation | None) -> tuple[bool, str]:
     action = actions[0] if actions else {}
     if not approval or approval.get("decision") != "approve":
         return False, "A matching approval is required."
-    if interrupt.get("kind") != "execution_confirmation":
-        return False, "Execution confirmation is not pending."
+    interrupt_kind = interrupt.get("kind")
+    if interrupt_kind not in {"execution_confirmation", "write_outcome_recovery"}:
+        return False, "Execution confirmation or exact-key recovery is not pending."
     bindings = (
         _strict_equal_text(approval.get("case_id"), case.case_id, interrupt.get("case_id")),
         _strict_equal_text(approval.get("thread_id"), case.thread_id, interrupt.get("thread_id")),
@@ -606,6 +607,7 @@ def can_simulate(case: CasePresentation | None) -> tuple[bool, str]:
             action.get("digest"),
             interrupt.get("action_digest"),
         ),
+        _strict_equal_text(approval.get("execution_id"), interrupt.get("execution_id")),
         _strict_equal_text(approval.get("idempotency_key"), interrupt.get("idempotency_key")),
         _strict_nonblank_text(approval.get("actor")),
         _strict_nonblank_text(approval.get("justification")),
@@ -615,6 +617,8 @@ def can_simulate(case: CasePresentation | None) -> tuple[bool, str]:
             False,
             "Approval does not match the current action, case version, and idempotency key.",
         )
+    if interrupt_kind == "write_outcome_recovery":
+        return True, "Recover the recorded outcome using the exact original idempotency key."
     return True, "Approval matches the current action and case version."
 
 

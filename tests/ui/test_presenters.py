@@ -459,6 +459,7 @@ def test_simulation_guard_requires_exact_approval_binding_and_key() -> None:
         "thread_id": raw["thread_id"],
         "expected_version": 0,
         "action_digest": "digest-1",
+        "execution_id": "execution-1",
         "actor": "Food-safety manager",
         "justification": APPROVAL_JUSTIFICATION,
         "idempotency_key": "demo-create-v0",
@@ -467,6 +468,7 @@ def test_simulation_guard_requires_exact_approval_binding_and_key() -> None:
     raw["pending_interrupt"] = {
         **raw["pending_interrupt"],
         "kind": "execution_confirmation",
+        "execution_id": "execution-1",
         "idempotency_key": "demo-create-v0",
     }
     assert can_simulate(reduce_case_snapshot(raw)) == (
@@ -474,6 +476,49 @@ def test_simulation_guard_requires_exact_approval_binding_and_key() -> None:
         "Approval matches the current action and case version.",
     )
     raw["approval"]["expected_version"] = 1
+    assert can_simulate(reduce_case_snapshot(raw))[0] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("case_id", "CASE-OTHER"),
+        ("thread_id", "THREAD-OTHER"),
+        ("expected_version", 1),
+        ("action_digest", "other-digest"),
+        ("execution_id", "other-execution"),
+        ("idempotency_key", "other-key"),
+    ],
+)
+def test_write_outcome_recovery_requires_the_exact_original_binding(
+    field: str, replacement: object
+) -> None:
+    """Break caught: the product hides recovery or permits a different write request."""
+
+    raw = _raw_case()
+    raw["approval"] = {
+        "case_id": raw["case_id"],
+        "thread_id": raw["thread_id"],
+        "expected_version": 0,
+        "action_digest": "digest-1",
+        "execution_id": "execution-1",
+        "actor": "Food-safety manager",
+        "justification": APPROVAL_JUSTIFICATION,
+        "idempotency_key": "recallops:execution-1",
+        "decision": "approve",
+    }
+    raw["pending_interrupt"] = {
+        **raw["pending_interrupt"],
+        "kind": "write_outcome_recovery",
+        "execution_id": "execution-1",
+        "idempotency_key": "recallops:execution-1",
+    }
+    assert can_simulate(reduce_case_snapshot(raw)) == (
+        True,
+        "Recover the recorded outcome using the exact original idempotency key.",
+    )
+
+    raw["pending_interrupt"][field] = replacement
     assert can_simulate(reduce_case_snapshot(raw))[0] is False
 
 

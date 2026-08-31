@@ -919,11 +919,13 @@ class DeterministicDemoAdapter:
         current["human_decision"] = decision_record
         current["approval"] = None
         if decision == "approve":
+            execution_id = self._idempotency_key(current, action)
             approval = {
                 **decision_record,
                 "case_id": current["case_id"],
                 "thread_id": current["thread_id"],
-                "idempotency_key": self._idempotency_key(current, action),
+                "execution_id": execution_id,
+                "idempotency_key": execution_id,
             }
             current["approval"] = approval
             current["status"] = "approved_pending_execution"
@@ -931,6 +933,7 @@ class DeterministicDemoAdapter:
             current["pending_interrupt"] = {
                 **interrupt,
                 "kind": "execution_confirmation",
+                "execution_id": approval["execution_id"],
                 "idempotency_key": approval["idempotency_key"],
             }
         elif decision == "edit":
@@ -1494,6 +1497,9 @@ def _project_runtime_case(
             "action_digest": binding.get("action_digest"),
             "actor": raw_approval.get("actor"),
             "justification": raw_approval.get("justification"),
+            "execution_id": (
+                pending_ui.get("execution_id") if pending_ui else state.get("execution_id")
+            ),
             "idempotency_key": (
                 pending_ui.get("idempotency_key") if pending_ui else state.get("idempotency_key")
             ),
