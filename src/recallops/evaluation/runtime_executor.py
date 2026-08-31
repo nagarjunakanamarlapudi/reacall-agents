@@ -13,7 +13,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.types import StateUpdate
+from langgraph.types import Command, StateUpdate
 
 from recallops.agents.middleware import (
     CallBudget,
@@ -1400,6 +1400,41 @@ class RecallOpsEvaluationExecutor:
             "sync_bulk_update_state": await guarded("sync-bulk-update", sync_bulk_update),
         }
 
+        graph, config, _ = await initialized("old-checkpoint-rewind")
+        historical = await graph.aget_state(config)
+        historical_pending = historical.interrupts[0].value
+        await graph.ainvoke(
+            Command(resume=_bound_response(historical_pending, decision="approve")),
+            config,
+            version="v2",
+            stream_mode="values",
+            durability="sync",
+        )
+        confirmation = await graph.aget_state(config)
+        confirmation_pending = confirmation.interrupts[0].value
+        await graph.ainvoke(
+            Command(resume=_bound_response(confirmation_pending, decision="confirm")),
+            config,
+            version="v2",
+            stream_mode="values",
+            durability="sync",
+        )
+        latest = await graph.aget_state(config)
+        rewind_rejected = False
+        try:
+            await graph.ainvoke(
+                Command(resume=_bound_response(historical_pending, decision="approve")),
+                historical.config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
+            rewind_rejected = True
+        guard_results["old_checkpoint_rewind"] = rewind_rejected and unchanged(
+            latest, await graph.aget_state(config)
+        )
+
         checkpointer_required = False
         try:
             build_workflow(
@@ -1439,6 +1474,9 @@ class RecallOpsEvaluationExecutor:
         codes = await self._probe_resume_bindings(scenario, operations_path.parent)
         start_input_codes = await self._probe_start_inputs(scenario, operations_path.parent)
         identity_conflict_codes = await self._probe_identity_conflicts(
+            scenario, operations_path.parent
+        )
+        cross_runtime_start_one_effect = await self._probe_cross_runtime_start(
             scenario, operations_path.parent
         )
         review = await _start(runtime, scenario)
@@ -1508,6 +1546,7 @@ class RecallOpsEvaluationExecutor:
                 "start_input_probe_codes": start_input_codes,
                 "identity_conflict_probe_codes": identity_conflict_codes,
                 "concurrent_resume_one_effect": concurrent_one_effect,
+                "cross_runtime_start_one_effect": cross_runtime_start_one_effect,
             },
             counters={"logical_write_count": 1 if first else 0},
         )
@@ -1550,6 +1589,53 @@ class RecallOpsEvaluationExecutor:
                 if rejected and after == before:
                     rejected_codes.append(code)
         return rejected_codes
+
+    async def _probe_cross_runtime_start(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> bool:
+        operations_path = root / "cross-runtime-operations.sqlite3"
+        case_id = "CASE-R12-CROSS-RUNTIME"
+        thread_id = "thread-r12-cross-runtime"
+        async with RecallOpsRuntime.open(
+            checkpoint_path=root / "cross-runtime-a-checkpoints.sqlite3",
+            operations_path=operations_path,
+        ) as first:
+            async with RecallOpsRuntime.open(
+                checkpoint_path=root / "cross-runtime-b-checkpoints.sqlite3",
+                operations_path=operations_path,
+            ) as second:
+                outcomes = await asyncio.gather(
+                    first.start_case(
+                        recall_number=scenario.input.recall_number,
+                        question="Reserve this exact durable case/thread once.",
+                        case_id=case_id,
+                        thread_id=thread_id,
+                    ),
+                    second.start_case(
+                        recall_number=scenario.input.recall_number,
+                        question="Reserve this exact durable case/thread once.",
+                        case_id=case_id,
+                        thread_id=thread_id,
+                    ),
+                    return_exceptions=True,
+                )
+                snapshots = await asyncio.gather(
+                    first.get_case(thread_id=thread_id),
+                    second.get_case(thread_id=thread_id),
+                )
+        successes = [item for item in outcomes if isinstance(item, RuntimeResult)]
+        rejections = [item for item in outcomes if isinstance(item, (TypeError, ValueError))]
+        persisted = [snapshot for snapshot in snapshots if snapshot is not None]
+        return (
+            len(successes) == 1
+            and len(rejections) == 1
+            and len(persisted) == 1
+            and successes[0] == persisted[0]
+            and successes[0].case.get("case_id") == case_id
+            and successes[0].case.get("thread_id") == thread_id
+        )
 
     async def _probe_start_inputs(
         self,

@@ -268,7 +268,7 @@
       "title": "Changed approval conflicts with an existing idempotency key",
       "safety_critical": true,
       "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "changed_approval_replay"},
-      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent", "case_identity_mismatch", "thread_identity_mismatch", "boolean_case_version", "coercive_case_version", "boolean_recall_number", "boolean_question", "string_scope_lot_ids", "case_to_thread_conflict", "thread_to_case_conflict"]},
+      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent", "case_identity_mismatch", "thread_identity_mismatch", "boolean_case_version", "coercive_case_version", "boolean_recall_number", "boolean_question", "string_scope_lot_ids", "case_to_thread_conflict", "thread_to_case_conflict", "cross_runtime_concurrent_start"]},
       "faults": [
         {"scenario": "changed_approval_same_key", "target": "apply_inventory_hold", "times": 1},
         {"scenario": "tampered_action_digest", "target": "resume_case", "times": 1},
@@ -291,6 +291,7 @@
           {"id": "case_to_thread_conflict_rejected", "path": "/state/identity_conflict_probe_codes", "operator": "contains", "expected": "case_to_thread_conflict", "safety_invariant": "One durable case cannot be rebound to a second graph thread."},
           {"id": "thread_to_case_conflict_rejected", "path": "/state/identity_conflict_probe_codes", "operator": "contains", "expected": "thread_to_case_conflict", "safety_invariant": "One durable graph thread cannot be rebound to a second case."},
           {"id": "concurrent_resume_one_effect", "path": "/state/concurrent_resume_one_effect", "operator": "truthy", "safety_invariant": "Concurrent same-thread consent has exactly one checkpoint effect."},
+          {"id": "cross_runtime_start_one_effect", "path": "/state/cross_runtime_start_one_effect", "operator": "truthy", "safety_invariant": "Distinct checkpoint runtimes sharing Operations cannot both reserve the same durable case/thread identity."},
           {"id": "changed_replay_single_receipt", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
           {"id": "changed_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
         ],
@@ -402,7 +403,7 @@
       "safety_critical": true,
       "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "restart_at": "action_review"},
       "input": {"case_id": "CASE-R18", "thread_id": "thread-r18"},
-      "faults": [{"scenario": "process_restart", "target": "action_review", "times": 1}],
+      "faults": [{"scenario": "process_restart", "target": "action_review", "times": 1}, {"scenario": "historical_checkpoint_rewind", "target": "compiled_graph.ainvoke", "times": 1}],
       "expected": {
         "route": ["I", "P", "M", "V", "H", "W"],
         "statuses": ["open_monitoring", "review_required"],
@@ -418,6 +419,7 @@
           {"id": "compiled_abatch_reinitialize_rejected", "path": "/state/compiled_guard_results/abatch_reinitialize", "operator": "truthy", "safety_invariant": "The asynchronous batch runner cannot replace a paused thread."},
           {"id": "compiled_batch_reinitialize_rejected", "path": "/state/compiled_guard_results/batch_reinitialize", "operator": "truthy", "safety_invariant": "The synchronous batch runner cannot replace a paused thread."},
           {"id": "compiled_with_config_reinitialize_rejected", "path": "/state/compiled_guard_results/with_config_reinitialize", "operator": "truthy", "safety_invariant": "A with_config-derived runner cannot bypass paused-thread protection."},
+          {"id": "compiled_old_checkpoint_rewind_rejected", "path": "/state/compiled_guard_results/old_checkpoint_rewind", "operator": "truthy", "safety_invariant": "A caller-supplied historical checkpoint ID cannot fork and replace the latest durable thread state."},
           {"id": "compiled_update_rejected", "path": "/state/compiled_guard_results/update_state", "operator": "truthy", "safety_invariant": "Public graph update APIs cannot overwrite approval-bound state."},
           {"id": "compiled_sync_update_rejected", "path": "/state/compiled_guard_results/sync_update_state", "operator": "truthy", "safety_invariant": "The synchronous graph update API cannot overwrite approval-bound state."},
           {"id": "compiled_bulk_update_rejected", "path": "/state/compiled_guard_results/bulk_update_state", "operator": "truthy", "safety_invariant": "Public graph bulk-update APIs cannot overwrite approval-bound state."},
