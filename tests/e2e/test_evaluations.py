@@ -894,6 +894,7 @@ async def test_real_executor_returns_runtime_evidence_not_a_precomputed_result(
         "trace_forward",
         "trace_backward",
         "get_inventory",
-        "get_sales",
         "reconcile_units",
     }
+    assert observation.state["gateway_sales_probe_count"] >= 1
+    assert all(event.get("boundary") != "evaluation_probe" for event in observation.tool_trace)
