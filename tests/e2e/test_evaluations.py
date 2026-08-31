@@ -350,7 +350,50 @@ async def test_global_invariants_reject_forged_rejected_and_mismatched_receipts(
         item for item in report.results[0].assertions if item.id == "global_receipt_integrity"
     )
     assert integrity.passed is False
-    assert integrity.actual == 1
+    assert integrity.actual == 2
+    assert report.metrics.receipt_integrity_violation_count == 2
+    assert report.gate_passed is False
+
+
+@pytest.mark.asyncio
+async def test_global_invariants_derive_duplicate_receipts_and_version_sequence() -> None:
+    scenario = _scenario(
+        "R01",
+        assertion={
+            "id": "declared_check_passes",
+            "path": "/state/source_mode",
+            "operator": "equals",
+            "expected": "snapshot",
+        },
+    ).model_copy(update={"setup": {"writes_authorized": True}})
+    receipt = {
+        "receipt_id": "receipt-duplicate",
+        "status": "simulated",
+        "action_type": "create_case",
+        "case_id": "CASE-TEST",
+        "case_version": 1,
+        "actor": "Food-safety manager",
+        "justification": "Evidence-scoped simulated operation.",
+        "idempotency_key": "create-key",
+        "details": {
+            "reviewed_action": {
+                "case_id": "CASE-TEST",
+                "action_type": "create_case",
+                "expected_case_version": 0,
+            }
+        },
+    }
+    duplicate = _observation(receipts=[receipt, receipt])
+    duplicate.state["case_version"] = 1
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": duplicate}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
+    assert report.metrics.duplicate_logical_write_count == 1
     assert report.metrics.receipt_integrity_violation_count == 1
     assert report.gate_passed is False
 

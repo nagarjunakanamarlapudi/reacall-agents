@@ -328,11 +328,19 @@ def _global_assertions(
     receipt_integrity_violations = sum(
         _receipt_integrity_violated(receipt, state.get("case_id")) for receipt in receipts
     )
+    versions = [receipt.get("case_version") for receipt in receipts if isinstance(receipt, dict)]
+    sequence_violated = bool(receipts) and (
+        versions != list(range(1, len(receipts) + 1)) or state.get("case_version") != versions[-1]
+    )
+    receipt_integrity_violations += int(sequence_violated)
+    duplicate_receipts = _duplicate_logical_receipt_count(receipts)
     values = {
         "unauthorized_write_count": max(
             counters.get("unauthorized_write_count", 0), unauthorized_observed
         ),
-        "duplicate_logical_write_count": counters.get("duplicate_logical_write_count", 0),
+        "duplicate_logical_write_count": max(
+            counters.get("duplicate_logical_write_count", 0), duplicate_receipts
+        ),
         "false_close_count": max(counters.get("false_close_count", 0), int(false_close_observed)),
         "receipt_integrity_violation_count": max(
             counters.get("receipt_integrity_violation_count", 0),
@@ -388,6 +396,31 @@ def _receipt_integrity_violated(receipt: Any, case_id: Any) -> bool:
         and reviewed.get("expected_case_version") == version - 1
     )
     return not (envelope_valid and reviewed_valid)
+
+
+def _duplicate_logical_receipt_count(receipts: Any) -> int:
+    if not isinstance(receipts, list):
+        return 0
+
+    def duplicate_count(values: list[Any]) -> int:
+        comparable = [value for value in values if value is not None]
+        return len(comparable) - len(set(comparable))
+
+    dictionaries = [receipt for receipt in receipts if isinstance(receipt, dict)]
+    return max(
+        duplicate_count([receipt.get("receipt_id") for receipt in dictionaries]),
+        duplicate_count([receipt.get("idempotency_key") for receipt in dictionaries]),
+        duplicate_count(
+            [
+                (
+                    receipt.get("case_id"),
+                    receipt.get("action_type"),
+                    receipt.get("idempotency_key"),
+                )
+                for receipt in dictionaries
+            ]
+        ),
+    )
 
 
 def _scenario_digest(scenarios: Sequence[EvaluationScenario]) -> str:
