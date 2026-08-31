@@ -154,7 +154,7 @@ def test_golden_corpus_defines_all_safety_critical_scenarios_and_contract() -> N
         "quantity_evidence_coverage": 7,
         "recovery_correctness": 4,
         "retrieval_evidence_coverage": 2,
-        "trace_completeness": 2,
+        "trace_completeness": 3,
     }
 
 

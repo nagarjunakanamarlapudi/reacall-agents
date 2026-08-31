@@ -53,7 +53,7 @@
       "id": "R01",
       "title": "Snapshot baseline remains read-only and cited",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "mcp_smoke": "direct_stdio_parity"},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "mcp_smoke": "direct_stdio_runtime_parity", "latency_budget_ms": 300000},
       "input": {"case_id": "CASE-R01", "thread_id": "thread-r01"},
       "faults": [],
       "expected": {
@@ -65,9 +65,10 @@
           {"id": "retrieval_citations_present", "path": "/state/rag_result/citations", "operator": "nonempty", "safety_invariant": "Retrieved context remains cited."},
           {"id": "baseline_tool_trace_complete", "path": "/tool_trace", "operator": "contains_all", "expected": ["get_recall", "find_candidate_products", "match_lots", "trace_forward", "trace_backward", "get_inventory", "get_sales", "reconcile_units"], "safety_invariant": "The report retains the complete observable read trace."},
           {"id": "mcp_direct_stdio_parity", "path": "/state/mcp_direct_stdio_parity", "operator": "truthy", "safety_invariant": "The direct and real stdio MCP boundaries return equivalent typed results."},
+          {"id": "stdio_runtime_parity", "path": "/state/stdio_runtime_parity", "operator": "truthy", "safety_invariant": "The complete LangGraph investigation reaches the same bound review through real stdio MCP transport."},
           {"id": "zero_preapproval_receipts", "path": "/state/write_receipts", "operator": "empty", "safety_invariant": "Read-only investigation cannot mutate operations."}
         ],
-        "metric_contributions": {"retrieval_evidence_coverage": ["official_snapshot_provenance", "retrieval_citations_present"], "trace_completeness": ["baseline_tool_trace_complete", "mcp_direct_stdio_parity"]}
+        "metric_contributions": {"retrieval_evidence_coverage": ["official_snapshot_provenance", "retrieval_citations_present"], "trace_completeness": ["baseline_tool_trace_complete", "mcp_direct_stdio_parity", "stdio_runtime_parity"]}
       }
     },
     {

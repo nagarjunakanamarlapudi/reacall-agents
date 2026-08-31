@@ -487,7 +487,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del operations_path
         predicate = RecallPredicate.model_validate(result.case["recall_predicate"])
         direct = DirectGateway()
         direct_recall, direct_lots, sales = await asyncio.gather(
@@ -496,11 +496,43 @@ class RecallOpsEvaluationExecutor:
             direct.get_sales("LOT-EXACT-170"),
         )
         parity = False
+        runtime_parity = False
         if self.include_stdio_smoke:
             stdio = StdioMCPGateway()
             stdio_recall = await stdio.get_recall(result.case["recall_number"])
             stdio_lots = await stdio.match_lots(predicate)
             parity = direct_recall == stdio_recall and direct_lots == stdio_lots
+            async with RecallOpsRuntime.open(
+                checkpoint_path=root / "stdio-runtime-checkpoints.sqlite3",
+                operations_path=root / "stdio-runtime-operations.sqlite3",
+                transport="stdio",
+            ) as stdio_runtime:
+                stdio_result = await _start(stdio_runtime, scenario)
+            stable_fields = (
+                "status",
+                "source_mode",
+                "recall",
+                "recall_predicate",
+                "rag_result",
+                "candidate_lots",
+                "confirmed_lot_ids",
+                "ambiguous_lot_ids",
+                "forward_traces",
+                "backward_traces",
+                "reconciliations",
+                "evidence_gaps",
+                "required_facilities",
+                "verification",
+                "current_action",
+                "node_trace",
+            )
+            runtime_parity = (
+                {field: result.case.get(field) for field in stable_fields}
+                == {field: stdio_result.case.get(field) for field in stable_fields}
+                and result.pending_interrupt == stdio_result.pending_interrupt
+                and result.next_nodes == stdio_result.next_nodes
+                and not stdio_result.case.get("write_receipts")
+            )
         trace = [
             *result.case.get("tool_trace", []),
             {
@@ -512,7 +544,10 @@ class RecallOpsEvaluationExecutor:
         ]
         return self._observation(
             result,
-            state_updates={"mcp_direct_stdio_parity": parity},
+            state_updates={
+                "mcp_direct_stdio_parity": parity,
+                "stdio_runtime_parity": runtime_parity,
+            },
             tool_trace=trace,
         )
 
@@ -1337,11 +1372,23 @@ class RecallOpsEvaluationExecutor:
             response["edited_action"] = edited.model_dump(mode="json")
             before = await edit_runtime.get_case(thread_id="thread-r21-edit")
             try:
-                await edit_runtime.resume_case(thread_id="thread-r21-edit", response=response)
+                after = await edit_runtime.resume_case(
+                    thread_id="thread-r21-edit", response=response
+                )
             except ValueError:
-                premature_rejected = True
-            if premature_rejected:
-                assert await edit_runtime.get_case(thread_id="thread-r21-edit") == before
+                after = await edit_runtime.get_case(thread_id="thread-r21-edit")
+            assert before is not None and before.pending_interrupt is not None
+            premature_rejected = (
+                after is not None
+                and after.pending_interrupt is not None
+                and after.pending_interrupt.get("kind") == "action_review"
+                and after.pending_interrupt.get("action") == before.pending_interrupt.get("action")
+                and after.pending_interrupt.get("action_digest")
+                == before.pending_interrupt.get("action_digest")
+                and after.case.get("case_version") == 0
+                and not after.case.get("write_receipts")
+                and "execution_confirmation" not in after.next_nodes
+            )
 
         result = await _approve_and_confirm(runtime, await _start(runtime, scenario))
         result = await _approve_and_confirm(runtime, result)
