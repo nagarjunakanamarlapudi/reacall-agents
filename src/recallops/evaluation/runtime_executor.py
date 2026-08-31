@@ -393,6 +393,16 @@ def _error_code(error: BaseException) -> str:
     return type(error).__name__
 
 
+def _checkpoint_fence_error_code(error: Any) -> str:
+    if not isinstance(error, ValueError):
+        return ""
+    messages = {
+        "workflow mutation is already active or uncertain": "active_mutation_fenced",
+        "checkpoint head is stale and cannot fork the durable workflow": "stale_head_fenced",
+    }
+    return messages.get(str(error), "")
+
+
 def _observed_fault(
     scenario: EvaluationScenario, index: int, *, observed_times: int
 ) -> dict[str, Any]:
@@ -464,49 +474,38 @@ def _immutable_container_audit(value: Any, *, path: str) -> dict[str, Any]:
             return
         seen.add(identity)
         if isinstance(item, Mapping):
-            mutators = (
-                "__setitem__",
-                "__delitem__",
-                "clear",
-                "pop",
-                "popitem",
-                "setdefault",
-                "update",
-            )
-            checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
-            for key, child in item.items():
+            children = list(item.items())
+            if children:
+                key, child = children[0]
+                checks[current_path] = _mutation_rejected(item, "__setitem__", key, child)
+            else:
+                checks[current_path] = _mutation_rejected(
+                    item, "__setitem__", "__recallops_immutability_probe__", None
+                )
+                if not checks[current_path]:
+                    getattr(item, "pop")("__recallops_immutability_probe__", None)
+            for key, child in children:
                 visit(child, f"{current_path}/{key}")
             return
         if isinstance(item, Set):
-            mutators = (
-                "add",
-                "clear",
-                "difference_update",
-                "discard",
-                "intersection_update",
-                "pop",
-                "remove",
-                "symmetric_difference_update",
-                "update",
-            )
-            checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
-            for index, child in enumerate(item):
+            children = list(item)
+            sentinel = children[0] if children else "__recallops_immutability_probe__"
+            checks[current_path] = _mutation_rejected(item, "add", sentinel)
+            if not checks[current_path] and not children:
+                getattr(item, "discard")(sentinel)
+            for index, child in enumerate(children):
                 visit(child, f"{current_path}/{index}")
             return
-        mutators = (
-            "__setitem__",
-            "__delitem__",
-            "append",
-            "clear",
-            "extend",
-            "insert",
-            "pop",
-            "remove",
-            "reverse",
-            "sort",
-        )
-        checks[current_path] = not any(callable(getattr(item, name, None)) for name in mutators)
-        for index, child in enumerate(item):
+        children = list(item)
+        if children:
+            checks[current_path] = _mutation_rejected(item, "__setitem__", 0, children[0])
+        else:
+            checks[current_path] = _mutation_rejected(
+                item, "append", "__recallops_immutability_probe__"
+            )
+            if not checks[current_path]:
+                getattr(item, "pop")()
+        for index, child in enumerate(children):
             visit(child, f"{current_path}/{index}")
 
     visit(value, path)
@@ -521,7 +520,7 @@ def _immutable_container_audit(value: Any, *, path: str) -> dict[str, Any]:
 def _execution_confirmation_evidence(history: Sequence[RuntimeResult]) -> list[dict[str, Any]]:
     """Extract durable post-confirm checkpoints from the public history API."""
 
-    evidence_by_execution: dict[str, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
     chronological = list(reversed(history))
     for index, snapshot in enumerate(chronological):
         if index == 0:
@@ -531,6 +530,8 @@ def _execution_confirmation_evidence(history: Sequence[RuntimeResult]) -> list[d
         if snapshot.pending_interrupt is not None:
             continue
         if case.get("status") != "approved_pending_execution":
+            continue
+        if snapshot.next_nodes != ("execute_one_operation",):
             continue
         if (
             prior.pending_interrupt is None
@@ -547,6 +548,23 @@ def _execution_confirmation_evidence(history: Sequence[RuntimeResult]) -> list[d
         checkpoint_id = snapshot.checkpoint_id
         if prior.case.get("execution_id") != execution_id:
             continue
+        pending = prior.pending_interrupt
+        assert pending is not None
+        approval = case.get("approval")
+        if not isinstance(approval, Mapping):
+            continue
+        bound_fields = {
+            "case_id": action.case_id,
+            "case_version": action.expected_case_version,
+            "action_id": action.action_id,
+            "action_digest": digest,
+            "execution_id": execution_id,
+            "idempotency_key": idempotency_key,
+        }
+        if any(pending.get(key) != value for key, value in bound_fields.items()):
+            continue
+        if len(prior.case.get("write_receipts", ())) != len(case.get("write_receipts", ())):
+            continue
         if not all(
             isinstance(value, str) and bool(value.strip())
             for value in (execution_id, idempotency_key, digest, checkpoint_id)
@@ -554,17 +572,16 @@ def _execution_confirmation_evidence(history: Sequence[RuntimeResult]) -> list[d
             continue
         if digest != proposed_action_digest(action):
             continue
-        evidence_by_execution[execution_id] = {
-            "confirmed": True,
-            "case_id": action.case_id,
-            "case_version": action.expected_case_version,
-            "action_id": action.action_id,
-            "action_digest": digest,
-            "execution_id": execution_id,
-            "idempotency_key": idempotency_key,
-            "checkpoint_id": checkpoint_id,
-        }
-    return list(evidence_by_execution.values())
+        evidence.append(
+            {
+                "confirmed": True,
+                **bound_fields,
+                "actor": approval.get("actor"),
+                "justification": approval.get("justification"),
+                "checkpoint_id": checkpoint_id,
+            }
+        )
+    return evidence
 
 
 def _normalize_warning_codes(warnings: list[str]) -> list[str]:
@@ -580,6 +597,16 @@ def _normalize_warning_codes(warnings: list[str]) -> list[str]:
     return list(dict.fromkeys(codes))
 
 
+def _thaw_json(value: Any) -> Any:
+    """Convert immutable public JSON containers into detached report containers."""
+
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_json(child) for key, child in value.items()}
+    if isinstance(value, (Sequence, Set)) and not isinstance(value, (str, bytes, bytearray)):
+        return [_thaw_json(child) for child in value]
+    return deepcopy(value)
+
+
 def _normalize_gaps(case: dict[str, Any]) -> list[str]:
     gaps = list(case.get("evidence_gaps", []))
     for reconciliation in case.get("reconciliations", []):
@@ -591,7 +618,7 @@ def _normalize_gaps(case: dict[str, Any]) -> list[str]:
 
 
 def _normalize_state(case: dict[str, Any], **updates: Any) -> dict[str, Any]:
-    state = deepcopy(case)
+    state = _thaw_json(case)
     reconciliations = state.get("reconciliations", state.get("reconciliation", []))
     state.update(
         reconciliation=reconciliations,
@@ -692,7 +719,7 @@ async def _drive_to_end_with_review_lifecycle(
             )
         if pending["kind"] == "closure_review" and not closure_edit_attempted:
             closure_edit_attempted = True
-            edited_action = deepcopy(pending["action"])
+            edited_action = _thaw_json(pending["action"])
             edited_action["rationale"] = (
                 f"{edited_action['rationale']} Final rationale reviewed for closure."
             )
@@ -783,7 +810,9 @@ class RecallOpsEvaluationExecutor:
         failure_injection: list[dict[str, Any]] | None = None,
     ) -> EvaluationObservation:
         state = _normalize_state(result.case, **(state_updates or {}))
-        trace = tool_trace if tool_trace is not None else list(result.case.get("tool_trace", []))
+        trace = _thaw_json(
+            tool_trace if tool_trace is not None else result.case.get("tool_trace", [])
+        )
         logical_receipts = {
             item.get("receipt_id")
             for item in state.get("write_receipts", [])
@@ -1939,17 +1968,44 @@ class RecallOpsEvaluationExecutor:
             )
             successes = [item for item in concurrent if isinstance(item, RuntimeResult)]
             failures = [item for item in concurrent if isinstance(item, BaseException)]
-            concurrent_fenced = len(successes) == 1 and len(failures) == 1
+            concurrent_error_code = (
+                _checkpoint_fence_error_code(failures[0]) if len(failures) == 1 else ""
+            )
+            concurrent_fenced = (
+                len(successes) == 1
+                and len(failures) == 1
+                and concurrent_error_code in {"active_mutation_fenced", "stale_head_fenced"}
+            )
             sequential_fenced = False
+            sequential_error_code = ""
+            durable_post_race_state = False
             if concurrent_fenced:
-                loser = first if isinstance(concurrent[0], BaseException) else second
+                first_won = isinstance(concurrent[0], RuntimeResult)
+                winner = first if first_won else second
+                loser = second if first_won else first
+                winner_after, loser_after = await asyncio.gather(
+                    winner.get_case(thread_id=thread_id),
+                    loser.get_case(thread_id=thread_id),
+                )
+                durable_post_race_state = (
+                    winner_after == successes[0]
+                    and loser_after is not None
+                    and loser_after.pending_interrupt is not None
+                    and loser_after.pending_interrupt.get("kind") == "action_review"
+                    and winner_after is not None
+                    and winner_after.checkpoint_id != loser_after.checkpoint_id
+                )
                 try:
                     await loser.resume_case(thread_id=thread_id, response=response)
-                except (RuntimeError, ValueError):
-                    sequential_fenced = True
+                except (RuntimeError, ValueError) as error:
+                    sequential_error_code = _checkpoint_fence_error_code(error)
+                    sequential_fenced = sequential_error_code == "stale_head_fenced"
         return {
             "concurrent_fenced": concurrent_fenced,
             "sequential_fenced": sequential_fenced,
+            "durable_post_race_state": durable_post_race_state,
+            "concurrent_error_code": concurrent_error_code,
+            "sequential_error_code": sequential_error_code,
             "success_count": len(successes),
             "failure_count": len(failures),
         }

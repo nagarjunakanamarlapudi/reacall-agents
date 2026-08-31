@@ -672,6 +672,36 @@ async def test_approved_receipt_requires_bound_execution_confirmation() -> None:
     assert report.metrics.unauthorized_write_count == 1
     assert report.gate_passed is False
 
+    confirmation = {
+        "confirmed": True,
+        "case_id": "CASE-TEST",
+        "case_version": 0,
+        "action_id": action.action_id,
+        "action_digest": digest,
+        "execution_id": execution_id,
+        "idempotency_key": receipt["idempotency_key"],
+        "actor": receipt["actor"],
+        "justification": receipt["justification"],
+        "checkpoint_id": "checkpoint-after-confirmation",
+    }
+    observation.state["execution_confirmation_history"] = [confirmation]
+    confirmed = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": observation}),
+        strict=False,
+        clock=ScriptedClock([2.0, 2.001]),
+    )
+    assert confirmed.metrics.unauthorized_write_count == 0
+
+    observation.state["execution_confirmation_history"] = [confirmation, confirmation]
+    duplicated = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R01": observation}),
+        strict=False,
+        clock=ScriptedClock([3.0, 3.001]),
+    )
+    assert duplicated.metrics.unauthorized_write_count == 1
+
 
 @pytest.mark.asyncio
 async def test_premature_allowlisted_write_phase_fails_route_gate() -> None:

@@ -456,8 +456,10 @@ def _receipt_authorization_violated(receipt: dict[str, Any], state: dict[str, An
         and history.get("justification") == receipt.get("justification")
         for history in state.get("review_history", [])
     )
-    confirmation_bound = any(
-        isinstance(confirmation, dict)
+    confirmation_matches = [
+        confirmation
+        for confirmation in state.get("execution_confirmation_history", [])
+        if isinstance(confirmation, dict)
         and confirmation.get("confirmed") is True
         and confirmation.get("case_id") == receipt.get("case_id")
         and confirmation.get("case_version") == action.expected_case_version
@@ -465,10 +467,12 @@ def _receipt_authorization_violated(receipt: dict[str, Any], state: dict[str, An
         and confirmation.get("action_digest") == digest
         and confirmation.get("execution_id") == execution_id
         and confirmation.get("idempotency_key") == receipt.get("idempotency_key")
+        and confirmation.get("actor") == receipt.get("actor")
+        and confirmation.get("justification") == receipt.get("justification")
         and isinstance(confirmation.get("checkpoint_id"), str)
         and bool(confirmation["checkpoint_id"].strip())
-        for confirmation in state.get("execution_confirmation_history", [])
-    )
+    ]
+    confirmation_bound = len(confirmation_matches) == 1
     service_bound = any(
         isinstance(binding, dict)
         and binding.get("receipt_id") == receipt.get("receipt_id")
