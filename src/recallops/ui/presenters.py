@@ -163,6 +163,7 @@ class ReviewPacketPresentation:
     reconciliation: ReconciliationPresentation
     verification: dict[str, str]
     proposed_actions: list[dict[str, str]]
+    remaining_actions: list[str]
     citations: list[EvidenceRow]
     timeline: list[TimelineRow]
 
@@ -520,6 +521,11 @@ def build_review_packet(case: CasePresentation) -> ReviewPacketPresentation | No
         reconciliation=build_reconciliation_presentation(case),
         verification=verification,
         proposed_actions=actions,
+        remaining_actions=[
+            mask_display_value(value)
+            for value in interrupt.get("remaining_action_types", [])
+            if isinstance(value, str) and value.strip()
+        ],
         citations=build_evidence_rows(case, ""),
         timeline=build_timeline_rows(case),
     )
@@ -551,8 +557,8 @@ def validate_review_submission(
         )
         return issues
     interrupt = _mapping(case.raw.get("pending_interrupt"))
-    if interrupt.get("kind") != "action_review":
-        issues.append(ValidationIssue("interrupt", "No action-review interrupt is pending."))
+    if interrupt.get("kind") not in {"action_review", "closure_review"}:
+        issues.append(ValidationIssue("interrupt", "No human-review interrupt is pending."))
     bindings = (
         ("case_id", case.case_id),
         ("thread_id", case.thread_id),

@@ -327,6 +327,19 @@ def test_review_guard_rejects_bool_version_even_when_equal_to_zero() -> None:
     assert any(issue.field == "case_version" for issue in issues)
 
 
+def test_closure_review_uses_the_same_strict_human_decision_contract() -> None:
+    raw = _raw_case()
+    raw["pending_interrupt"]["kind"] = "closure_review"
+    issues = validate_review_submission(
+        "edit",
+        "Food-safety manager",
+        "Keep this in closure review after the rationale edit.",
+        reduce_case_snapshot(raw),
+        "Clarify the closure rationale; do not change the action or scope.",
+    )
+    assert issues == []
+
+
 def test_execution_guard_rejects_coercive_approval_metadata() -> None:
     raw = _raw_case()
     raw["pending_interrupt"] = {
@@ -380,13 +393,26 @@ def test_reconciliation_keeps_unknown_values_and_blocks_positive_gap() -> None:
 
 
 def test_review_packet_contains_scope_evidence_gaps_actions_and_trace() -> None:
-    packet = build_review_packet(reduce_case_snapshot(_raw_case()))
+    raw = _raw_case()
+    raw["pending_interrupt"]["remaining_action_types"] = [
+        "apply_inventory_hold",
+        "record_acknowledgment",
+        "record_disposition",
+        "close_case",
+    ]
+    packet = build_review_packet(reduce_case_snapshot(raw))
     assert packet is not None
     assert packet.scope == "create_case"
     assert packet.case_version == 0
     assert packet.matches[1].review_flag == "Human review required"
     assert packet.reconciliation.gaps
     assert packet.proposed_actions[0]["Action type"] == "create_case"
+    assert packet.remaining_actions == [
+        "apply_inventory_hold",
+        "record_acknowledgment",
+        "record_disposition",
+        "close_case",
+    ]
     assert packet.citations[0].source == "OFFICIAL — openFDA snapshot"
     assert packet.timeline
     raw = _raw_case()
@@ -473,6 +499,29 @@ def test_receipts_and_timeline_are_masked_and_ordered() -> None:
     assert [row.order for row in timeline] == [1, 2]
     assert timeline[1].tool == "recall_registry_hybrid_search"
     assert timeline[1].source == "SOURCE — UNKNOWN"
+
+
+def test_repeated_action_receipts_remain_visible_as_distinct_versions() -> None:
+    raw = _raw_case()
+    raw["receipts"] = [
+        {
+            "receipt_id": "R-ACK-1",
+            "action_type": "record_acknowledgment",
+            "case_id": raw["case_id"],
+            "case_version": 4,
+            "source": "SYNTHETIC_RETAILER_DIGITAL_TWIN",
+        },
+        {
+            "receipt_id": "R-ACK-2",
+            "action_type": "record_acknowledgment",
+            "case_id": raw["case_id"],
+            "case_version": 5,
+            "source": "SYNTHETIC_RETAILER_DIGITAL_TWIN",
+        },
+    ]
+    receipts = build_receipt_rows(reduce_case_snapshot(raw))
+    assert [row.receipt_id for row in receipts] == ["R-ACK-1", "R-ACK-2"]
+    assert [row.case_version for row in receipts] == ["4", "5"]
 
 
 def test_retrieval_rows_prove_sparse_dense_fusion_rerank_and_critic() -> None:

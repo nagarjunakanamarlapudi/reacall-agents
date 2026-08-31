@@ -436,6 +436,14 @@ def _render_human_review() -> None:
                 hide_index=True,
             )
         st.dataframe(packet.proposed_actions, width="stretch", hide_index=True)
+        if packet.remaining_actions:
+            st.markdown("### Remaining versioned action lifecycle")
+            st.table(
+                [
+                    {"Order": index, "Action": action}
+                    for index, action in enumerate(packet.remaining_actions, start=1)
+                ]
+            )
         st.dataframe([asdict(row) for row in packet.citations], width="stretch", hide_index=True)
         with st.expander("Review trace summary"):
             st.dataframe([asdict(row) for row in packet.timeline], width="stretch", hide_index=True)
