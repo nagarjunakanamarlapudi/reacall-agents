@@ -183,6 +183,7 @@
         "statuses": ["review_required", "escalated"],
         "assertions": [
           {"id": "missing_shipment_gap", "path": "/state/evidence_gaps", "operator": "contains", "expected": "unexplained_facility:STORE-02", "safety_invariant": "Missing movement is exposed, not inferred away."},
+          {"id": "dependency_failures_reach_terminal_state", "path": "/state/dependency_failure_terminal_count", "operator": "equals", "expected": 13, "safety_invariant": "RAG and every authoritative read failure must terminate fail-closed rather than strand an investigating checkpoint."},
           {"id": "missing_shipment_not_closed", "path": "/state/status", "operator": "not_contains", "expected": "closed"}
         ],
         "metric_contributions": {"gap_detection_recall": ["missing_shipment_gap"]}

@@ -44,6 +44,22 @@ _SUPPORTED_START_FAILURES = {
     "R19": ("repeated_progress_signature",),
 }
 
+_REQUIRED_DEPENDENCY_FAILURES = (
+    "rag_failure",
+    "find_candidate_products_transient_failure",
+    "find_candidate_products_malformed_evidence",
+    "match_lots_transient_failure",
+    "match_lots_malformed_evidence",
+    "trace_forward_transient_failure",
+    "trace_forward_malformed_evidence",
+    "trace_backward_transient_failure",
+    "trace_backward_malformed_evidence",
+    "get_inventory_transient_failure",
+    "get_inventory_malformed_evidence",
+    "reconcile_units_transient_failure",
+    "reconcile_units_malformed_evidence",
+)
+
 
 def _bound_response(
     pending: dict[str, Any],
@@ -424,6 +440,7 @@ class RecallOpsEvaluationExecutor:
         route_actual: list[str] | None = None,
         tool_trace: list[dict[str, Any]] | None = None,
         counters: dict[str, int] | None = None,
+        failure_injection: list[dict[str, Any]] | None = None,
     ) -> EvaluationObservation:
         state = _normalize_state(result.case, **(state_updates or {}))
         trace = tool_trace if tool_trace is not None else list(result.case.get("tool_trace", []))
@@ -444,7 +461,7 @@ class RecallOpsEvaluationExecutor:
             route_actual=route_actual or list(result.case.get("node_trace", [])),
             tool_trace=trace,
             counters=derived,
-            failure_injection=[],
+            failure_injection=failure_injection or [],
         )
 
     async def _augment(
@@ -528,7 +545,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root, operations_path
+        del operations_path
         dataset = deepcopy(TraceabilityService().dataset)
         dataset["events"] = [item for item in dataset["events"] if item["event_id"] != "EV-003"]
         transformed = TraceabilityService(dataset=dataset).trace_forward("LOT-EXACT-170")
@@ -539,10 +556,64 @@ class RecallOpsEvaluationExecutor:
             if facility
         }
         gap = "unexplained_facility:STORE-02" if "STORE-02" not in facilities else ""
+        dependency_outcomes = await self._probe_dependency_failures(scenario, root)
+        terminal_count = sum(
+            outcome == "terminal_fail_closed" for outcome in dependency_outcomes.values()
+        )
         return self._observation(
             result,
-            state_updates={"evidence_gaps": [*_normalize_gaps(result.case), gap]},
+            state_updates={
+                "evidence_gaps": [*_normalize_gaps(result.case), gap],
+                "dependency_failure_terminal_count": terminal_count,
+                "dependency_failure_outcomes": dependency_outcomes,
+            },
+            failure_injection=[
+                {
+                    "scenario": failure,
+                    "target": "runtime_dependency_read",
+                    "times": 1,
+                    "parameters": {},
+                }
+                for failure in _REQUIRED_DEPENDENCY_FAILURES
+            ],
         )
+
+    async def _probe_dependency_failures(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> dict[str, str]:
+        outcomes: dict[str, str] = {}
+        for index, failure in enumerate(_REQUIRED_DEPENDENCY_FAILURES):
+            try:
+                async with RecallOpsRuntime.open(
+                    checkpoint_path=root / f"dependency-{index}-checkpoints.sqlite3",
+                    operations_path=root / f"dependency-{index}-operations.sqlite3",
+                ) as runtime:
+                    runtime.inject_failure(failure)
+                    blocked = await runtime.start_case(
+                        recall_number=scenario.input.recall_number,
+                        question="Fail closed if required investigation evidence is unavailable.",
+                        case_id=f"CASE-R07-DEPENDENCY-{index}",
+                        thread_id=f"thread-r07-dependency-{index}",
+                    )
+                terminal = (
+                    blocked.case.get("status") == "escalated"
+                    and blocked.pending_interrupt is None
+                    and blocked.next_nodes == ()
+                    and not blocked.case.get("write_receipts")
+                    and blocked.case.get("failure_state", {}).get("stage")
+                    in {
+                        "retrieve_context",
+                        "product_lot_match",
+                        "trace_forward_backward",
+                        "reconcile",
+                    }
+                )
+                outcomes[failure] = "terminal_fail_closed" if terminal else "nonterminal"
+            except Exception as error:  # noqa: BLE001 - record every injected crash honestly
+                outcomes[failure] = f"exception:{type(error).__name__}"
+        return outcomes
 
     async def _scenario_r08(
         self,
