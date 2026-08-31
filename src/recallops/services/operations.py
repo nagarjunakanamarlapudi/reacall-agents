@@ -81,6 +81,8 @@ class OperationsService:
                     CREATE TABLE IF NOT EXISTS case_threads (
                       case_id TEXT PRIMARY KEY REFERENCES cases(case_id),
                       thread_id TEXT NOT NULL UNIQUE);
+                    CREATE TABLE IF NOT EXISTS workflow_identities (
+                      case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE);
                     CREATE TABLE IF NOT EXISTS receipts (
                       receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
                       case_id TEXT NOT NULL REFERENCES cases(case_id), action_type TEXT NOT NULL,
@@ -93,6 +95,7 @@ class OperationsService:
                       case_id TEXT NOT NULL REFERENCES cases(case_id), facility_id TEXT NOT NULL,
                       status TEXT NOT NULL, PRIMARY KEY(case_id, facility_id));
                 """)
+                self._migrate_case_threads(connection)
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to initialize operation store: {error}") from error
 
@@ -119,6 +122,57 @@ class OperationsService:
                 if connection.in_transaction:
                     connection.execute("ROLLBACK")
                 raise
+
+    def _migrate_case_threads(self, connection: sqlite3.Connection) -> None:
+        """Backfill and validate the durable one-to-one identity mapping atomically."""
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute("SELECT case_id, state_json FROM cases").fetchall()
+            for row in rows:
+                state = RecallCaseState.model_validate_json(row["state_json"])
+                if state.case_id != row["case_id"]:
+                    raise ValueError("case identity disagrees with persisted state")
+                by_case = connection.execute(
+                    "SELECT thread_id FROM case_threads WHERE case_id=?",
+                    (state.case_id,),
+                ).fetchone()
+                by_thread = connection.execute(
+                    "SELECT case_id FROM case_threads WHERE thread_id=?",
+                    (state.thread_id,),
+                ).fetchone()
+                if by_case and by_case["thread_id"] != state.thread_id:
+                    raise ValueError("case identity is already bound to another thread")
+                if by_thread and by_thread["case_id"] != state.case_id:
+                    raise ValueError("thread identity is already bound to another case")
+                workflow_by_case = connection.execute(
+                    "SELECT thread_id FROM workflow_identities WHERE case_id=?",
+                    (state.case_id,),
+                ).fetchone()
+                workflow_by_thread = connection.execute(
+                    "SELECT case_id FROM workflow_identities WHERE thread_id=?",
+                    (state.thread_id,),
+                ).fetchone()
+                if workflow_by_case and workflow_by_case["thread_id"] != state.thread_id:
+                    raise ValueError("workflow case identity is already bound to another thread")
+                if workflow_by_thread and workflow_by_thread["case_id"] != state.case_id:
+                    raise ValueError("workflow thread identity is already bound to another case")
+                if not by_case:
+                    connection.execute(
+                        "INSERT INTO case_threads VALUES (?, ?)",
+                        (state.case_id, state.thread_id),
+                    )
+                if not workflow_by_case:
+                    connection.execute(
+                        "INSERT INTO workflow_identities VALUES (?, ?)",
+                        (state.case_id, state.thread_id),
+                    )
+            connection.execute("COMMIT")
+        except (sqlite3.Error, ValueError) as error:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise OperationStoreError(
+                f"unable to migrate case/thread identity mapping: {error}"
+            ) from error
 
     def _inject_failure(self, stage: str) -> None:
         if self._failure_injector:
@@ -287,6 +341,92 @@ class OperationsService:
         except (OSError, sqlite3.Error, ValueError) as error:
             raise OperationStoreError(f"unable to read operation store: {error}") from error
 
+    def get_thread_for_case(self, case_id: str) -> str | None:
+        if type(case_id) is not str or not case_id.strip():
+            raise ValueError("case_id must be a nonblank exact string")
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT thread_id FROM workflow_identities WHERE case_id=?", (case_id,)
+                ).fetchone()
+            return str(row["thread_id"]) if row else None
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to read operation store: {error}") from error
+
+    def get_case_id_for_thread(self, thread_id: str) -> str | None:
+        if type(thread_id) is not str or not thread_id.strip():
+            raise ValueError("thread_id must be a nonblank exact string")
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT case_id FROM workflow_identities WHERE thread_id=?", (thread_id,)
+                ).fetchone()
+            return str(row["case_id"]) if row else None
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to read operation store: {error}") from error
+
+    def reserve_workflow_identity(self, case_id: str, thread_id: str) -> bool:
+        """Atomically reserve the public case/thread identity before graph initialization."""
+        if type(case_id) is not str or not case_id.strip():
+            raise ValueError("case_id must be a nonblank exact string")
+        if type(thread_id) is not str or not thread_id.strip():
+            raise ValueError("thread_id must be a nonblank exact string")
+        try:
+            with self._transaction() as conn:
+                by_case = conn.execute(
+                    "SELECT thread_id FROM workflow_identities WHERE case_id=?", (case_id,)
+                ).fetchone()
+                by_thread = conn.execute(
+                    "SELECT case_id FROM workflow_identities WHERE thread_id=?", (thread_id,)
+                ).fetchone()
+                if by_case and by_case["thread_id"] != thread_id:
+                    raise ValueError(
+                        f"case_id {case_id!r} is already bound to thread {by_case['thread_id']!r}"
+                    )
+                if by_thread and by_thread["case_id"] != case_id:
+                    raise ValueError(
+                        f"thread_id {thread_id!r} is already bound to case {by_thread['case_id']!r}"
+                    )
+                if by_case:
+                    return False
+                conn.execute("INSERT INTO workflow_identities VALUES (?, ?)", (case_id, thread_id))
+                return True
+        except ValueError:
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to reserve workflow identity: {error}") from error
+
+    def release_workflow_identity(self, case_id: str, thread_id: str) -> None:
+        """Release only an unmaterialized exact reservation after failed initialization."""
+        try:
+            with self._transaction() as conn:
+                if conn.execute("SELECT 1 FROM cases WHERE case_id=?", (case_id,)).fetchone():
+                    return
+                conn.execute(
+                    "DELETE FROM workflow_identities WHERE case_id=? AND thread_id=?",
+                    (case_id, thread_id),
+                )
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to release workflow identity: {error}") from error
+
+    def get_case_for_thread(self, thread_id: str) -> RecallCaseState | None:
+        if type(thread_id) is not str or not thread_id.strip():
+            raise ValueError("thread_id must be a nonblank exact string")
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT cases.state_json
+                    FROM case_threads
+                    JOIN cases USING (case_id)
+                    WHERE case_threads.thread_id=?
+                    """,
+                    (thread_id,),
+                ).fetchone()
+            return RecallCaseState.model_validate_json(row["state_json"]) if row else None
+        except (OSError, sqlite3.Error, ValueError) as error:
+            raise OperationStoreError(f"unable to read operation store: {error}") from error
+
     @property
     def cases(self) -> dict[str, RecallCaseState]:
         try:
@@ -300,7 +440,12 @@ class OperationsService:
             raise OperationStoreError(f"unable to read operation store: {error}") from error
 
     def _replay_or_conflict(
-        self, conn: sqlite3.Connection, key: str, request_hash: str
+        self,
+        conn: sqlite3.Connection,
+        key: str,
+        request_hash: str,
+        *,
+        legacy_request_hashes: tuple[str, ...] = (),
     ) -> AuditReceipt | None:
         row = conn.execute(
             "SELECT request_hash, receipt_json FROM receipts WHERE idempotency_key=?", (key,)
@@ -308,7 +453,12 @@ class OperationsService:
         if not row:
             return None
         if row["request_hash"] != request_hash:
-            raise IdempotencyConflictError("idempotency key is bound to a different request")
+            if row["request_hash"] not in legacy_request_hashes:
+                raise IdempotencyConflictError("idempotency key is bound to a different request")
+            conn.execute(
+                "UPDATE receipts SET request_hash=? WHERE idempotency_key=?",
+                (request_hash, key),
+            )
         return AuditReceipt.model_validate_json(row["receipt_json"])
 
     def _mutate(
@@ -494,9 +644,38 @@ class OperationsService:
             approval,
             proposed_action,
         )
+        legacy_request_hash = self._request_hash(
+            case_id,
+            "create_case",
+            expected_case_version,
+            {key: value for key, value in details.items() if key != "thread_id"},
+            approval,
+            proposed_action,
+        )
         try:
             with self._transaction() as conn:
-                replay = self._replay_or_conflict(conn, idempotency_key, request_hash)
+                by_case = conn.execute(
+                    "SELECT thread_id FROM workflow_identities WHERE case_id=?", (case_id,)
+                ).fetchone()
+                by_thread = conn.execute(
+                    "SELECT case_id FROM workflow_identities WHERE thread_id=?",
+                    (durable_thread_id,),
+                ).fetchone()
+                if by_case and by_case["thread_id"] != durable_thread_id:
+                    raise IdempotencyConflictError("case_id is already bound to another thread")
+                if by_thread and by_thread["case_id"] != case_id:
+                    raise IdempotencyConflictError("thread_id is already bound to another case")
+                if not by_case:
+                    conn.execute(
+                        "INSERT INTO workflow_identities VALUES (?, ?)",
+                        (case_id, durable_thread_id),
+                    )
+                replay = self._replay_or_conflict(
+                    conn,
+                    idempotency_key,
+                    request_hash,
+                    legacy_request_hashes=(legacy_request_hash,),
+                )
                 if replay:
                     return replay
                 self._approval(
@@ -726,6 +905,7 @@ class OperationsService:
                 update={
                     "reconciliation": reconciliations,
                     "trace_event_ids": list(dict.fromkeys([*state.trace_event_ids, evidence_id])),
+                    "evidence_gaps": [gap for gap in state.evidence_gaps if lot_id not in gap],
                 }
             )
 

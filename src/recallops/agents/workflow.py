@@ -10,8 +10,9 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, Overwrite, interrupt
 from pydantic import ValidationError
 
 from recallops.agents.middleware import CallBudget, CircuitBreaker, TransientCallError, with_retry
@@ -44,7 +45,7 @@ from recallops.retrieval.agentic import (
     ClosedRetrievalGateway,
     RetrievalInterruption,
 )
-from recallops.services.operations import OperationsService
+from recallops.services.operations import ClosureBlockedError, OperationsService
 
 OFFICIAL_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
@@ -53,18 +54,29 @@ SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
 class GuardedCompiledWorkflow:
     """Serialize one thread and reject a second initial-state invocation."""
 
-    _DISABLED_MUTATORS = frozenset(
-        {"update_state", "aupdate_state", "bulk_update_state", "abulk_update_state"}
+    _EXPOSED_READS = frozenset(
+        {
+            "aget_state",
+            "aget_state_history",
+            "get_state",
+            "get_state_history",
+        }
     )
 
     def __init__(self, graph: Any) -> None:
         self._graph = graph
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
+
+    def _active_lock_count(self) -> int:
+        return len(self._locks)
 
     def __getattr__(self, name: str) -> Any:
-        if name in self._DISABLED_MUTATORS:
-            raise AttributeError(f"direct checkpoint mutator {name!r} is disabled")
-        return getattr(self._graph, name)
+        if name in self._EXPOSED_READS:
+            return getattr(self._graph, name)
+        raise AttributeError(f"compiled graph surface {name!r} is disabled and not exposed")
+
+    def __dir__(self) -> list[str]:
+        return sorted({*super().__dir__(), *self._EXPOSED_READS, "ainvoke"})
 
     @staticmethod
     def _thread_id(config: Mapping[str, Any] | None) -> str:
@@ -87,21 +99,42 @@ class GuardedCompiledWorkflow:
         **kwargs: Any,
     ) -> Any:
         thread_id = self._thread_id(config)
-        lock = self._locks.setdefault(thread_id, asyncio.Lock())
-        async with lock:
-            if isinstance(input, dict):
-                if (
-                    type(input.get("case_id")) is not str
-                    or not input.get("case_id", "").strip()
-                    or type(input.get("thread_id")) is not str
-                    or input.get("thread_id") != thread_id
-                ):
-                    raise ValueError(
-                        "initial case_id must be nonblank and thread_id must equal config thread_id"
+        lock, users = self._locks.get(thread_id, (asyncio.Lock(), 0))
+        self._locks[thread_id] = (lock, users + 1)
+        try:
+            async with lock:
+                if isinstance(input, dict):
+                    if (
+                        type(input.get("case_id")) is not str
+                        or not input.get("case_id", "").strip()
+                        or type(input.get("thread_id")) is not str
+                        or input.get("thread_id") != thread_id
+                    ):
+                        raise ValueError(
+                            "initial case_id must be nonblank and thread_id must equal config "
+                            "thread_id"
+                        )
+                    if self._has_checkpoint(await self._graph.aget_state(config)):
+                        raise ValueError(f"thread {thread_id!r} already has a durable checkpoint")
+                elif isinstance(input, Command):
+                    if (
+                        input.resume is None
+                        or input.update is not None
+                        or input.graph is not None
+                        or input.goto != ()
+                    ):
+                        raise ValueError("compiled graph accepts resume-only Command values")
+                else:
+                    raise TypeError(
+                        "compiled graph input must be initial state or resume-only Command"
                     )
-                if self._has_checkpoint(await self._graph.aget_state(config)):
-                    raise ValueError(f"thread {thread_id!r} already has a durable checkpoint")
-            return await self._graph.ainvoke(input, config, **kwargs)
+                return await self._graph.ainvoke(input, config, **kwargs)
+        finally:
+            current_lock, current_users = self._locks[thread_id]
+            if current_lock is lock and current_users == 1:
+                self._locks.pop(thread_id)
+            elif current_lock is lock:
+                self._locks[thread_id] = (lock, current_users - 1)
 
 
 class FailureController:
@@ -198,7 +231,29 @@ def _next_action(state: RecallOpsGraphState) -> ProposedAction | None:
             evidence_by_target=evidence,
             rationale="Hold only exact or probable lots after separate human confirmation.",
         )
-    if state.get("evidence_gaps") or state.get("ambiguous_lot_ids"):
+    if state.get("ambiguous_lot_ids"):
+        return None
+    disposition_lots = {
+        receipt.get("details", {}).get("lot_id")
+        for receipt in state.get("write_receipts", [])
+        if receipt.get("action_type") == "record_disposition"
+    }
+    for lot_id in state["confirmed_lot_ids"]:
+        planned = _planned_disposition(state, lot_id)
+        if planned is None or lot_id in disposition_lots:
+            continue
+        disposition, evidence_id = planned
+        return _action(
+            state=state,
+            action_type="record_disposition",
+            targets=[lot_id],
+            evidence_by_target={lot_id: [evidence_id]},
+            rationale=(
+                f"Record the reviewed {disposition} disposition for {lot_id} using "
+                f"authoritative evidence {evidence_id}."
+            ),
+        )
+    if state.get("evidence_gaps"):
         return None
     if "create_facility_tasks" not in completed:
         evidence = {
@@ -232,15 +287,75 @@ def _next_action(state: RecallOpsGraphState) -> ProposedAction | None:
     )
 
 
+def _planned_disposition(
+    state: RecallOpsGraphState,
+    lot_id: str,
+) -> tuple[str, str] | None:
+    reconciliation = next(
+        (item for item in state.get("reconciliations", []) if item.get("lot_id") == lot_id),
+        None,
+    )
+    if reconciliation is None:
+        return None
+    component_evidence = reconciliation.get("component_evidence", {})
+    if reconciliation.get("unaccounted", 0) > 0:
+        identifiers = component_evidence.get("unaccounted", [])
+        if identifiers:
+            return "dispose_unaccounted", identifiers[0]
+    return None
+
+
 def _remaining_actions(state: RecallOpsGraphState, current: ProposedAction) -> list[str]:
-    ordered = [
-        "create_case",
-        "apply_inventory_hold",
-        "create_facility_tasks",
-        "record_acknowledgment",
-        "close_case",
+    receipts = state.get("write_receipts", [])
+    completed = {receipt["action_type"] for receipt in receipts}
+    current_type = current.action_type
+    remaining: list[str] = []
+
+    create_done = "create_case" in completed or current_type == "create_case"
+    if not create_done:
+        remaining.append("create_case")
+    hold_done = "apply_inventory_hold" in completed or current_type == "apply_inventory_hold"
+    if not hold_done:
+        remaining.append("apply_inventory_hold")
+    if state.get("ambiguous_lot_ids"):
+        return remaining
+
+    disposition_lots = {
+        receipt.get("details", {}).get("lot_id")
+        for receipt in receipts
+        if receipt.get("action_type") == "record_disposition"
+    }
+    if current_type == "record_disposition":
+        disposition_lots.add(current.target_ids[0])
+    for lot_id in state.get("confirmed_lot_ids", []):
+        if lot_id not in disposition_lots and _planned_disposition(state, lot_id) is not None:
+            remaining.append("record_disposition")
+    resolvable_lots = {
+        lot_id
+        for lot_id in state.get("confirmed_lot_ids", [])
+        if _planned_disposition(state, lot_id) is not None
+    }
+    unresolved_gaps = [
+        gap
+        for gap in state.get("evidence_gaps", [])
+        if not any(lot_id in gap for lot_id in resolvable_lots)
     ]
-    return ordered[ordered.index(current.action_type) + 1 :]
+    if unresolved_gaps:
+        return remaining
+
+    tasks_done = "create_facility_tasks" in completed or current_type == "create_facility_tasks"
+    if not tasks_done:
+        remaining.append("create_facility_tasks")
+    acknowledgements = dict(state.get("acknowledgements", {}))
+    if current_type == "record_acknowledgment":
+        acknowledgements[current.target_ids[0]] = True
+    for facility_id in state.get("required_facilities", []):
+        if not acknowledgements.get(facility_id, False):
+            remaining.append("record_acknowledgment")
+
+    if current_type != "close_case" and "close_case" not in completed:
+        remaining.append("close_case")
+    return remaining
 
 
 def _review_packet(state: RecallOpsGraphState, action: ProposedAction) -> dict[str, Any]:
@@ -340,6 +455,8 @@ def build_workflow(
     """Compile the explicit coordinator with trusted dependencies in node closures."""
     if not isinstance(checkpointer, BaseCheckpointSaver):
         raise TypeError("checkpointer must be a real BaseCheckpointSaver")
+    if isinstance(checkpointer, SqliteSaver):
+        raise TypeError("checkpointer must be async-compatible; use AsyncSqliteSaver")
     trusted_gateway = gateway or DirectGateway()
     trusted_operations = operations_service
     if trusted_operations is None and isinstance(trusted_gateway, DirectGateway):
@@ -868,7 +985,11 @@ def build_workflow(
         packet = _review_packet(state, action)
         return _node(
             "verify_edited_action",
-            status="review_required",
+            status=(
+                "closure_review_required"
+                if action.action_type == "close_case"
+                else "review_required"
+            ),
             verification={
                 **state["verification"],
                 "passed": True,
@@ -973,13 +1094,40 @@ def build_workflow(
                 receipt = await trusted_gateway.record_acknowledgment(
                     **kwargs, facility_id=action.target_ids[0]
                 )
+            elif action.action_type == "record_disposition":
+                planned = _planned_disposition(state, action.target_ids[0])
+                if planned is None:
+                    raise ValueError("record_disposition lacks authoritative disposition evidence")
+                disposition, evidence_id = planned
+                receipt = await trusted_gateway.record_disposition(
+                    **kwargs,
+                    lot_id=action.target_ids[0],
+                    disposition=disposition,
+                    evidence_id=evidence_id,
+                )
             elif action.action_type == "close_case":
                 receipt = await trusted_gateway.close_case(**kwargs)
             else:
                 raise ValueError(f"unsupported runtime action {action.action_type}")
             typed_receipt = AuditReceipt.model_validate(receipt)
             _validate_receipt(state, action, approval, typed_receipt)
+        except ClosureBlockedError as error:
+            return _node(
+                "execute_one_operation",
+                status="open_closure_blocked",
+                action_queue=[],
+                closure_outcome={"eligible": False, "reason": str(error)},
+                failure_state={"stage": "close_case", "error": str(error)},
+            )
         except Exception as error:
+            if action.action_type == "close_case" and "closure blocked:" in str(error).lower():
+                return _node(
+                    "execute_one_operation",
+                    status="open_closure_blocked",
+                    action_queue=[],
+                    closure_outcome={"eligible": False, "reason": str(error)},
+                    failure_state={"stage": "close_case", "error": str(error)},
+                )
             return _unknown_write_outcome(state, scenario="receipt_or_write_failure", error=error)
         if failure_controller.consume("lost_write_response"):
             return _unknown_write_outcome(
@@ -1052,13 +1200,25 @@ def build_workflow(
     def _after_receipt(state: RecallOpsGraphState, raw_receipt: Any) -> dict[str, Any]:
         receipt = _json(raw_receipt)
         acknowledgements = dict(state.get("acknowledgements", {}))
+        authoritative_updates: dict[str, Any] = {}
         if receipt["action_type"] == "create_facility_tasks":
             acknowledgements.update({facility: False for facility in state["required_facilities"]})
         if receipt["action_type"] == "record_acknowledgment":
             action = ProposedAction.model_validate(state["current_action"])
             acknowledgements[action.target_ids[0]] = True
+        if receipt["action_type"] == "record_disposition":
+            authoritative_case = trusted_operations.get_case(state["case_id"])
+            if authoritative_case is None:
+                raise RuntimeError("authoritative case disappeared after disposition receipt")
+            authoritative_updates = {
+                "reconciliations": [
+                    item.model_dump(mode="json") for item in authoritative_case.reconciliation
+                ],
+                "evidence_gaps": list(authoritative_case.evidence_gaps),
+            }
         provisional: RecallOpsGraphState = {
             **state,
+            **authoritative_updates,
             "case_version": receipt["case_version"],
             "write_receipts": [*state.get("write_receipts", []), receipt],
             "acknowledgements": acknowledgements,
@@ -1101,6 +1261,14 @@ def build_workflow(
             acknowledgements=acknowledgements,
             approval={},
             execution_request={},
+            **(
+                {
+                    "reconciliations": authoritative_updates["reconciliations"],
+                    "evidence_gaps": Overwrite(authoritative_updates["evidence_gaps"]),
+                }
+                if authoritative_updates
+                else {}
+            ),
             current_action=next_action.model_dump(mode="json"),
             action_queue=[next_action.model_dump(mode="json")],
             action_digest=packet["action_digest"],
@@ -1240,8 +1408,14 @@ def build_workflow(
     )
     graph.add_conditional_edges(
         "verify_edited_action",
-        lambda state: "end" if state["status"] == "escalated" else "review",
-        {"review": "action_review", "end": END},
+        lambda state: (
+            "end"
+            if state["status"] == "escalated"
+            else "closure"
+            if state["status"] == "closure_review_required"
+            else "review"
+        ),
+        {"review": "action_review", "closure": "closure_review", "end": END},
     )
     graph.add_edge("prepare_execution_confirmation", "execution_confirmation")
     graph.add_conditional_edges(

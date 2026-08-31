@@ -138,6 +138,52 @@ async def test_existing_thread_start_fails_without_altering_checkpoint(tmp_path:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"recall_number": None}, "recall_number"),
+        ({"recall_number": False}, "recall_number"),
+        ({"recall_number": 123}, "recall_number"),
+        ({"question": None}, "question"),
+        ({"question": False}, "question"),
+        ({"question": 123}, "question"),
+        ({"case_id": False}, "case_id"),
+        ({"case_id": 123}, "case_id"),
+        ({"thread_id": False}, "thread_id"),
+        ({"thread_id": 123}, "thread_id"),
+        ({"scope_lot_ids": "LOT-PROBABLE-160"}, "scope_lot_ids"),
+        ({"scope_lot_ids": False}, "scope_lot_ids"),
+        ({"scope_lot_ids": {"LOT-PROBABLE-160"}}, "scope_lot_ids"),
+        ({"scope_lot_ids": [False]}, "scope_lot_ids"),
+        ({"scope_lot_ids": [123]}, "scope_lot_ids"),
+    ],
+)
+async def test_public_start_rejects_coercive_or_container_shaped_inputs(
+    tmp_path: Path,
+    overrides: dict,
+    message: str,
+) -> None:
+    """Break caught: public start accepts bools, strings-as-lists, or raises AttributeError."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    kwargs = {
+        "recall_number": "H-1230-2026",
+        "question": "Validate the exact public start contract.",
+        "case_id": "CASE-STRICT-START",
+        "thread_id": "THREAD-STRICT-START",
+        "scope_lot_ids": [],
+        **overrides,
+    }
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        with pytest.raises((TypeError, ValueError), match=message):
+            await runtime.start_case(**kwargs)
+        assert await runtime.get_case(thread_id="THREAD-STRICT-START") is None
+
+
+@pytest.mark.asyncio
 async def test_public_start_persists_the_distinct_case_thread_mapping(tmp_path: Path) -> None:
     """Break caught: Operations silently replaces the durable graph thread with case_id."""
     from recallops.agents.runtime import RecallOpsRuntime
@@ -172,14 +218,78 @@ async def test_public_start_persists_the_distinct_case_thread_mapping(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_case_and_thread_identity_is_bidirectional_across_restarts_and_stores(
+    tmp_path: Path,
+) -> None:
+    """Break caught: one case is initialized on two graph threads or vice versa."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        original = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reserve a durable one-to-one case and thread identity.",
+            case_id="CASE-SAME",
+            thread_id="THREAD-ONE",
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        with pytest.raises(ValueError, match="case_id.*THREAD-ONE|already bound"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Attempt to bind the same case to a second thread.",
+                case_id="CASE-SAME",
+                thread_id="THREAD-TWO",
+            )
+        assert await runtime.get_case(thread_id="THREAD-ONE") == original
+        assert await runtime.get_case(thread_id="THREAD-TWO") is None
+
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-ONE",
+            response=_bound_response(original.pending_interrupt, decision="approve"),
+        )
+        await runtime.resume_case(
+            thread_id="THREAD-ONE",
+            response=_bound_response(confirmation.pending_interrupt, decision="confirm"),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "other-checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        with pytest.raises(ValueError, match="already bound"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Operations must reject a second thread for the same case.",
+                case_id="CASE-SAME",
+                thread_id="THREAD-TWO",
+            )
+        with pytest.raises(ValueError, match="already bound"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Operations must reject a second case for the same thread.",
+                case_id="CASE-TWO",
+                thread_id="THREAD-ONE",
+            )
+
+
+@pytest.mark.asyncio
 async def test_real_stdio_runtime_reaches_one_approved_mcp_write(tmp_path: Path) -> None:
     """Break caught: runtime claims MCP orchestration but hardcodes in-process gateways."""
     from recallops.agents.runtime import RecallOpsRuntime
     from recallops.services.operations import OperationsService
 
     operations_path = tmp_path / "stdio-operations.sqlite3"
+    checkpoint_path = tmp_path / "stdio-checkpoints.sqlite3"
     async with RecallOpsRuntime.open(
-        checkpoint_path=tmp_path / "stdio-checkpoints.sqlite3",
+        checkpoint_path=checkpoint_path,
         operations_path=operations_path,
         transport="stdio",
     ) as runtime:
@@ -194,14 +304,33 @@ async def test_real_stdio_runtime_reaches_one_approved_mcp_write(tmp_path: Path)
             thread_id="THREAD-STDIO-RUNTIME",
             response=_bound_response(review.pending_interrupt, decision="approve"),
         )
-        created = await runtime.resume_case(
+        original_key = confirmation.pending_interrupt["idempotency_key"]
+        runtime.inject_failure("lost_write_response")
+        unknown = await runtime.resume_case(
             thread_id="THREAD-STDIO-RUNTIME",
             response=_bound_response(confirmation.pending_interrupt, decision="confirm"),
+        )
+
+    assert unknown.case["status"] == "write_outcome_unknown"
+    assert unknown.pending_interrupt["idempotency_key"] == original_key
+    assert _operation_count(operations_path) == 1
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+        transport="stdio",
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-STDIO-RUNTIME")
+        assert restored == unknown
+        created = await runtime.resume_case(
+            thread_id="THREAD-STDIO-RUNTIME",
+            response=_bound_response(restored.pending_interrupt, decision="retry"),
         )
 
     assert created.case["case_version"] == 1
     assert created.pending_interrupt["action"]["action_type"] == "apply_inventory_hold"
     assert _operation_count(operations_path) == 1
+    assert created.case["write_receipts"][0]["idempotency_key"] == original_key
     persisted = OperationsService(storage_path=operations_path).get_case("CASE-STDIO-RUNTIME")
     assert persisted is not None
     assert persisted.thread_id == "THREAD-STDIO-RUNTIME"
@@ -285,7 +414,71 @@ async def test_concurrent_same_thread_commands_have_one_checkpoint_winner(tmp_pa
         )
         assert sum(isinstance(item, RuntimeResult) for item in confirmations) == 1
         assert sum(isinstance(item, ValueError) for item in confirmations) == 1
-        assert _operation_count(tmp_path / "confirm-operations.sqlite3") == 1
+    assert _operation_count(tmp_path / "confirm-operations.sqlite3") == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_lock_registry_releases_normal_error_and_concurrent_entries(
+    tmp_path: Path,
+) -> None:
+    """Break caught: every completed thread leaves an immortal class-level lock."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    baseline = RecallOpsRuntime._active_lock_count()
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        review = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Release identity and thread locks after every command path.",
+            case_id="CASE-LOCK-LIFECYCLE",
+            thread_id="THREAD-LOCK-LIFECYCLE",
+        )
+        assert RecallOpsRuntime._active_lock_count() == baseline
+
+        wrong = _bound_response(review.pending_interrupt, decision="approve")
+        wrong["case_id"] = "CASE-WRONG"
+        with pytest.raises(ValueError, match="case_id"):
+            await runtime.resume_case(thread_id="THREAD-LOCK-LIFECYCLE", response=wrong)
+        assert RecallOpsRuntime._active_lock_count() == baseline
+
+        decisions = await asyncio.gather(
+            runtime.resume_case(
+                thread_id="THREAD-LOCK-LIFECYCLE",
+                response=_bound_response(review.pending_interrupt, decision="approve"),
+            ),
+            runtime.resume_case(
+                thread_id="THREAD-LOCK-LIFECYCLE",
+                response=_bound_response(review.pending_interrupt, decision="reject"),
+            ),
+            return_exceptions=True,
+        )
+        assert sum(not isinstance(item, BaseException) for item in decisions) == 1
+        assert RecallOpsRuntime._active_lock_count() == baseline
+
+    assert RecallOpsRuntime._active_lock_count() == baseline
+
+
+@pytest.mark.asyncio
+async def test_user_thread_id_cannot_collide_with_identity_lock_namespace(tmp_path: Path) -> None:
+    """Break caught: a valid thread ID equal to an internal lock token deadlocks start."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        result = await asyncio.wait_for(
+            runtime.start_case(
+                recall_number="H-1230-2026",
+                question="Internal lock namespaces must not collide with user identifiers.",
+                case_id="CASE-LOCK-NAMESPACE",
+                thread_id="__identity_start__",
+            ),
+            timeout=1,
+        )
+    assert result.pending_interrupt["thread_id"] == "__identity_start__"
 
 
 @pytest.mark.asyncio
@@ -782,6 +975,15 @@ def test_build_workflow_requires_a_real_checkpointer(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="checkpointer"):
         build_workflow(gateway=gateway, checkpointer=object())
 
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    connection = sqlite3.connect(tmp_path / "sync-checkpoints.sqlite3")
+    try:
+        with pytest.raises(TypeError, match="async-compatible"):
+            build_workflow(gateway=gateway, checkpointer=SqliteSaver(connection))
+    finally:
+        connection.close()
+
 
 @pytest.mark.asyncio
 async def test_compiled_graph_rejects_reinitializing_a_paused_thread(tmp_path: Path) -> None:
@@ -826,12 +1028,102 @@ async def test_compiled_graph_rejects_reinitializing_a_paused_thread(tmp_path: P
     assert after.values == before.values
     assert after.interrupts == before.interrupts
     assert after.config == before.config
+    assert graph._active_lock_count() == 0
 
     with pytest.raises(AttributeError, match="disabled"):
         await graph.aupdate_state(config, {"case_id": "CASE-OVERWRITE"})
     final = await graph.aget_state(config)
     assert final.values == before.values
     assert final.config == before.config
+
+
+@pytest.mark.asyncio
+async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
+    tmp_path: Path,
+) -> None:
+    """Break caught: stream/batch/config wrappers bypass guarded ``ainvoke``."""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from recallops.agents.workflow import build_workflow
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    operations = OperationsService(storage_path=tmp_path / "operations.sqlite3")
+    graph = build_workflow(
+        gateway=DirectGateway(operations=operations),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "THREAD-SEALED-RUNNERS"}}
+    await graph.ainvoke(
+        {
+            "case_id": "CASE-SEALED-RUNNERS",
+            "thread_id": "THREAD-SEALED-RUNNERS",
+            "recall_number": "H-1230-2026",
+            "question": "Keep every alternate runner away from a paused checkpoint.",
+            "scope_lot_ids": [],
+        },
+        config,
+        version="v2",
+        stream_mode="values",
+        durability="sync",
+    )
+    before = await graph.aget_state(config)
+
+    runner_and_mutator_surfaces = (
+        "invoke",
+        "stream",
+        "astream",
+        "stream_events",
+        "astream_events",
+        "astream_log",
+        "batch",
+        "abatch",
+        "batch_as_completed",
+        "abatch_as_completed",
+        "transform",
+        "atransform",
+        "update_state",
+        "aupdate_state",
+        "bulk_update_state",
+        "abulk_update_state",
+        "with_config",
+        "with_retry",
+        "with_fallbacks",
+        "with_listeners",
+        "with_alisteners",
+        "with_types",
+        "bind",
+        "assign",
+        "map",
+        "pick",
+        "pipe",
+        "as_tool",
+        "copy",
+        "clear_cache",
+        "aclear_cache",
+    )
+    for surface in runner_and_mutator_surfaces:
+        with pytest.raises(AttributeError, match="not exposed|disabled"):
+            getattr(graph, surface)
+
+    pending = before.interrupts[0].value
+    with pytest.raises(ValueError, match="resume-only"):
+        await graph.ainvoke(
+            Command(
+                update={"case_id": "CASE-COMMAND-OVERWRITE"},
+                resume=_bound_response(pending, decision="reject"),
+            ),
+            config,
+            version="v2",
+            stream_mode="values",
+            durability="sync",
+        )
+
+    after = await graph.aget_state(config)
+    assert after.values == before.values
+    assert after.interrupts == before.interrupts
+    assert after.config == before.config
 
 
 @pytest.mark.asyncio
@@ -978,6 +1270,22 @@ async def test_probable_only_case_runs_one_operation_per_version_through_closure
             pending = result.pending_interrupt
             if pending["kind"] in {"action_review", "closure_review"}:
                 reviewed_actions.append(pending["action"]["action_type"])
+                if pending["action"]["action_type"] == "create_case":
+                    assert pending["remaining_action_types"] == [
+                        "apply_inventory_hold",
+                        "create_facility_tasks",
+                        "record_acknowledgment",
+                        "record_acknowledgment",
+                        "close_case",
+                    ]
+                if (
+                    pending["action"]["action_type"] == "record_acknowledgment"
+                    and reviewed_actions.count("record_acknowledgment") == 1
+                ):
+                    assert pending["remaining_action_types"] == [
+                        "record_acknowledgment",
+                        "close_case",
+                    ]
                 result = await runtime.resume_case(
                     thread_id="THREAD-PROBABLE",
                     response=_bound_response(pending, decision="approve"),
@@ -1005,6 +1313,99 @@ async def test_probable_only_case_runs_one_operation_per_version_through_closure
     assert result.case["status"] == "closed"
     assert result.case["closure_outcome"] == {"eligible": True, "closed": True}
     assert [receipt["action_type"] for receipt in result.case["write_receipts"]] == reviewed_actions
+
+
+@pytest.mark.asyncio
+async def test_unaccounted_lot_disposition_is_reviewed_confirmed_and_restart_safe(
+    tmp_path: Path,
+) -> None:
+    """Break caught: required disposition is absent from the durable action lifecycle."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    checkpoint_path = tmp_path / "checkpoints.sqlite3"
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Resolve LOT-EXACT-170 unaccounted units before facility follow-up.",
+            case_id="CASE-DISPOSITION",
+            thread_id="THREAD-DISPOSITION",
+            scope_lot_ids=["LOT-EXACT-170"],
+        )
+        assert result.pending_interrupt["remaining_action_types"] == [
+            "apply_inventory_hold",
+            "record_disposition",
+            "create_facility_tasks",
+            *(["record_acknowledgment"] * len(result.case["required_facilities"])),
+            "close_case",
+        ]
+        while result.pending_interrupt["action"]["action_type"] != "record_disposition":
+            review = result.pending_interrupt
+            confirmation = await runtime.resume_case(
+                thread_id="THREAD-DISPOSITION",
+                response=_bound_response(review, decision="approve"),
+            )
+            result = await runtime.resume_case(
+                thread_id="THREAD-DISPOSITION",
+                response=_bound_response(confirmation.pending_interrupt, decision="confirm"),
+            )
+        disposition_review = result
+
+    assert disposition_review.case["case_version"] == 2
+    assert disposition_review.pending_interrupt["action"]["target_ids"] == ["LOT-EXACT-170"]
+    assert "dispose_unaccounted" in disposition_review.pending_interrupt["action"]["rationale"]
+    assert _operation_count(operations_path) == 2
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-DISPOSITION")
+        assert restored == disposition_review
+        confirmation = await runtime.resume_case(
+            thread_id="THREAD-DISPOSITION",
+            response=_bound_response(restored.pending_interrupt, decision="approve"),
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        restored = await runtime.get_case(thread_id="THREAD-DISPOSITION")
+        assert restored == confirmation
+        disposed = await runtime.resume_case(
+            thread_id="THREAD-DISPOSITION",
+            response=_bound_response(restored.pending_interrupt, decision="confirm"),
+        )
+
+    assert disposed.case["case_version"] == 3
+    assert disposed.case["write_receipts"][-1]["action_type"] == "record_disposition"
+    assert disposed.case["reconciliations"][0]["unaccounted"] == 0
+    assert disposed.case["evidence_gaps"] == []
+    assert disposed.pending_interrupt["action"]["action_type"] == "create_facility_tasks"
+    assert _operation_count(operations_path) == 3
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint_path,
+        operations_path=operations_path,
+    ) as runtime:
+        result = disposed
+        while result.pending_interrupt is not None:
+            pending = result.pending_interrupt
+            decision = (
+                "approve" if pending["kind"] in {"action_review", "closure_review"} else "confirm"
+            )
+            result = await runtime.resume_case(
+                thread_id="THREAD-DISPOSITION",
+                response=_bound_response(pending, decision=decision),
+            )
+
+    assert result.case["status"] == "open_closure_blocked"
+    assert result.pending_interrupt is None
+    assert "close_case" not in [receipt["action_type"] for receipt in result.case["write_receipts"]]
 
 
 @pytest.mark.asyncio
@@ -1209,4 +1610,46 @@ async def test_closure_review_survives_restart_before_final_confirmation(tmp_pat
 
     assert closed.case["status"] == "closed"
     assert closed.case["case_version"] == 6
-    assert _operation_count(operations_path) == 6
+
+
+@pytest.mark.asyncio
+async def test_closure_rationale_edit_returns_to_closure_review(tmp_path: Path) -> None:
+    """Break caught: a valid closure edit is routed to ordinary action review."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reach closure and re-review an edited closure rationale.",
+            case_id="CASE-CLOSURE-EDIT",
+            thread_id="THREAD-CLOSURE-EDIT",
+            scope_lot_ids=["LOT-PROBABLE-160"],
+        )
+        while result.pending_interrupt["kind"] != "closure_review":
+            pending = result.pending_interrupt
+            decision = "approve" if pending["kind"] == "action_review" else "confirm"
+            result = await runtime.resume_case(
+                thread_id="THREAD-CLOSURE-EDIT",
+                response=_bound_response(pending, decision=decision),
+            )
+
+        closure = result.pending_interrupt
+        edited_action = deepcopy(closure["action"])
+        edited_action["rationale"] = (
+            "Close only after a second review of every authoritative closure invariant."
+        )
+        response = _bound_response(closure, decision="edit")
+        response["edited_action"] = edited_action
+        edited = await runtime.resume_case(
+            thread_id="THREAD-CLOSURE-EDIT",
+            response=response,
+        )
+
+    assert edited.case["status"] == "closure_review_required"
+    assert edited.pending_interrupt["kind"] == "closure_review"
+    assert edited.pending_interrupt["action"]["rationale"] == edited_action["rationale"]
+    assert _operation_count(operations_path) == 5

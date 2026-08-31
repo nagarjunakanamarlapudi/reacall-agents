@@ -36,10 +36,18 @@ class RuntimeResult(BaseModel):
     checkpoint_id: str | None
 
 
+class _LockEntry:
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
 class RecallOpsRuntime:
     """Own the SQLite checkpointer and trusted read/write service closures."""
 
-    _thread_locks: ClassVar[dict[tuple[int, str, str], asyncio.Lock]] = {}
+    _thread_locks: ClassVar[dict[tuple[int, str, str, str], _LockEntry]] = {}
 
     def __init__(
         self,
@@ -48,15 +56,35 @@ class RecallOpsRuntime:
         failures: FailureController,
         checkpointer: AsyncSqliteSaver,
         checkpoint_key: str,
+        operations_service: OperationsService,
     ) -> None:
         self.graph = graph
         self._failures = failures
         self._checkpointer = checkpointer
         self._checkpoint_key = checkpoint_key
+        self._operations_service = operations_service
 
-    def _thread_lock(self, thread_id: str) -> asyncio.Lock:
-        key = (id(asyncio.get_running_loop()), self._checkpoint_key, thread_id)
-        return self._thread_locks.setdefault(key, asyncio.Lock())
+    @classmethod
+    def _active_lock_count(cls) -> int:
+        return len(cls._thread_locks)
+
+    @asynccontextmanager
+    async def _thread_lock(
+        self,
+        thread_id: str,
+        *,
+        namespace: str = "thread",
+    ) -> AsyncIterator[None]:
+        key = (id(asyncio.get_running_loop()), self._checkpoint_key, namespace, thread_id)
+        entry = self._thread_locks.setdefault(key, _LockEntry())
+        entry.users += 1
+        try:
+            async with entry.lock:
+                yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0 and self._thread_locks.get(key) is entry:
+                self._thread_locks.pop(key)
 
     @classmethod
     @asynccontextmanager
@@ -133,11 +161,12 @@ class RecallOpsRuntime:
                 failures=failures,
                 checkpointer=saver,
                 checkpoint_key=str(checkpoint),
+                operations_service=operations_service,
             )
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, dict[str, str]]:
-        if not isinstance(thread_id, str) or not thread_id.strip():
+        if type(thread_id) is not str or not thread_id.strip():
             raise ValueError("thread_id must be nonblank")
         return {"configurable": {"thread_id": thread_id}}
 
@@ -147,6 +176,22 @@ class RecallOpsRuntime:
         configurable = config.get("configurable", {})
         value = configurable.get("checkpoint_id")
         return value if isinstance(value, str) else None
+
+    async def _validate_checkpoint_identity(self, case_id: str, thread_id: str) -> None:
+        async for item in self._checkpointer.alist(None):
+            values = item.checkpoint.get("channel_values", {})
+            stored_case = values.get("case_id")
+            stored_thread = values.get("thread_id")
+            if type(stored_case) is not str or type(stored_thread) is not str:
+                continue
+            if stored_case == case_id and stored_thread != thread_id:
+                raise ValueError(
+                    f"case_id {case_id!r} is already bound to thread {stored_thread!r}"
+                )
+            if stored_thread == thread_id and stored_case != case_id:
+                raise ValueError(
+                    f"thread_id {thread_id!r} is already bound to case {stored_case!r}"
+                )
 
     @staticmethod
     def _pending(snapshot: Any) -> dict[str, Any] | None:
@@ -182,19 +227,34 @@ class RecallOpsRuntime:
         thread_id: str | None = None,
         scope_lot_ids: list[str] | tuple[str, ...] | None = None,
     ) -> RuntimeResult:
-        if not recall_number.strip() or not question.strip():
-            raise ValueError("recall_number and question must be nonblank")
-        if case_id is not None and (not isinstance(case_id, str) or not case_id.strip()):
+        if type(recall_number) is not str:
+            raise TypeError("recall_number must be an exact string")
+        if type(question) is not str:
+            raise TypeError("question must be an exact string")
+        if not recall_number.strip():
+            raise ValueError("recall_number must be nonblank")
+        if not question.strip():
+            raise ValueError("question must be nonblank")
+        if case_id is not None and type(case_id) is not str:
+            raise TypeError("case_id must be an exact string")
+        if case_id is not None and not case_id.strip():
             raise ValueError("case_id must be a nonblank string")
-        if thread_id is not None and (not isinstance(thread_id, str) or not thread_id.strip()):
+        if thread_id is not None and type(thread_id) is not str:
+            raise TypeError("thread_id must be an exact string")
+        if thread_id is not None and not thread_id.strip():
             raise ValueError("thread_id must be a nonblank string")
         generated_case = (
             case_id or thread_id or f"CASE-{uuid5(NAMESPACE_URL, recall_number + ':' + question)}"
         )
         generated_thread = thread_id or generated_case
         config = self._config(generated_thread)
-        scope = list(scope_lot_ids or [])
-        if any(not isinstance(item, str) or not item.strip() for item in scope):
+        if scope_lot_ids is None:
+            scope = []
+        elif type(scope_lot_ids) not in {list, tuple}:
+            raise TypeError("scope_lot_ids must be a list or tuple of exact strings")
+        else:
+            scope = list(scope_lot_ids)
+        if any(type(item) is not str or not item.strip() for item in scope):
             raise ValueError("scope_lot_ids must contain nonblank strings")
         if len(scope) != len(set(scope)):
             raise ValueError("scope_lot_ids must be unique")
@@ -205,18 +265,33 @@ class RecallOpsRuntime:
             "question": question,
             "scope_lot_ids": scope,
         }
-        async with self._thread_lock(generated_thread):
-            existing = await self.graph.aget_state(config)
-            if self._checkpoint_id(existing) is not None:
-                raise ValueError(f"thread {generated_thread!r} already has a durable checkpoint")
-            await self.graph.ainvoke(
-                initial,
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
-            return self._result(await self.graph.aget_state(config))
+        async with self._thread_lock("start", namespace="identity"):
+            async with self._thread_lock(generated_thread):
+                existing = await self.graph.aget_state(config)
+                if self._checkpoint_id(existing) is not None:
+                    raise ValueError(
+                        f"thread {generated_thread!r} already has a durable checkpoint"
+                    )
+                await self._validate_checkpoint_identity(generated_case, generated_thread)
+                reserved = self._operations_service.reserve_workflow_identity(
+                    generated_case, generated_thread
+                )
+                try:
+                    await self.graph.ainvoke(
+                        initial,
+                        config,
+                        version="v2",
+                        stream_mode="values",
+                        durability="sync",
+                    )
+                except BaseException:
+                    created = await self.graph.aget_state(config)
+                    if reserved and self._checkpoint_id(created) is None:
+                        self._operations_service.release_workflow_identity(
+                            generated_case, generated_thread
+                        )
+                    raise
+                return self._result(await self.graph.aget_state(config))
 
     @staticmethod
     def _require_equal(response: Mapping[str, Any], pending: Mapping[str, Any], key: str) -> None:

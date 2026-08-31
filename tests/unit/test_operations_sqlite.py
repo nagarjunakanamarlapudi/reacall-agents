@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor
 from copy import deepcopy
@@ -115,6 +116,105 @@ def create(service: OperationsService, case_id: str, *, lot_id: str = SUCCESS_LO
         expected_case_version=0,
         idempotency_key=f"{case_id}-create",
     )
+
+
+def test_legacy_cases_are_transactionally_backfilled_into_case_threads(tmp_path: Path) -> None:
+    database = tmp_path / "legacy-backfill.sqlite3"
+    service = OperationsService(storage_path=database)
+    create(service, "CASE-LEGACY-ONE")
+    create(service, "CASE-LEGACY-TWO")
+    with sqlite3.connect(database) as connection:
+        connection.execute("DROP TABLE case_threads")
+        connection.execute("DROP TABLE workflow_identities")
+        row = connection.execute(
+            "SELECT state_json FROM cases WHERE case_id='CASE-LEGACY-TWO'"
+        ).fetchone()
+        state = json.loads(row[0])
+        state["thread_id"] = "CASE-LEGACY-ONE"
+        connection.execute(
+            "UPDATE cases SET state_json=? WHERE case_id='CASE-LEGACY-TWO'",
+            (json.dumps(state),),
+        )
+
+    with pytest.raises(OperationStoreError, match="identity|thread"):
+        OperationsService(storage_path=database)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM case_threads").fetchone()[0] == 0
+
+    with sqlite3.connect(database) as connection:
+        state["thread_id"] = "THREAD-LEGACY-TWO"
+        connection.execute(
+            "UPDATE cases SET state_json=? WHERE case_id='CASE-LEGACY-TWO'",
+            (json.dumps(state),),
+        )
+    migrated = OperationsService(storage_path=database)
+    assert migrated.get_thread_for_case("CASE-LEGACY-ONE") == "CASE-LEGACY-ONE"
+    assert migrated.get_thread_for_case("CASE-LEGACY-TWO") == "THREAD-LEGACY-TWO"
+    assert migrated.get_case_for_thread("THREAD-LEGACY-TWO").case_id == "CASE-LEGACY-TWO"
+
+
+def test_legacy_create_hash_replays_once_then_migrates_to_thread_bound_hash(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "legacy-hash.sqlite3"
+    service = OperationsService(storage_path=database)
+    case_id = "CASE-LEGACY-HASH"
+    payload = case_input()
+    decision = reviewed(
+        case_id,
+        "create_case",
+        0,
+        payload["confirmed_lot_ids"],
+        evidence_ids=payload["trace_event_ids"],
+    )
+    receipt = service.create_case(
+        case_id=case_id,
+        **payload,
+        **decision,
+        expected_case_version=0,
+        idempotency_key="legacy-create-key",
+    )
+    legacy_details = dict(receipt.details)
+    legacy_details.pop("reviewed_action")
+    legacy_details.pop("thread_id")
+    legacy_hash = service._request_hash(
+        case_id,
+        "create_case",
+        0,
+        legacy_details,
+        decision["approval"],
+        decision["proposed_action"],
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE receipts SET request_hash=? WHERE idempotency_key='legacy-create-key'",
+            (legacy_hash,),
+        )
+
+    restarted = OperationsService(storage_path=database)
+    replay = restarted.create_case(
+        case_id=case_id,
+        thread_id=case_id,
+        **payload,
+        **decision,
+        expected_case_version=0,
+        idempotency_key="legacy-create-key",
+    )
+    assert replay == receipt
+    current_details = {**legacy_details, "thread_id": case_id}
+    expected_hash = restarted._request_hash(
+        case_id,
+        "create_case",
+        0,
+        current_details,
+        decision["approval"],
+        decision["proposed_action"],
+    )
+    with sqlite3.connect(database) as connection:
+        stored = connection.execute(
+            "SELECT request_hash FROM receipts WHERE idempotency_key='legacy-create-key'"
+        ).fetchone()[0]
+    assert stored == expected_hash
 
 
 def make_ready(service: OperationsService, case_id: str) -> int:
