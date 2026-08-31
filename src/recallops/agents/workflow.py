@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
+from pydantic import ValidationError
 
 from recallops.agents.middleware import CallBudget, CircuitBreaker, TransientCallError, with_retry
 from recallops.agents.planner import plan_investigation
@@ -41,9 +44,64 @@ from recallops.retrieval.agentic import (
     ClosedRetrievalGateway,
     RetrievalInterruption,
 )
+from recallops.services.operations import OperationsService
 
 OFFICIAL_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
+
+
+class GuardedCompiledWorkflow:
+    """Serialize one thread and reject a second initial-state invocation."""
+
+    _DISABLED_MUTATORS = frozenset(
+        {"update_state", "aupdate_state", "bulk_update_state", "abulk_update_state"}
+    )
+
+    def __init__(self, graph: Any) -> None:
+        self._graph = graph
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._DISABLED_MUTATORS:
+            raise AttributeError(f"direct checkpoint mutator {name!r} is disabled")
+        return getattr(self._graph, name)
+
+    @staticmethod
+    def _thread_id(config: Mapping[str, Any] | None) -> str:
+        configurable = (config or {}).get("configurable", {})
+        thread_id = configurable.get("thread_id")
+        if type(thread_id) is not str or not thread_id.strip():
+            raise ValueError("configurable.thread_id must be a nonblank string")
+        return thread_id
+
+    @staticmethod
+    def _has_checkpoint(snapshot: Any) -> bool:
+        config = snapshot.config or {}
+        checkpoint_id = config.get("configurable", {}).get("checkpoint_id")
+        return type(checkpoint_id) is str and bool(checkpoint_id)
+
+    async def ainvoke(
+        self,
+        input: Any,
+        config: Mapping[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        thread_id = self._thread_id(config)
+        lock = self._locks.setdefault(thread_id, asyncio.Lock())
+        async with lock:
+            if isinstance(input, dict):
+                if (
+                    type(input.get("case_id")) is not str
+                    or not input.get("case_id", "").strip()
+                    or type(input.get("thread_id")) is not str
+                    or input.get("thread_id") != thread_id
+                ):
+                    raise ValueError(
+                        "initial case_id must be nonblank and thread_id must equal config thread_id"
+                    )
+                if self._has_checkpoint(await self._graph.aget_state(config)):
+                    raise ValueError(f"thread {thread_id!r} already has a durable checkpoint")
+            return await self._graph.ainvoke(input, config, **kwargs)
 
 
 class FailureController:
@@ -209,16 +267,32 @@ def _validate_interrupt_response(response: Any, pending: Mapping[str, Any]) -> d
     if not isinstance(normalized, dict):
         raise TypeError("interrupt response must be a JSON object")
     for key in ("kind", "case_id", "thread_id", "case_version"):
-        if normalized.get(key) != pending.get(key):
+        expected = pending.get(key)
+        if (
+            key not in normalized
+            or type(normalized[key]) is not type(expected)
+            or normalized[key] != expected
+        ):
             raise ValueError(f"resume {key} does not match the pending interrupt")
     if pending["kind"] in {"action_review", "closure_review"}:
-        if normalized.get("action_id") != pending["action"]["action_id"]:
+        if (
+            type(normalized.get("action_id")) is not str
+            or normalized.get("action_id") != pending["action"]["action_id"]
+        ):
             raise ValueError("resume action_id does not match the pending interrupt")
-        if normalized.get("action_digest") != pending["action_digest"]:
+        if (
+            type(normalized.get("action_digest")) is not str
+            or normalized.get("action_digest") != pending["action_digest"]
+        ):
             raise ValueError("resume action_digest does not match the pending interrupt")
     else:
         for key in ("action_id", "action_digest", "execution_id", "idempotency_key"):
-            if normalized.get(key) != pending.get(key):
+            expected = pending.get(key)
+            if (
+                key not in normalized
+                or type(normalized[key]) is not type(expected)
+                or normalized[key] != expected
+            ):
                 raise ValueError(f"resume {key} does not match the pending interrupt")
     return normalized
 
@@ -230,9 +304,17 @@ async def _read(
     recorder: TraceRecorder,
     args: tuple[Any, ...] = (),
     kwargs: dict[str, Any] | None = None,
+    failures: FailureController | None = None,
 ) -> Any:
+    trusted_operation = operation
+    if failures is not None and failures.consume(f"{name}_transient_failure"):
+
+        async def injected_transient(*_: Any, **__: Any) -> Any:
+            raise TransientCallError(f"injected transient failure for {name}")
+
+        trusted_operation = injected_transient
     wrapped = with_retry(
-        operation,
+        trusted_operation,
         max_attempts=2,
         base_delay_seconds=0,
         budget=CallBudget(2),
@@ -241,7 +323,10 @@ async def _read(
         operation_name=name,
         operation_kind="read",
     )
-    return await wrapped(*args, **(kwargs or {}))
+    result = await wrapped(*args, **(kwargs or {}))
+    if failures is not None and failures.consume(f"{name}_malformed_evidence"):
+        return {"malformed": True, "tool": name}
+    return result
 
 
 def build_workflow(
@@ -249,12 +334,33 @@ def build_workflow(
     gateway: Gateway | None = None,
     retriever: AgenticRetriever | None = None,
     failures: FailureController | None = None,
-    checkpointer: Any | None = None,
+    operations_service: OperationsService | None = None,
+    checkpointer: BaseCheckpointSaver,
 ) -> Any:
     """Compile the explicit coordinator with trusted dependencies in node closures."""
+    if not isinstance(checkpointer, BaseCheckpointSaver):
+        raise TypeError("checkpointer must be a real BaseCheckpointSaver")
     trusted_gateway = gateway or DirectGateway()
+    trusted_operations = operations_service
+    if trusted_operations is None and isinstance(trusted_gateway, DirectGateway):
+        trusted_operations = trusted_gateway.operations
+    if not isinstance(trusted_operations, OperationsService):
+        raise TypeError("operations_service must be an authoritative OperationsService")
     trusted_retriever = retriever or AgenticRetriever(ClosedRetrievalGateway.direct())
     failure_controller = failures or FailureController()
+
+    def read_failure(
+        node_name: str,
+        error: Exception,
+        recorder: TraceRecorder | None = None,
+    ) -> dict[str, Any]:
+        return _node(
+            node_name,
+            status="escalated",
+            failure_state={"stage": node_name, "error": str(error)},
+            warnings=[f"Required evidence failed validation in {node_name}; stopped fail-closed."],
+            tool_trace=recorder.to_dicts() if recorder is not None else [],
+        )
 
     async def intake(state: RecallOpsGraphState) -> dict[str, Any]:
         return _node(
@@ -275,14 +381,30 @@ def build_workflow(
         )
 
     async def retrieve_context(state: RecallOpsGraphState) -> dict[str, Any]:
-        loop_state = trusted_retriever.start(
-            state["question"], authoritative_facts={"recall_number": state["recall_number"]}
-        )
-        result = await trusted_retriever.resume(loop_state)
-        while isinstance(result, RetrievalInterruption):
-            loop_state = result.state
+        try:
+            if failure_controller.consume("rag_failure"):
+                raise TransientCallError("injected agentic RAG failure")
+            loop_state = trusted_retriever.start(
+                state["question"],
+                authoritative_facts={"recall_number": state["recall_number"]},
+            )
             result = await trusted_retriever.resume(loop_state)
-        assert isinstance(result, AgenticRetrievalResult)
+            while isinstance(result, RetrievalInterruption):
+                loop_state = result.state
+                result = await trusted_retriever.resume(loop_state)
+            if not isinstance(result, AgenticRetrievalResult):
+                raise TypeError("agentic RAG returned an invalid result")
+        except Exception as error:
+            return _node(
+                "retrieve_context",
+                status="escalated",
+                failure_state={"stage": "retrieve_context", "error": str(error)},
+                warnings=["Agentic RAG failed; investigation stopped before operational reads."],
+                rag_state={
+                    "budgets": trusted_retriever.budgets.model_dump(mode="json"),
+                    "failed": True,
+                },
+            )
         watchdog = {
             "signature": f"{result.stop_reason}:{result.read_count}:{len(result.evidence)}",
             "repeat_count": result.model_dump(mode="json").get("progress_repeat_count", 0),
@@ -352,6 +474,7 @@ def build_workflow(
                     name="get_recall",
                     recorder=recorder,
                     args=(state["recall_number"],),
+                    failures=failure_controller,
                 )
             if raw is None:
                 raise ValueError("recall evidence is unavailable")
@@ -396,39 +519,35 @@ def build_workflow(
 
     async def product_lot_match(state: RecallOpsGraphState) -> dict[str, Any]:
         recorder = TraceRecorder(case_id=state["case_id"], thread_id=state["thread_id"])
-        predicate = RecallPredicate.model_validate(state["recall_predicate"])
-        products = await _read(
-            operation=trusted_gateway.find_candidate_products,
-            name="find_candidate_products",
-            recorder=recorder,
-            args=(predicate,),
-        )
-        lots = await _read(
-            operation=trusted_gateway.match_lots,
-            name="match_lots",
-            recorder=recorder,
-            args=(predicate,),
-        )
-        scope = set(state.get("scope_lot_ids", []))
-        if scope:
-            lots = [lot for lot in lots if lot["lot_id"] in scope]
-            missing = scope - {lot["lot_id"] for lot in lots}
-            if missing:
-                return _node(
-                    "product_lot_match",
-                    status="escalated",
-                    failure_state={
-                        "stage": "product_lot_match",
-                        "error": f"scope lots unavailable: {sorted(missing)}",
-                    },
-                    warnings=["Requested lot scope is unavailable in authoritative data."],
-                    tool_trace=recorder.to_dicts(),
-                )
-        assessment = assess_product_lots(
-            predicate=predicate,
-            candidate_products=products,
-            candidate_lots=lots,
-        )
+        try:
+            predicate = RecallPredicate.model_validate(state["recall_predicate"])
+            products = await _read(
+                operation=trusted_gateway.find_candidate_products,
+                name="find_candidate_products",
+                recorder=recorder,
+                args=(predicate,),
+                failures=failure_controller,
+            )
+            lots = await _read(
+                operation=trusted_gateway.match_lots,
+                name="match_lots",
+                recorder=recorder,
+                args=(predicate,),
+                failures=failure_controller,
+            )
+            scope = set(state.get("scope_lot_ids", []))
+            if scope:
+                lots = [lot for lot in lots if lot["lot_id"] in scope]
+                missing = scope - {lot["lot_id"] for lot in lots}
+                if missing:
+                    raise ValueError(f"scope lots unavailable: {sorted(missing)}")
+            assessment = assess_product_lots(
+                predicate=predicate,
+                candidate_products=products,
+                candidate_lots=lots,
+            )
+        except Exception as error:
+            return read_failure("product_lot_match", error, recorder)
         if not assessment.confirmed_lot_ids:
             return _node(
                 "product_lot_match",
@@ -456,36 +575,43 @@ def build_workflow(
         reconciliations: list[dict[str, Any]] = []
         forward: dict[str, list[str]] = {}
         backward: dict[str, list[str]] = {}
-        for lot_id in relevant:
-            lot_forward = await _read(
-                operation=trusted_gateway.trace_forward,
-                name="trace_forward",
-                recorder=recorder,
-                args=(lot_id,),
-            )
-            lot_backward = await _read(
-                operation=trusted_gateway.trace_backward,
-                name="trace_backward",
-                recorder=recorder,
-                args=(lot_id,),
-            )
-            lot_inventory = await _read(
-                operation=trusted_gateway.get_inventory,
-                name="get_inventory",
-                recorder=recorder,
-                args=(lot_id,),
-            )
-            reconciliation = await _read(
-                operation=trusted_gateway.reconcile_units,
-                name="reconcile_units",
-                recorder=recorder,
-                args=(lot_id,),
-            )
-            events.extend(lot_forward)
-            inventory.extend(lot_inventory)
-            reconciliations.append(reconciliation)
-            forward[lot_id] = [item["event_id"] for item in lot_forward]
-            backward[lot_id] = [item["event_id"] for item in lot_backward]
+        try:
+            for lot_id in relevant:
+                lot_forward = await _read(
+                    operation=trusted_gateway.trace_forward,
+                    name="trace_forward",
+                    recorder=recorder,
+                    args=(lot_id,),
+                    failures=failure_controller,
+                )
+                lot_backward = await _read(
+                    operation=trusted_gateway.trace_backward,
+                    name="trace_backward",
+                    recorder=recorder,
+                    args=(lot_id,),
+                    failures=failure_controller,
+                )
+                lot_inventory = await _read(
+                    operation=trusted_gateway.get_inventory,
+                    name="get_inventory",
+                    recorder=recorder,
+                    args=(lot_id,),
+                    failures=failure_controller,
+                )
+                reconciliation = await _read(
+                    operation=trusted_gateway.reconcile_units,
+                    name="reconcile_units",
+                    recorder=recorder,
+                    args=(lot_id,),
+                    failures=failure_controller,
+                )
+                events.extend(lot_forward)
+                inventory.extend(lot_inventory)
+                reconciliations.append(reconciliation)
+                forward[lot_id] = [item["event_id"] for item in lot_forward]
+                backward[lot_id] = [item["event_id"] for item in lot_backward]
+        except Exception as error:
+            return read_failure("trace_forward_backward", error, recorder)
         return _node(
             "trace_forward_backward",
             trace_events=events,
@@ -497,13 +623,16 @@ def build_workflow(
         )
 
     async def reconcile(state: RecallOpsGraphState) -> dict[str, Any]:
-        relevant = [*state["confirmed_lot_ids"], *state["ambiguous_lot_ids"]]
-        assessment = assess_traceability(
-            lot_ids=relevant,
-            events=state["trace_events"],
-            inventory_positions=state["inventory_positions"],
-            reconciliations=state["reconciliations"],
-        )
+        try:
+            relevant = [*state["confirmed_lot_ids"], *state["ambiguous_lot_ids"]]
+            assessment = assess_traceability(
+                lot_ids=relevant,
+                events=state["trace_events"],
+                inventory_positions=state["inventory_positions"],
+                reconciliations=state["reconciliations"],
+            )
+        except Exception as error:
+            return read_failure("reconcile", error)
         evidence_by_lot = {
             coverage.lot_id: _ordered(
                 [
@@ -652,12 +781,54 @@ def build_workflow(
                 review_history=[history],
             )
         if decision == "edit":
-            edited = ProposedAction.model_validate(response["edited_action"])
-            if (
-                edited.case_id != state["case_id"]
-                or edited.expected_case_version != state["case_version"]
+            current = ProposedAction.model_validate(state["current_action"])
+            rejection_reason: str | None = None
+            try:
+                edited = ProposedAction.model_validate(response.get("edited_action"))
+            except (TypeError, ValidationError, ValueError) as error:
+                edited = current
+                rejection_reason = f"edited action is invalid: {error}"
+            immutable_fields = (
+                "action_id",
+                "action_type",
+                "case_id",
+                "target_ids",
+                "evidence_ids",
+                "evidence_by_target",
+                "expected_case_version",
+            )
+            if rejection_reason is None:
+                changed = [
+                    field
+                    for field in immutable_fields
+                    if getattr(edited, field) != getattr(current, field)
+                ]
+                if changed:
+                    rejection_reason = (
+                        "edit may change rationale only; immutable reviewed fields changed: "
+                        f"{', '.join(changed)}"
+                    )
+            required = _next_action(state)
+            if rejection_reason is None and (
+                required is None
+                or any(
+                    getattr(edited, field) != getattr(required, field) for field in immutable_fields
+                )
             ):
-                raise ValueError("edited action must retain the pending case and version")
+                rejection_reason = "edited action does not match the required version transition"
+            if rejection_reason is not None:
+                history["accepted"] = False
+                history["rejection_reason"] = rejection_reason
+                return _node(
+                    node_name,
+                    status="review_required",
+                    current_action=current.model_dump(mode="json"),
+                    action_queue=[current.model_dump(mode="json")],
+                    action_digest=state["action_digest"],
+                    review_packet=state["review_packet"],
+                    warnings=[rejection_reason],
+                    review_history=[history],
+                )
             return _node(
                 node_name,
                 status="investigating",
@@ -677,6 +848,8 @@ def build_workflow(
             return "approve"
         if state["status"] == "investigating":
             return "edit"
+        if state["status"] == "review_required":
+            return "re_review"
         return "end"
 
     async def verify_edited_action(state: RecallOpsGraphState) -> dict[str, Any]:
@@ -768,56 +941,113 @@ def build_workflow(
             "expected_case_version": state["case_version"],
             "idempotency_key": state["idempotency_key"],
         }
-        if action.action_type == "create_case":
-            confirmed = set(state["confirmed_lot_ids"])
-            trace_events = [
-                event for event in state["trace_events"] if event["lot_id"] in confirmed
-            ]
-            reconciliations = [
-                item for item in state["reconciliations"] if item["lot_id"] in confirmed
-            ]
-            receipt = await trusted_gateway.create_case(
-                **kwargs,
-                recall_number=state["recall_number"],
-                confirmed_lot_ids=state["confirmed_lot_ids"],
-                trace_event_ids=[event["event_id"] for event in trace_events],
-                required_facilities=state["required_facilities"],
-                reconciliation=reconciliations,
-                evidence_gaps=_ordered([*state["evidence_gaps"], *state["ambiguous_lot_ids"]]),
-                question=state["question"],
-            )
-        elif action.action_type == "apply_inventory_hold":
-            receipt = await trusted_gateway.apply_inventory_hold(
-                **kwargs, lot_ids=list(action.target_ids)
-            )
-        elif action.action_type == "create_facility_tasks":
-            receipt = await trusted_gateway.create_facility_tasks(
-                **kwargs, facility_ids=list(action.target_ids)
-            )
-        elif action.action_type == "record_acknowledgment":
-            receipt = await trusted_gateway.record_acknowledgment(
-                **kwargs, facility_id=action.target_ids[0]
-            )
-        elif action.action_type == "close_case":
-            receipt = await trusted_gateway.close_case(**kwargs)
-        else:
-            raise ValueError(f"unsupported runtime action {action.action_type}")
-        typed_receipt = AuditReceipt.model_validate(receipt)
+        try:
+            if action.action_type == "create_case":
+                confirmed = set(state["confirmed_lot_ids"])
+                trace_events = [
+                    event for event in state["trace_events"] if event["lot_id"] in confirmed
+                ]
+                reconciliations = [
+                    item for item in state["reconciliations"] if item["lot_id"] in confirmed
+                ]
+                receipt = await trusted_gateway.create_case(
+                    **kwargs,
+                    recall_number=state["recall_number"],
+                    confirmed_lot_ids=state["confirmed_lot_ids"],
+                    trace_event_ids=[event["event_id"] for event in trace_events],
+                    required_facilities=state["required_facilities"],
+                    reconciliation=reconciliations,
+                    evidence_gaps=_ordered([*state["evidence_gaps"], *state["ambiguous_lot_ids"]]),
+                    question=state["question"],
+                    thread_id=state["thread_id"],
+                )
+            elif action.action_type == "apply_inventory_hold":
+                receipt = await trusted_gateway.apply_inventory_hold(
+                    **kwargs, lot_ids=list(action.target_ids)
+                )
+            elif action.action_type == "create_facility_tasks":
+                receipt = await trusted_gateway.create_facility_tasks(
+                    **kwargs, facility_ids=list(action.target_ids)
+                )
+            elif action.action_type == "record_acknowledgment":
+                receipt = await trusted_gateway.record_acknowledgment(
+                    **kwargs, facility_id=action.target_ids[0]
+                )
+            elif action.action_type == "close_case":
+                receipt = await trusted_gateway.close_case(**kwargs)
+            else:
+                raise ValueError(f"unsupported runtime action {action.action_type}")
+            typed_receipt = AuditReceipt.model_validate(receipt)
+            _validate_receipt(state, action, approval, typed_receipt)
+        except Exception as error:
+            return _unknown_write_outcome(state, scenario="receipt_or_write_failure", error=error)
         if failure_controller.consume("lost_write_response"):
-            return _node(
-                "execute_one_operation",
-                status="write_outcome_unknown",
-                failure_state={
-                    "stage": "execute_one_operation",
-                    "scenario": "lost_write_response",
-                    "idempotency_key": state["idempotency_key"],
-                },
-                retry_state={
-                    **state["retry_state"],
-                    "write_attempts": state["retry_state"].get("write_attempts", 0) + 1,
-                },
+            return _unknown_write_outcome(
+                state,
+                scenario="lost_write_response",
+                error=RuntimeError("write response intentionally treated as lost"),
             )
         return _after_receipt(state, typed_receipt)
+
+    def _unknown_write_outcome(
+        state: RecallOpsGraphState,
+        *,
+        scenario: str,
+        error: Exception,
+    ) -> dict[str, Any]:
+        return _node(
+            "execute_one_operation",
+            status="write_outcome_unknown",
+            failure_state={
+                "stage": "execute_one_operation",
+                "scenario": scenario,
+                "error": str(error),
+                "idempotency_key": state["idempotency_key"],
+            },
+            retry_state={
+                **state["retry_state"],
+                "write_attempts": state["retry_state"].get("write_attempts", 0) + 1,
+            },
+        )
+
+    def _validate_receipt(
+        state: RecallOpsGraphState,
+        action: ProposedAction,
+        approval: ApprovalDecision,
+        receipt: AuditReceipt,
+    ) -> None:
+        exact_fields = {
+            "case_id": state["case_id"],
+            "action_type": action.action_type,
+            "idempotency_key": state["idempotency_key"],
+            "case_version": state["case_version"] + 1,
+            "status": "simulated",
+            "actor": approval.actor,
+            "justification": approval.justification,
+        }
+        receipt_json = receipt.model_dump(mode="json")
+        for field_name, expected in exact_fields.items():
+            actual = receipt_json.get(field_name)
+            if type(actual) is not type(expected) or actual != expected:
+                raise ValueError(f"receipt {field_name} does not match the approved write")
+        if receipt_json.get("details", {}).get("reviewed_action") != action.model_dump(mode="json"):
+            raise ValueError("receipt reviewed_action does not match the approved action")
+
+        authoritative_receipt = trusted_operations.get_receipt(state["idempotency_key"])
+        authoritative_case = trusted_operations.get_case(state["case_id"])
+        if authoritative_receipt is None or authoritative_case is None:
+            raise ValueError("receipt is absent from the authoritative Operations store")
+        if authoritative_receipt.model_dump(mode="json") != receipt_json:
+            raise ValueError("gateway receipt does not match the authoritative Operations receipt")
+        if (
+            type(authoritative_case.case_version) is not int
+            or authoritative_case.case_version != state["case_version"] + 1
+            or authoritative_case.case_id != state["case_id"]
+            or authoritative_case.thread_id != state["thread_id"]
+            or not authoritative_case.write_receipts
+            or authoritative_case.write_receipts[-1].model_dump(mode="json") != receipt_json
+        ):
+            raise ValueError("receipt does not match authoritative Operations case state")
 
     def _after_receipt(state: RecallOpsGraphState, raw_receipt: Any) -> dict[str, Any]:
         receipt = _json(raw_receipt)
@@ -971,8 +1201,16 @@ def build_workflow(
         route_after_regulatory,
         {"continue": "trace_forward_backward", "end": END},
     )
-    graph.add_edge("trace_forward_backward", "reconcile")
-    graph.add_edge("reconcile", "containment_draft")
+    graph.add_conditional_edges(
+        "trace_forward_backward",
+        route_after_regulatory,
+        {"continue": "reconcile", "end": END},
+    )
+    graph.add_conditional_edges(
+        "reconcile",
+        route_after_regulatory,
+        {"continue": "containment_draft", "end": END},
+    )
     graph.add_edge("containment_draft", "verify")
     graph.add_edge("verify", "prepare_action_review")
     graph.add_conditional_edges(
@@ -986,6 +1224,7 @@ def build_workflow(
         {
             "approve": "prepare_execution_confirmation",
             "edit": "verify_edited_action",
+            "re_review": "action_review",
             "end": END,
         },
     )
@@ -995,6 +1234,7 @@ def build_workflow(
         {
             "approve": "prepare_execution_confirmation",
             "edit": "verify_edited_action",
+            "re_review": "closure_review",
             "end": END,
         },
     )
@@ -1027,4 +1267,6 @@ def build_workflow(
         route_recovery,
         {"retry": "execute_one_operation", "end": END},
     )
-    return graph.compile(checkpointer=checkpointer, name="recallops-runtime")
+    return GuardedCompiledWorkflow(
+        graph.compile(checkpointer=checkpointer, name="recallops-runtime")
+    )

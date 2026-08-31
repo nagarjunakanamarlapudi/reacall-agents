@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
+import sys
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Literal
 from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -14,7 +17,8 @@ from pydantic import BaseModel, ConfigDict
 
 from recallops.agents.policies import strict_json_value
 from recallops.agents.workflow import FailureController, build_workflow
-from recallops.mcp.gateway import DirectGateway
+from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
+from recallops.paths import DATA_DIR, PROJECT_ROOT
 from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
 from recallops.services.operations import OperationsService
 from recallops.services.recall_registry import RecallRegistryService
@@ -35,16 +39,24 @@ class RuntimeResult(BaseModel):
 class RecallOpsRuntime:
     """Own the SQLite checkpointer and trusted read/write service closures."""
 
+    _thread_locks: ClassVar[dict[tuple[int, str, str], asyncio.Lock]] = {}
+
     def __init__(
         self,
         *,
         graph: Any,
         failures: FailureController,
         checkpointer: AsyncSqliteSaver,
+        checkpoint_key: str,
     ) -> None:
         self.graph = graph
         self._failures = failures
         self._checkpointer = checkpointer
+        self._checkpoint_key = checkpoint_key
+
+    def _thread_lock(self, thread_id: str) -> asyncio.Lock:
+        key = (id(asyncio.get_running_loop()), self._checkpoint_key, thread_id)
+        return self._thread_locks.setdefault(key, asyncio.Lock())
 
     @classmethod
     @asynccontextmanager
@@ -53,32 +65,75 @@ class RecallOpsRuntime:
         *,
         checkpoint_path: Path | str,
         operations_path: Path | str,
+        transport: Literal["direct", "stdio"] = "direct",
     ) -> AsyncIterator[RecallOpsRuntime]:
         """Open both durable stores and close the async checkpointer explicitly."""
+        if transport not in {"direct", "stdio"}:
+            raise ValueError("transport must be 'direct' or 'stdio'")
         checkpoint = Path(checkpoint_path).expanduser().resolve()
         operations = Path(operations_path).expanduser().resolve()
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
         operations.parent.mkdir(parents=True, exist_ok=True)
-        traceability = TraceabilityService()
-        gateway = DirectGateway(
-            registry=RecallRegistryService(),
-            traceability=traceability,
-            operations=OperationsService(
-                storage_path=operations,
-                traceability=traceability,
-            ),
+        traceability = TraceabilityService(
+            data_dir=DATA_DIR,
+            source_mode="snapshot",
         )
+        operations_service = OperationsService(
+            storage_path=operations,
+            traceability=traceability,
+        )
+        if transport == "direct":
+            gateway = DirectGateway(
+                registry=RecallRegistryService(
+                    data_dir=DATA_DIR,
+                    source_mode="snapshot",
+                ),
+                traceability=traceability,
+                operations=operations_service,
+            )
+            retrieval_gateway = ClosedRetrievalGateway.direct()
+        else:
+            environment = {
+                **os.environ,
+                "RECALLOPS_DATA_DIR": str(DATA_DIR),
+                "RECALLOPS_SOURCE_MODE": "snapshot",
+                "RECALLOPS_OPERATIONS_DB": str(operations),
+            }
+
+            def connection(module: str) -> dict[str, object]:
+                return {
+                    "transport": "stdio",
+                    "command": sys.executable,
+                    "args": ["-m", module],
+                    "cwd": str(PROJECT_ROOT),
+                    "env": environment,
+                }
+
+            gateway = StdioMCPGateway(
+                {
+                    "registry": connection("recallops.mcp.recall_registry_server"),
+                    "traceability": connection("recallops.mcp.traceability_server"),
+                    "operations": connection("recallops.mcp.operations_server"),
+                }
+            )
+            retrieval_gateway = ClosedRetrievalGateway.stdio()
         failures = FailureController()
-        retriever = AgenticRetriever(ClosedRetrievalGateway.direct())
+        retriever = AgenticRetriever(retrieval_gateway)
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint)) as saver:
             await saver.setup()
             graph = build_workflow(
                 gateway=gateway,
                 retriever=retriever,
                 failures=failures,
+                operations_service=operations_service,
                 checkpointer=saver,
             )
-            yield cls(graph=graph, failures=failures, checkpointer=saver)
+            yield cls(
+                graph=graph,
+                failures=failures,
+                checkpointer=saver,
+                checkpoint_key=str(checkpoint),
+            )
 
     @staticmethod
     def _config(thread_id: str) -> dict[str, dict[str, str]]:
@@ -129,12 +184,15 @@ class RecallOpsRuntime:
     ) -> RuntimeResult:
         if not recall_number.strip() or not question.strip():
             raise ValueError("recall_number and question must be nonblank")
-        generated_case = case_id or f"CASE-{uuid5(NAMESPACE_URL, recall_number + ':' + question)}"
+        if case_id is not None and (not isinstance(case_id, str) or not case_id.strip()):
+            raise ValueError("case_id must be a nonblank string")
+        if thread_id is not None and (not isinstance(thread_id, str) or not thread_id.strip()):
+            raise ValueError("thread_id must be a nonblank string")
+        generated_case = (
+            case_id or thread_id or f"CASE-{uuid5(NAMESPACE_URL, recall_number + ':' + question)}"
+        )
         generated_thread = thread_id or generated_case
         config = self._config(generated_thread)
-        existing = await self.graph.aget_state(config)
-        if self._checkpoint_id(existing) is not None:
-            raise ValueError(f"thread {generated_thread!r} already has a durable checkpoint")
         scope = list(scope_lot_ids or [])
         if any(not isinstance(item, str) or not item.strip() for item in scope):
             raise ValueError("scope_lot_ids must contain nonblank strings")
@@ -147,18 +205,27 @@ class RecallOpsRuntime:
             "question": question,
             "scope_lot_ids": scope,
         }
-        await self.graph.ainvoke(
-            initial,
-            config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
-        )
-        return self._result(await self.graph.aget_state(config))
+        async with self._thread_lock(generated_thread):
+            existing = await self.graph.aget_state(config)
+            if self._checkpoint_id(existing) is not None:
+                raise ValueError(f"thread {generated_thread!r} already has a durable checkpoint")
+            await self.graph.ainvoke(
+                initial,
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+            return self._result(await self.graph.aget_state(config))
 
     @staticmethod
     def _require_equal(response: Mapping[str, Any], pending: Mapping[str, Any], key: str) -> None:
-        if key not in response or response[key] != pending.get(key):
+        expected = pending.get(key)
+        if (
+            key not in response
+            or type(response[key]) is not type(expected)
+            or response[key] != expected
+        ):
             raise ValueError(f"resume {key} does not match the pending interrupt")
 
     @classmethod
@@ -175,7 +242,10 @@ class RecallOpsRuntime:
         kind = pending["kind"]
         if kind in {"action_review", "closure_review"}:
             expected_action_id = pending["action"]["action_id"]
-            if normalized.get("action_id") != expected_action_id:
+            if (
+                type(normalized.get("action_id")) is not str
+                or normalized.get("action_id") != expected_action_id
+            ):
                 raise ValueError("resume action_id does not match the pending interrupt")
             cls._require_equal(normalized, pending, "action_digest")
         elif kind in {"execution_confirmation", "write_outcome_recovery"}:
@@ -187,29 +257,34 @@ class RecallOpsRuntime:
 
     async def resume_case(self, *, thread_id: str, response: Any) -> RuntimeResult:
         config = self._config(thread_id)
-        before = await self.graph.aget_state(config)
-        if self._checkpoint_id(before) is None:
-            raise KeyError(f"unknown thread {thread_id!r}")
-        pending = self._pending(before)
-        if pending is None:
-            raise ValueError(f"thread {thread_id!r} has no pending interrupt")
-        if self._failures.consume("stale_decision_version"):
-            raise ValueError("injected stale decision/version rejected before resume")
-        if self._failures.consume("changed_action_digest"):
-            raise ValueError("injected changed action digest rejected before resume")
-        normalized = self._validate_resume_binding(
-            thread_id=thread_id,
-            response=response,
-            pending=pending,
-        )
-        await self.graph.ainvoke(
-            Command(resume=normalized),
-            config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
-        )
-        return self._result(await self.graph.aget_state(config))
+        async with self._thread_lock(thread_id):
+            before = await self.graph.aget_state(config)
+            before_checkpoint_id = self._checkpoint_id(before)
+            if before_checkpoint_id is None:
+                raise KeyError(f"unknown thread {thread_id!r}")
+            pending = self._pending(before)
+            if pending is None:
+                raise ValueError(f"thread {thread_id!r} has no pending interrupt")
+            if self._failures.consume("stale_decision_version"):
+                raise ValueError("injected stale decision/version rejected before resume")
+            if self._failures.consume("changed_action_digest"):
+                raise ValueError("injected changed action digest rejected before resume")
+            normalized = self._validate_resume_binding(
+                thread_id=thread_id,
+                response=response,
+                pending=pending,
+            )
+            current = await self.graph.aget_state(config)
+            if self._checkpoint_id(current) != before_checkpoint_id:
+                raise RuntimeError("checkpoint changed during resume binding validation")
+            await self.graph.ainvoke(
+                Command(resume=normalized),
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+            return self._result(await self.graph.aget_state(config))
 
     async def get_case(self, *, thread_id: str) -> RuntimeResult | None:
         snapshot = await self.graph.aget_state(self._config(thread_id))

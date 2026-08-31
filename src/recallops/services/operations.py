@@ -78,6 +78,9 @@ class OperationsService:
                 connection.executescript("""
                     CREATE TABLE IF NOT EXISTS cases (
                       case_id TEXT PRIMARY KEY, version INTEGER NOT NULL, state_json TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS case_threads (
+                      case_id TEXT PRIMARY KEY REFERENCES cases(case_id),
+                      thread_id TEXT NOT NULL UNIQUE);
                     CREATE TABLE IF NOT EXISTS receipts (
                       receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
                       case_id TEXT NOT NULL REFERENCES cases(case_id), action_type TEXT NOT NULL,
@@ -270,6 +273,20 @@ class OperationsService:
         except (OSError, sqlite3.Error, ValueError) as error:
             raise OperationStoreError(f"unable to read operation store: {error}") from error
 
+    def get_receipt(self, idempotency_key: str) -> AuditReceipt | None:
+        """Return the authoritative receipt bound to an idempotency key, if any."""
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("idempotency_key must be a nonblank string")
+        try:
+            with self._connection() as conn:
+                row = conn.execute(
+                    "SELECT receipt_json FROM receipts WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+            return AuditReceipt.model_validate_json(row["receipt_json"]) if row else None
+        except (OSError, sqlite3.Error, ValueError) as error:
+            raise OperationStoreError(f"unable to read operation store: {error}") from error
+
     @property
     def cases(self) -> dict[str, RecallCaseState]:
         try:
@@ -431,9 +448,13 @@ class OperationsService:
         expected_case_version: int,
         idempotency_key: str,
         question: str = "",
+        thread_id: str | None = None,
     ) -> AuditReceipt:
         validate_case_version(expected_case_version, "expected_case_version")
         self._validate_idempotency_key(idempotency_key)
+        durable_thread_id = case_id if thread_id is None else thread_id
+        if type(durable_thread_id) is not str or not durable_thread_id.strip():
+            raise ValueError("thread_id must be a nonblank string")
         required_nonempty = {
             "confirmed_lot_ids": confirmed_lot_ids,
             "trace_event_ids": trace_event_ids,
@@ -458,6 +479,7 @@ class OperationsService:
         details = {
             "recall_number": recall_number,
             "question": question,
+            "thread_id": durable_thread_id,
             "confirmed_lot_ids": confirmed_lot_ids,
             "trace_event_ids": trace_event_ids,
             "required_facilities": required_facilities,
@@ -496,7 +518,7 @@ class OperationsService:
                 )
                 state = RecallCaseState(
                     case_id=case_id,
-                    thread_id=case_id,
+                    thread_id=durable_thread_id,
                     recall_number=recall_number,
                     question=question,
                     source_mode=self.source_mode,
@@ -525,6 +547,10 @@ class OperationsService:
                 state = state.model_copy(update={"case_version": 1, "write_receipts": [receipt]})
                 conn.execute(
                     "INSERT INTO cases VALUES (?, ?, ?)", (case_id, 1, state.model_dump_json())
+                )
+                conn.execute(
+                    "INSERT INTO case_threads VALUES (?, ?)",
+                    (case_id, durable_thread_id),
                 )
                 conn.execute(
                     "INSERT INTO receipts VALUES (?, ?, ?, ?, ?, ?, ?)",

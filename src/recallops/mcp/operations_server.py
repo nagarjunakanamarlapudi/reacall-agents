@@ -63,6 +63,7 @@ def create_case(
     expected_case_version: CaseVersion,
     idempotency_key: str,
     question: str = "",
+    thread_id: str | None = None,
 ) -> AuditReceipt:
     return service.create_case(
         case_id=case_id,
@@ -86,6 +87,7 @@ def create_case(
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
         question=question,
+        thread_id=thread_id,
     )
 
 

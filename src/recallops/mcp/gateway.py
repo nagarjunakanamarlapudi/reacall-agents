@@ -60,6 +60,7 @@ class Gateway(Protocol):
         expected_case_version: int,
         idempotency_key: str,
         question: str = "",
+        thread_id: str | None = None,
     ) -> dict[str, Any]: ...
     async def apply_inventory_hold(
         self,
@@ -217,6 +218,7 @@ class DirectGateway:
         expected_case_version: int,
         idempotency_key: str,
         question: str = "",
+        thread_id: str | None = None,
     ):
         return _json(
             self.operations.create_case(
@@ -232,6 +234,7 @@ class DirectGateway:
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
                 question=question,
+                thread_id=thread_id,
             )
         )
 
@@ -448,6 +451,7 @@ class StdioMCPGateway:
         expected_case_version: int,
         idempotency_key: str,
         question: str = "",
+        thread_id: str | None = None,
     ):
         return await self._write(
             "create_case",
@@ -464,6 +468,7 @@ class StdioMCPGateway:
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
                 "question": question,
+                "thread_id": thread_id,
             },
         )
 
