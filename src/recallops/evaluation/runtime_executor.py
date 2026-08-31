@@ -2164,6 +2164,14 @@ class RecallOpsEvaluationExecutor:
                             sqlite3.connect(copied_path) as destination,
                         ):
                             source.backup(destination)
+                    identity_after_backups = operations_identity()
+                    live_state_proven = (
+                        live_state_proven
+                        and checkpoint_marker(original_path) == live_original_marker
+                        and identity_after_backups == live_identity
+                        and type(identity_after_backups.get("attempt_expires_at")) is float
+                        and identity_after_backups["attempt_expires_at"] > time.time()
+                    )
                 finally:
                     release_execution.set()
                     outcomes = await asyncio.gather(failed_resume, return_exceptions=True)
@@ -2319,28 +2327,39 @@ class RecallOpsEvaluationExecutor:
                     if item.checkpoint_id is not None
                 }
                 new_history = exact_history_after[:2]
+                new_checkpoint_ids = [item.checkpoint_id for item in new_history]
                 exact_checkpoint_advanced_once = (
                     len(exact_history_after) == len(exact_history_before) + 2
                     and exact_history_after[2:] == exact_history_before
                     and len(new_history) == 2
-                    and len({item.checkpoint_id for item in new_history}) == 2
-                    and all(item.checkpoint_id not in prior_checkpoint_ids for item in new_history)
+                    and all(
+                        type(checkpoint_id) is str and bool(checkpoint_id.strip())
+                        for checkpoint_id in new_checkpoint_ids
+                    )
+                    and len(set(new_checkpoint_ids)) == 2
+                    and all(
+                        checkpoint_id not in prior_checkpoint_ids
+                        for checkpoint_id in new_checkpoint_ids
+                    )
+                    and type(confirmation.checkpoint_id) is str
+                    and bool(confirmation.checkpoint_id.strip())
                     and confirmation == exact_history_after[0]
                     and (identity_after_recovery or {}).get("checkpoint_head")
                     == confirmation.checkpoint_id
                 )
+                expected_attempt_columns = {
+                    "attempt_token",
+                    "attempt_expected_head",
+                    "attempt_request_digest",
+                    "attempt_state",
+                    "attempt_expires_at",
+                }
                 exact_recovery_markers_cleared = (
                     checkpoint_marker(exact_copy_path) is None
                     and identity_after_recovery is not None
+                    and expected_attempt_columns <= identity_after_recovery.keys()
                     and tuple(
-                        identity_after_recovery.get(key)
-                        for key in (
-                            "attempt_token",
-                            "attempt_expected_head",
-                            "attempt_request_digest",
-                            "attempt_state",
-                            "attempt_expires_at",
-                        )
+                        identity_after_recovery.get(key) for key in sorted(expected_attempt_columns)
                     )
                     == (None, None, None, None, None)
                 )
