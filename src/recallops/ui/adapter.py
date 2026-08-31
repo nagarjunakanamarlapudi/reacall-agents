@@ -20,6 +20,7 @@ from recallops.agents.planner import plan_investigation
 from recallops.agents.runtime import RecallOpsRuntime
 from recallops.agents.specialists import investigate_recall
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 from recallops.ui.presenters import PINNED_RECALL
@@ -60,6 +61,30 @@ _FAILURE_NEXT_STEPS = {
     "review": "Submit the pending Human Review decision",
     "simulate": "Simulate approved actions",
 }
+
+_EVALUATION_RATE_METRICS = (
+    "scenario_pass_rate",
+    "safety_critical_pass_rate",
+    "route_accuracy",
+    "match_classification_accuracy",
+    "lineage_accuracy",
+    "quantity_evidence_coverage",
+    "gap_detection_recall",
+    "approval_guard_rate",
+    "idempotency_integrity",
+    "closure_guard_rate",
+    "recovery_correctness",
+    "bounded_execution_rate",
+    "retrieval_evidence_coverage",
+    "trace_completeness",
+    "latency_budget_rate",
+)
+_EVALUATION_UNSAFE_COUNTERS = (
+    "unauthorized_write_count",
+    "duplicate_logical_write_count",
+    "false_close_count",
+    "receipt_integrity_violation_count",
+)
 
 
 class RecallOpsUIAdapter(Protocol):
@@ -137,6 +162,265 @@ def normalize_runtime_history(results: Any) -> list[dict[str, Any]]:
     return history
 
 
+def _canonical_digest(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _deep_merge_json(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(dict(base))
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = _deep_merge_json(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _corpus_digest_candidates(corpus: Mapping[str, Any]) -> set[str]:
+    """Accept the source corpus and the evaluator's validated/expanded representation."""
+
+    candidates = {_canonical_digest(corpus)}
+    common = corpus.get("common_input")
+    scenarios = corpus.get("scenarios")
+    if isinstance(common, Mapping) and isinstance(scenarios, list):
+        expanded = copy.deepcopy(dict(corpus))
+        expanded["scenarios"] = [
+            {
+                **copy.deepcopy(dict(item)),
+                "input": _deep_merge_json(
+                    common,
+                    item.get("input") if isinstance(item.get("input"), Mapping) else {},
+                ),
+            }
+            if isinstance(item, Mapping)
+            else item
+            for item in scenarios
+        ]
+        candidates.add(_canonical_digest(expanded))
+        schema_normalized = copy.deepcopy(expanded)
+        for scenario in schema_normalized["scenarios"]:
+            if not isinstance(scenario, dict):
+                continue
+            for fault in scenario.get("faults", []):
+                if isinstance(fault, dict):
+                    fault.setdefault("parameters", {})
+            expected = scenario.get("expected")
+            if not isinstance(expected, dict):
+                continue
+            for assertion in expected.get("assertions", []):
+                if isinstance(assertion, dict):
+                    assertion.setdefault("expected", None)
+                    assertion.setdefault("safety_invariant", "")
+        candidates.add(_canonical_digest(schema_normalized))
+    try:
+        from recallops.evaluation.schema import ScenarioCorpus
+    except ImportError:
+        return candidates
+    try:
+        validated = ScenarioCorpus.model_validate(corpus).model_dump(mode="json")
+    except (TypeError, ValueError):
+        return candidates
+    candidates.add(_canonical_digest(validated))
+    return candidates
+
+
+def _evaluation_unavailable(status: str, message: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "source": "committed_evaluation_report",
+        "message": f"{message} No passing score is claimed.",
+        "gate_passed": None,
+        "scenario_count": 0,
+        "scenarios": [],
+        "metrics": {},
+        "unsafe_counters": {},
+    }
+
+
+def _require_rate(metrics: Mapping[str, Any], name: str) -> float:
+    value = metrics.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError(f"metric {name} must be a rate from zero through one")
+    return float(value)
+
+
+def _require_counter(metrics: Mapping[str, Any], name: str) -> int:
+    value = metrics.get(name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"metric {name} must be a non-negative integer")
+    return value
+
+
+def _project_committed_evaluation_report(
+    report: Mapping[str, Any], corpus: Mapping[str, Any]
+) -> dict[str, Any]:
+    if report.get("schema_version") != "1.1":
+        raise ValueError("unsupported evaluation report schema")
+    if report.get("execution_mode") != "offline_deterministic":
+        raise ValueError("evaluation execution mode is not offline_deterministic")
+    metadata = report.get("run_metadata")
+    if not isinstance(metadata, Mapping) or (
+        metadata.get("report_kind") != "run_specific_observation"
+        or metadata.get("telemetry_policy") != "observed_only"
+        or metadata.get("timing_source") not in {"measured_wall_clock", "scripted_clock"}
+    ):
+        raise ValueError("evaluation run metadata is invalid")
+    digest = report.get("scenario_corpus_sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("evaluation corpus digest is invalid")
+    if digest not in _corpus_digest_candidates(corpus):
+        raise RuntimeError("evaluation report digest does not match the committed scenario corpus")
+    results = report.get("results")
+    if not isinstance(results, list) or not results or len(results) > 100:
+        raise ValueError("evaluation report results must be a bounded non-empty list")
+    corpus_scenarios = corpus.get("scenarios")
+    if not isinstance(corpus_scenarios, list):
+        raise ValueError("evaluation scenario corpus has no scenario list")
+    corpus_ids = [item.get("id") for item in corpus_scenarios if isinstance(item, Mapping)]
+    if len(corpus_ids) != len(corpus_scenarios) or any(
+        not isinstance(identifier, str) or not identifier for identifier in corpus_ids
+    ):
+        raise ValueError("evaluation scenario corpus has invalid identifiers")
+
+    scenario_rows: list[dict[str, Any]] = []
+    result_ids: list[str] = []
+    passed_count = 0
+    critical_count = 0
+    critical_passed = 0
+    for result in results:
+        if not isinstance(result, Mapping):
+            raise ValueError("evaluation result must be a mapping")
+        identifier = result.get("id")
+        passed = result.get("passed")
+        safety_critical = result.get("safety_critical")
+        assertions = result.get("assertions")
+        error = result.get("error")
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(passed, bool)
+            or not isinstance(safety_critical, bool)
+            or not isinstance(assertions, list)
+            or not assertions
+            or not all(
+                isinstance(assertion, Mapping)
+                and isinstance(assertion.get("passed"), bool)
+                for assertion in assertions
+            )
+            or (error is not None and not isinstance(error, str))
+        ):
+            raise ValueError("evaluation result fields are invalid")
+        derived_pass = error is None and all(assertion["passed"] for assertion in assertions)
+        if passed != derived_pass:
+            raise ValueError("evaluation result pass flag does not match its assertions")
+        route_actual = result.get("route_actual")
+        route_expected = result.get("route_expected")
+        duration_ms = result.get("duration_ms")
+        if (
+            not isinstance(route_actual, list)
+            or not isinstance(route_expected, list)
+            or isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, int)
+            or duration_ms < 0
+        ):
+            raise ValueError("evaluation result route or duration is invalid")
+        result_ids.append(identifier)
+        passed_count += int(passed)
+        critical_count += int(safety_critical)
+        critical_passed += int(safety_critical and passed)
+        assertion_passes = sum(assertion["passed"] for assertion in assertions)
+        scenario_rows.append(
+            {
+                "scenario": identifier,
+                "expected": "Route: " + " → ".join(str(item) for item in route_expected),
+                "safety_critical": safety_critical,
+                "passed": passed,
+                "observed": (
+                    f"{assertion_passes}/{len(assertions)} assertions passed · "
+                    f"{duration_ms} ms · route {' → '.join(str(item) for item in route_actual)}"
+                ),
+                "exception": error,
+            }
+        )
+    if len(result_ids) != len(set(result_ids)) or result_ids != corpus_ids:
+        raise ValueError("evaluation results do not match the committed scenario corpus")
+
+    metrics = report.get("metrics")
+    if not isinstance(metrics, Mapping):
+        raise ValueError("evaluation metrics must be a mapping")
+    projected_metrics = {
+        name: _require_rate(metrics, name) for name in _EVALUATION_RATE_METRICS
+    }
+    unsafe_counters = {
+        name: _require_counter(metrics, name) for name in _EVALUATION_UNSAFE_COUNTERS
+    }
+    if projected_metrics["scenario_pass_rate"] != passed_count / len(results):
+        raise ValueError("scenario pass rate does not match observed results")
+    expected_critical_rate = critical_passed / critical_count if critical_count else 0.0
+    if projected_metrics["safety_critical_pass_rate"] != expected_critical_rate:
+        raise ValueError("safety-critical pass rate does not match observed results")
+    gate_passed = report.get("gate_passed")
+    if not isinstance(gate_passed, bool):
+        raise ValueError("evaluation gate status must be boolean")
+    derived_gate = (
+        passed_count == len(results)
+        and all(value == 1.0 for value in projected_metrics.values())
+        and not any(unsafe_counters.values())
+    )
+    if gate_passed != derived_gate:
+        raise ValueError("evaluation gate status conflicts with observed metrics")
+    return {
+        "status": "verified",
+        "source": "committed_evaluation_report",
+        "message": (
+            f"Committed evaluation report verified: {passed_count}/{len(results)} scenarios "
+            f"passed; safety gate {'PASS' if gate_passed else 'FAIL'}."
+        ),
+        "schema_version": report["schema_version"],
+        "scenario_corpus_sha256": digest,
+        "execution_mode": report["execution_mode"],
+        "run_metadata": copy.deepcopy(dict(metadata)),
+        "gate_passed": gate_passed,
+        "scenario_count": len(scenario_rows),
+        "scenarios": scenario_rows,
+        "metrics": projected_metrics,
+        "unsafe_counters": unsafe_counters,
+    }
+
+
+def _load_committed_evaluation_report(paths: RepositoryPaths) -> dict[str, Any]:
+    if not paths.evaluation_report.is_file():
+        return _evaluation_unavailable(
+            "missing", "Committed evaluation report is missing from data/evals/report.json."
+        )
+    if not paths.evaluation_corpus.is_file():
+        return _evaluation_unavailable(
+            "invalid", "Evaluation scenario corpus is missing, so the report cannot be verified."
+        )
+    try:
+        report = json.loads(paths.evaluation_report.read_text(encoding="utf-8"))
+        corpus = json.loads(paths.evaluation_corpus.read_text(encoding="utf-8"))
+        if not isinstance(report, Mapping) or not isinstance(corpus, Mapping):
+            raise ValueError("evaluation artifacts must contain JSON objects")
+        return _project_committed_evaluation_report(report, corpus)
+    except RuntimeError as error:
+        return _evaluation_unavailable("stale", str(error).capitalize() + ".")
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        return _evaluation_unavailable(
+            "invalid", f"Committed evaluation report is invalid: {error}."
+        )
+
+
 class DurableRuntimeAdapter:
     """Thin product adapter over the locked, SQLite-backed RecallOpsRuntime."""
 
@@ -150,11 +434,13 @@ class DurableRuntimeAdapter:
         checkpoint_path: Path | str,
         operations_path: Path | str,
         transport: Literal["direct", "stdio"] = "direct",
+        repository_paths: RepositoryPaths | None = None,
     ) -> None:
         if transport not in {"direct", "stdio"}:
             raise ValueError("transport must be 'direct' or 'stdio'")
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         self.operations_path = Path(operations_path).expanduser().resolve()
+        self.repository_paths = repository_paths or RepositoryPaths(PROJECT_ROOT)
         self.transport = transport
         self.transport_label = (
             "direct MCP gateway" if transport == "direct" else "stdio MCP subprocesses"
@@ -233,7 +519,7 @@ class DurableRuntimeAdapter:
             ],
             "tool_trace": [],
             "closure": None,
-            "evaluation_report": None,
+            "evaluation_report": self._evaluation_report(),
             "checkpoint_id": None,
             "checkpoint_history": [],
             "next_nodes": [],
@@ -486,7 +772,11 @@ class DurableRuntimeAdapter:
         projected = normalize_runtime_result(result)
         projected["checkpoint_history"] = normalize_runtime_history(history)
         projected["transport_mode"] = self.transport_label
+        projected["evaluation_report"] = self._evaluation_report()
         return projected
+
+    def _evaluation_report(self) -> dict[str, Any]:
+        return _load_committed_evaluation_report(self.repository_paths)
 
     @staticmethod
     def _pending(current: Mapping[str, Any], *, expected: tuple[str, ...]) -> dict[str, Any]:
@@ -1262,7 +1552,16 @@ class DeterministicDemoAdapter:
             ("loop control", "bounded retrieval/watchdog can escalate"),
         )
         return {
+            "status": "demo_only",
+            "source": "explicit_demo_fixture",
+            "message": (
+                "Demo-only evaluation fixture: illustrative contract rows, not a committed "
+                "evaluator run. No passing score is claimed."
+            ),
             "mode": "deterministic fixture",
+            "gate_passed": None,
+            "metrics": {},
+            "unsafe_counters": {},
             "scenarios": [
                 {
                     "scenario": name,

@@ -199,6 +199,14 @@ class EvaluationRow:
 
 
 @dataclass(frozen=True, slots=True)
+class EvaluationMetricRow:
+    metric: str
+    value: str
+    kind: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
 class ClosureGateRow:
     gate: str
     state: str
@@ -687,6 +695,41 @@ def build_evaluation_rows(report: Mapping[str, Any] | None) -> list[EvaluationRo
         )
         for item in _list_of_mappings(report.get("scenarios"))
     ]
+
+
+def build_evaluation_metric_rows(
+    report: Mapping[str, Any] | None,
+) -> list[EvaluationMetricRow]:
+    if not report or report.get("status") != "verified":
+        return []
+    rows: list[EvaluationMetricRow] = []
+    metrics = report.get("metrics")
+    if isinstance(metrics, Mapping):
+        for name, value in metrics.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            rows.append(
+                EvaluationMetricRow(
+                    metric=str(name).replace("_", " ").capitalize(),
+                    value=f"{float(value):.1%}",
+                    kind="rate",
+                    status="PASS" if value == 1 else "FAIL",
+                )
+            )
+    counters = report.get("unsafe_counters")
+    if isinstance(counters, Mapping):
+        for name, value in counters.items():
+            if isinstance(value, bool) or not isinstance(value, int):
+                continue
+            rows.append(
+                EvaluationMetricRow(
+                    metric=str(name).replace("_", " ").capitalize(),
+                    value=str(value),
+                    kind="unsafe counter",
+                    status="PASS" if value == 0 else "FAIL",
+                )
+            )
+    return rows
 
 
 def build_closure_gate_rows(case: CasePresentation) -> list[ClosureGateRow]:

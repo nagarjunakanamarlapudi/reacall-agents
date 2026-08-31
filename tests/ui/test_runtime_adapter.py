@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -8,8 +9,14 @@ from pathlib import Path
 
 import pytest
 
+from recallops import paths as repository_paths_module
 from recallops.agents.runtime import RecallOpsRuntime
-from recallops.ui.adapter import DurableRuntimeAdapter, normalize_runtime_result
+from recallops.paths import PROJECT_ROOT, RepositoryPaths
+from recallops.ui.adapter import (
+    DeterministicDemoAdapter,
+    DurableRuntimeAdapter,
+    normalize_runtime_result,
+)
 from recallops.ui.presenters import (
     APPROVAL_JUSTIFICATION,
     build_match_rows,
@@ -25,6 +32,236 @@ def _receipt_count(path: Path) -> int:
         return int(connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0])
     finally:
         connection.close()
+
+
+_RATE_METRICS = (
+    "scenario_pass_rate",
+    "safety_critical_pass_rate",
+    "route_accuracy",
+    "match_classification_accuracy",
+    "lineage_accuracy",
+    "quantity_evidence_coverage",
+    "gap_detection_recall",
+    "approval_guard_rate",
+    "idempotency_integrity",
+    "closure_guard_rate",
+    "recovery_correctness",
+    "bounded_execution_rate",
+    "retrieval_evidence_coverage",
+    "trace_completeness",
+    "latency_budget_rate",
+)
+_UNSAFE_COUNTERS = (
+    "unauthorized_write_count",
+    "duplicate_logical_write_count",
+    "false_close_count",
+    "receipt_integrity_violation_count",
+)
+
+
+def _write_evaluation_report(
+    root: Path,
+    *,
+    digest: str | None = None,
+    raw_report: str | None = None,
+) -> None:
+    eval_dir = root / "data" / "evals"
+    eval_dir.mkdir(parents=True)
+    corpus = {
+        "schema_version": "1.0",
+        "common_fixture": {"name": "small-ui-contract"},
+        "scenarios": [
+            {"id": "R13", "title": "Lost response recovery"},
+            {"id": "R18", "title": "Durable restart and fencing"},
+        ],
+    }
+    corpus_text = json.dumps(corpus, sort_keys=True, separators=(",", ":"))
+    (eval_dir / "scenarios.json").write_text(corpus_text, encoding="utf-8")
+    if raw_report is not None:
+        (eval_dir / "report.json").write_text(raw_report, encoding="utf-8")
+        return
+    results = []
+    for scenario_id in ("R13", "R18"):
+        results.append(
+            {
+                "id": scenario_id,
+                "passed": True,
+                "safety_critical": True,
+                "assertions": [
+                    {
+                        "id": "route_expected",
+                        "passed": True,
+                        "path": "/route_actual",
+                        "operator": "ordered_subsequence",
+                        "expected": ["H", "W"],
+                        "actual": ["H", "W"],
+                        "detail": "",
+                    }
+                ],
+                "route_actual": ["H", "W"],
+                "route_expected": ["H", "W"],
+                "state_excerpt": {"large": "must not reach the UI"},
+                "tool_trace": [{"large": "must not reach the UI"}],
+                "failure_injection": [],
+                "duration_ms": 12,
+                "error": None,
+            }
+        )
+    report = {
+        "schema_version": "1.1",
+        "scenario_corpus_sha256": digest or hashlib.sha256(corpus_text.encode()).hexdigest(),
+        "execution_mode": "offline_deterministic",
+        "run_metadata": {
+            "report_kind": "run_specific_observation",
+            "telemetry_policy": "observed_only",
+            "timing_source": "measured_wall_clock",
+        },
+        "results": results,
+        "metrics": {
+            **{name: 1.0 for name in _RATE_METRICS},
+            **{name: 0 for name in _UNSAFE_COUNTERS},
+        },
+        "gate_passed": True,
+    }
+    (eval_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+
+def test_repository_paths_exposes_evaluation_artifacts_from_configured_root(
+    tmp_path: Path,
+) -> None:
+    assert hasattr(repository_paths_module, "RepositoryPaths")
+    paths = repository_paths_module.RepositoryPaths(tmp_path)
+
+    assert paths.root == tmp_path.resolve()
+    assert paths.evaluation_report == tmp_path.resolve() / "data" / "evals" / "report.json"
+    assert paths.evaluation_corpus == tmp_path.resolve() / "data" / "evals" / "scenarios.json"
+
+
+@pytest.mark.asyncio
+async def test_durable_adapter_projects_verified_committed_evaluation_without_raw_traces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository_root = tmp_path / "repository"
+    _write_evaluation_report(repository_root)
+    elsewhere = tmp_path / "unrelated-working-directory"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        repository_paths=RepositoryPaths(repository_root),
+    )
+
+    report = (await adapter.open_case("H-1230-2026"))["evaluation_report"]
+
+    assert report["status"] == "verified"
+    assert report["source"] == "committed_evaluation_report"
+    assert report["scenario_count"] == 2
+    assert [item["scenario"] for item in report["scenarios"]] == ["R13", "R18"]
+    assert report["metrics"]["scenario_pass_rate"] == 1.0
+    assert report["unsafe_counters"] == {name: 0 for name in _UNSAFE_COUNTERS}
+    assert all("tool_trace" not in item for item in report["scenarios"])
+    assert all("state_excerpt" not in item for item in report["scenarios"])
+    assert all("assertions" not in item for item in report["scenarios"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("arrange", "expected_status", "message_fragment"),
+    [
+        ("missing", "missing", "missing"),
+        ("invalid", "invalid", "invalid"),
+        ("digest_mismatch", "stale", "digest"),
+    ],
+)
+async def test_durable_adapter_labels_untrusted_evaluation_report_without_crashing(
+    tmp_path: Path,
+    arrange: str,
+    expected_status: str,
+    message_fragment: str,
+) -> None:
+    repository_root = tmp_path / "repository"
+    if arrange == "invalid":
+        _write_evaluation_report(repository_root, raw_report="{not valid json")
+    elif arrange == "digest_mismatch":
+        _write_evaluation_report(repository_root, digest="0" * 64)
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        repository_paths=RepositoryPaths(repository_root),
+    )
+
+    report = (await adapter.open_case("H-1230-2026"))["evaluation_report"]
+
+    assert report["status"] == expected_status
+    assert message_fragment in report["message"].casefold()
+    assert report["scenarios"] == []
+    assert report["gate_passed"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["schema", "gate_status"])
+async def test_durable_adapter_rejects_schema_or_gate_status_inconsistency(
+    tmp_path: Path, mutation: str
+) -> None:
+    repository_root = tmp_path / "repository"
+    _write_evaluation_report(repository_root)
+    report_path = RepositoryPaths(repository_root).evaluation_report
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if mutation == "schema":
+        report["schema_version"] = "9.9"
+    else:
+        report["gate_passed"] = False
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        repository_paths=RepositoryPaths(repository_root),
+    )
+
+    projected = (await adapter.open_case("H-1230-2026"))["evaluation_report"]
+
+    assert projected["status"] == "invalid"
+    assert "no passing score is claimed" in projected["message"].casefold()
+
+
+@pytest.mark.asyncio
+async def test_durable_adapter_projects_actual_committed_21_scenario_report_if_available(
+    tmp_path: Path,
+) -> None:
+    candidates = (PROJECT_ROOT, PROJECT_ROOT.parent / "evals")
+    actual_root = next(
+        (
+            root
+            for root in candidates
+            if RepositoryPaths(root).evaluation_report.exists()
+            and RepositoryPaths(root).evaluation_corpus.exists()
+        ),
+        None,
+    )
+    if actual_root is None:
+        pytest.skip("final evaluator branch has not been integrated into this worktree")
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        repository_paths=RepositoryPaths(actual_root),
+    )
+
+    report = (await adapter.open_case("H-1230-2026"))["evaluation_report"]
+
+    assert report["status"] == "verified"
+    assert report["scenario_count"] == 21
+    assert {item["scenario"] for item in report["scenarios"]} == {
+        f"R{number:02d}" for number in range(1, 22)
+    }
+
+
+def test_deterministic_fixture_evaluation_is_explicitly_demo_only() -> None:
+    report = DeterministicDemoAdapter._evaluation_report()
+
+    assert report["status"] == "demo_only"
+    assert "demo-only" in report["message"].casefold()
+    assert report["source"] == "explicit_demo_fixture"
 
 
 @pytest.mark.asyncio

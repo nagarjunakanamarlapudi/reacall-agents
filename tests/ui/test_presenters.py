@@ -4,6 +4,7 @@ from dataclasses import asdict
 
 import pytest
 
+import recallops.ui.presenters as presenter_module
 from recallops.ui.presenters import (
     APPROVAL_JUSTIFICATION,
     EQUATION,
@@ -617,6 +618,50 @@ def test_evaluation_missing_is_not_success() -> None:
     rows = build_evaluation_rows(_raw_case()["evaluation_report"])
     assert rows[0].safety_critical == "Yes"
     assert rows[0].result == "PASS"
+
+
+def test_evaluation_metric_rows_separate_rates_from_unsafe_counters() -> None:
+    assert hasattr(presenter_module, "build_evaluation_metric_rows")
+    report = {
+        "status": "verified",
+        "metrics": {
+            "scenario_pass_rate": 1.0,
+            "safety_critical_pass_rate": 0.95,
+        },
+        "unsafe_counters": {
+            "unauthorized_write_count": 0,
+            "false_close_count": 1,
+        },
+    }
+
+    rows = presenter_module.build_evaluation_metric_rows(report)
+
+    assert [asdict(row) for row in rows] == [
+        {
+            "metric": "Scenario pass rate",
+            "value": "100.0%",
+            "kind": "rate",
+            "status": "PASS",
+        },
+        {
+            "metric": "Safety critical pass rate",
+            "value": "95.0%",
+            "kind": "rate",
+            "status": "FAIL",
+        },
+        {
+            "metric": "Unauthorized write count",
+            "value": "0",
+            "kind": "unsafe counter",
+            "status": "PASS",
+        },
+        {
+            "metric": "False close count",
+            "value": "1",
+            "kind": "unsafe counter",
+            "status": "FAIL",
+        },
+    ]
 
 
 def test_safe_display_masks_sensitive_and_escapes_untrusted_text() -> None:

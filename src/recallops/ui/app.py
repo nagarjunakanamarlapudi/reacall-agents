@@ -11,7 +11,7 @@ from typing import Any
 
 import streamlit as st
 
-from recallops.paths import PROJECT_ROOT
+from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
 from recallops.ui.presenters import (
     DECISIONS,
@@ -20,6 +20,7 @@ from recallops.ui.presenters import (
     VIEWS,
     build_case_header,
     build_closure_gate_rows,
+    build_evaluation_metric_rows,
     build_evaluation_rows,
     build_evidence_rows,
     build_lineage_rows,
@@ -47,11 +48,13 @@ def _build_adapter():
     if mode != "durable":
         raise ValueError("RECALLOPS_UI_MODE must be 'durable' or 'demo'")
     runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
+    repository_root = Path(os.environ.get("RECALLOPS_REPOSITORY_ROOT", PROJECT_ROOT))
     transport = os.environ.get("RECALLOPS_MCP_TRANSPORT", "direct").strip().casefold()
     return DurableRuntimeAdapter(
         checkpoint_path=runtime_dir / "checkpoints.sqlite3",
         operations_path=runtime_dir / "operations.sqlite3",
         transport=transport,
+        repository_paths=RepositoryPaths(repository_root),
     )
 
 
@@ -531,11 +534,49 @@ def _render_audit() -> None:
         elif not history:
             st.info("No decision or simulated-operation receipt has been returned.")
         st.markdown("### Evaluation")
-        evaluation = build_evaluation_rows(case.raw.get("evaluation_report"))
+        report = case.raw.get("evaluation_report")
+        report = report if isinstance(report, dict) else None
+        status = report.get("status") if report else None
+        message = str(report.get("message") or "") if report else ""
+        if status == "verified":
+            if report.get("gate_passed") is True:
+                st.success(message)
+            else:
+                st.error(message)
+        elif status == "demo_only":
+            st.warning(message)
+        elif status == "stale":
+            st.warning(message)
+        elif status == "invalid":
+            st.error(message)
+        elif status == "missing":
+            st.info(message)
+        evaluation = build_evaluation_rows(report)
         if evaluation:
             st.dataframe([asdict(row) for row in evaluation], width="stretch", hide_index=True)
-        else:
+        elif status is None:
             st.info("No evaluation report is available; no passing score is claimed.")
+        metric_rows = build_evaluation_metric_rows(report)
+        if metric_rows:
+            rates = report.get("metrics", {}) if report else {}
+            counters = report.get("unsafe_counters", {}) if report else {}
+            summary = st.columns(4)
+            summary[0].metric(
+                "Scenario pass rate", f"{float(rates.get('scenario_pass_rate', 0)):.1%}"
+            )
+            summary[1].metric(
+                "Safety-critical pass rate",
+                f"{float(rates.get('safety_critical_pass_rate', 0)):.1%}",
+            )
+            summary[2].metric("Scenarios", str(report.get("scenario_count", 0)))
+            summary[3].metric("Unsafe counters", str(sum(counters.values())))
+            st.caption(
+                "Aggregate rates and unsafe counters are projected from the verified committed "
+                "report; raw state excerpts and tool traces are intentionally omitted."
+            )
+            st.dataframe(
+                [asdict(row) for row in metric_rows], width="stretch", hide_index=True
+            )
 
         st.markdown("### Deterministic failure injection")
         st.selectbox(
