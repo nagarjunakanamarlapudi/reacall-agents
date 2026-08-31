@@ -12,6 +12,7 @@ from threading import Event, Thread
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import StateUpdate
 
 from recallops.agents.middleware import (
@@ -234,6 +235,34 @@ def _acknowledge(
     )
 
 
+def _record_disposition(
+    service: OperationsService,
+    case_id: str,
+    lot_id: str,
+    version: int,
+    *,
+    evidence_id: str,
+    key: str,
+) -> Any:
+    action, approval = _reviewed(
+        case_id,
+        "record_disposition",
+        version,
+        [lot_id],
+        evidence_ids=[evidence_id],
+    )
+    return service.record_disposition(
+        case_id=case_id,
+        lot_id=lot_id,
+        disposition="dispose_unaccounted",
+        evidence_id=evidence_id,
+        proposed_action=action,
+        approval=approval,
+        expected_case_version=version,
+        idempotency_key=key,
+    )
+
+
 def _close(service: OperationsService, case_id: str, version: int, *, key: str) -> Any:
     action, approval = _reviewed(case_id, "close_case", version, [])
     return service.close_case(
@@ -349,6 +378,7 @@ def _normalize_state(case: dict[str, Any], **updates: Any) -> dict[str, Any]:
             else "deterministic"
         ),
     )
+    state.update(updates)
     held: list[str] = []
     created_tasks: list[str] = []
     for receipt in state.get("write_receipts", []):
@@ -358,7 +388,9 @@ def _normalize_state(case: dict[str, Any], **updates: Any) -> dict[str, Any]:
             created_tasks.extend(receipt.get("details", {}).get("facility_ids", []))
     state["held_lot_ids"] = list(dict.fromkeys(held))
     state["created_tasks"] = list(dict.fromkeys(created_tasks))
-    state.update(updates)
+    state["action_sequence"] = [
+        receipt.get("action_type") for receipt in state.get("write_receipts", [])
+    ]
     return state
 
 
@@ -399,6 +431,52 @@ async def _drive_to_end(runtime: RecallOpsRuntime, result: RuntimeResult) -> Run
     return result
 
 
+async def _drive_to_end_with_review_lifecycle(
+    runtime: RecallOpsRuntime,
+    result: RuntimeResult,
+) -> tuple[RuntimeResult, list[dict[str, Any]], bool]:
+    lifecycle: list[dict[str, Any]] = []
+    closure_edit_attempted = False
+    closure_edit_preserved = False
+    while result.pending_interrupt is not None:
+        pending = result.pending_interrupt
+        if pending["kind"] == "action_review":
+            lifecycle.append(
+                {
+                    "action_type": pending["action"]["action_type"],
+                    "case_version": pending["case_version"],
+                    "remaining_action_types": list(pending.get("remaining_action_types", [])),
+                }
+            )
+        if pending["kind"] == "closure_review" and not closure_edit_attempted:
+            closure_edit_attempted = True
+            edited_action = deepcopy(pending["action"])
+            edited_action["rationale"] = (
+                f"{edited_action['rationale']} Final rationale reviewed for closure."
+            )
+            response = _bound_response(pending, decision="edit")
+            response["edited_action"] = edited_action
+            result = await runtime.resume_case(
+                thread_id=result.case["thread_id"],
+                response=response,
+            )
+            closure_edit_preserved = (
+                result.pending_interrupt is not None
+                and result.pending_interrupt.get("kind") == "closure_review"
+                and result.pending_interrupt.get("action", {}).get("action_type") == "close_case"
+                and result.next_nodes == ("closure_review",)
+            )
+            continue
+        decision = (
+            "approve" if pending["kind"] in {"action_review", "closure_review"} else "confirm"
+        )
+        result = await runtime.resume_case(
+            thread_id=result.case["thread_id"],
+            response=_bound_response(pending, decision=decision),
+        )
+    return result, lifecycle, closure_edit_preserved
+
+
 class RecallOpsEvaluationExecutor:
     """Execute every declarative case against real offline runtime and service boundaries."""
 
@@ -427,8 +505,19 @@ class RecallOpsEvaluationExecutor:
                 if scenario.id == "R12":
                     return await self._consent_and_idempotency(runtime, scenario, operations)
                 if scenario.id == "R17":
+                    (
+                        completed,
+                        lifecycle,
+                        closure_edit_preserved,
+                    ) = await _drive_to_end_with_review_lifecycle(
+                        runtime, await _start(runtime, scenario)
+                    )
                     return self._observation(
-                        await _drive_to_end(runtime, await _start(runtime, scenario))
+                        completed,
+                        state_updates={
+                            "review_lifecycle": lifecycle,
+                            "closure_edit_preserved": closure_edit_preserved,
+                        },
                     )
                 if scenario.id == "R21":
                     return await self._ambiguous_scope(runtime, scenario, root)
@@ -853,16 +942,22 @@ class RecallOpsEvaluationExecutor:
         operations_path: Path,
     ) -> EvaluationObservation:
         del scenario, root
-        traceability = _resolved_exact_traceability()
+        traceability = TraceabilityService()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
         case_id = "CASE-R15-SERVICE"
         _create_case(service, traceability, case_id, lot_id="LOT-EXACT-170")
-        facilities = ["DC-NORTH", "STORE-01", "STORE-02"]
-        _create_tasks(service, case_id, facilities, 1, key="r15-tasks")
-        version = 2
-        for facility in ("DC-NORTH", "STORE-02"):
-            _acknowledge(service, case_id, facility, version, key=f"r15-ack-{facility}")
-            version += 1
+        _record_disposition(
+            service,
+            case_id,
+            "LOT-EXACT-170",
+            1,
+            evidence_id="EV-D-LOT-EXACT-170",
+            key="r15-disposition",
+        )
+        facilities = ["DC-NORTH", "STORE-01"]
+        _create_tasks(service, case_id, facilities, 2, key="r15-tasks")
+        _acknowledge(service, case_id, "DC-NORTH", 3, key="r15-ack-DC-NORTH")
+        version = 4
         error_code = ""
         try:
             _close(service, case_id, version, key="r15-close")
@@ -1155,41 +1250,116 @@ class RecallOpsEvaluationExecutor:
                 and after.config == before.config
             )
 
-        graph, config, initial = await initialized("reinitialize")
-        before = await graph.aget_state(config)
-        rejected = False
-        try:
+        async def guarded(label: str, attempt: Any) -> bool:
+            graph, config, initial = await initialized(label)
+            before = await graph.aget_state(config)
+            rejected = False
+            try:
+                await attempt(graph, config, {**initial, "question": "Attempted overwrite."})
+            except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
+                rejected = True
+            return rejected and unchanged(before, await graph.aget_state(config))
+
+        async def ainvoke(graph: Any, config: Any, payload: Any) -> None:
             await graph.ainvoke(
-                {**initial, "question": "Attempted overwrite."},
+                payload,
                 config,
                 version="v2",
                 stream_mode="values",
                 durability="sync",
             )
-        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
-            rejected = True
-        reinitialize_guarded = rejected and unchanged(before, await graph.aget_state(config))
 
-        graph, config, _ = await initialized("update")
-        before = await graph.aget_state(config)
-        rejected = False
-        try:
-            await graph.aupdate_state(config, {"case_id": "CASE-FORGED"})
-        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
-            rejected = True
-        update_guarded = rejected and unchanged(before, await graph.aget_state(config))
-
-        graph, config, _ = await initialized("bulk-update")
-        before = await graph.aget_state(config)
-        rejected = False
-        try:
-            await graph.abulk_update_state(
+        async def astream(graph: Any, config: Any, payload: Any) -> None:
+            async for _ in graph.astream(
+                payload,
                 config,
-                [[StateUpdate(values={"case_id": "CASE-FORGED"}, as_node="intake")]],
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            ):
+                pass
+
+        async def invoke(graph: Any, config: Any, payload: Any) -> None:
+            await asyncio.to_thread(
+                graph.invoke,
+                payload,
+                config,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
             )
-        except (AttributeError, PermissionError, RuntimeError, TypeError, ValueError):
-            rejected = True
-        bulk_update_guarded = rejected and unchanged(before, await graph.aget_state(config))
+
+        async def stream(graph: Any, config: Any, payload: Any) -> None:
+            await asyncio.to_thread(
+                lambda: tuple(
+                    graph.stream(
+                        payload,
+                        config,
+                        version="v2",
+                        stream_mode="values",
+                        durability="sync",
+                    )
+                )
+            )
+
+        async def abatch(graph: Any, config: Any, payload: Any) -> None:
+            await graph.abatch(
+                [payload],
+                config=[config],
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+
+        async def batch(graph: Any, config: Any, payload: Any) -> None:
+            await asyncio.to_thread(
+                graph.batch,
+                [payload],
+                [config],
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+
+        async def with_config(graph: Any, config: Any, payload: Any) -> None:
+            await graph.with_config(config).ainvoke(
+                payload,
+                version="v2",
+                stream_mode="values",
+                durability="sync",
+            )
+
+        async def update(graph: Any, config: Any, _: Any) -> None:
+            await graph.aupdate_state(config, {"case_id": "CASE-FORGED"})
+
+        async def sync_update(graph: Any, config: Any, _: Any) -> None:
+            await asyncio.to_thread(
+                graph.update_state,
+                config,
+                {"case_id": "CASE-FORGED"},
+            )
+
+        updates = [[StateUpdate(values={"case_id": "CASE-FORGED"}, as_node="intake")]]
+
+        async def bulk_update(graph: Any, config: Any, _: Any) -> None:
+            await graph.abulk_update_state(config, updates)
+
+        async def sync_bulk_update(graph: Any, config: Any, _: Any) -> None:
+            await asyncio.to_thread(graph.bulk_update_state, config, updates)
+
+        guard_results = {
+            "reinitialize": await guarded("reinitialize", ainvoke),
+            "stream_reinitialize": await guarded("stream-reinitialize", astream),
+            "invoke_reinitialize": await guarded("invoke-reinitialize", invoke),
+            "sync_stream_reinitialize": await guarded("sync-stream-reinitialize", stream),
+            "abatch_reinitialize": await guarded("abatch-reinitialize", abatch),
+            "batch_reinitialize": await guarded("batch-reinitialize", batch),
+            "with_config_reinitialize": await guarded("with-config-reinitialize", with_config),
+            "update_state": await guarded("update", update),
+            "sync_update_state": await guarded("sync-update", sync_update),
+            "bulk_update_state": await guarded("bulk-update", bulk_update),
+            "sync_bulk_update_state": await guarded("sync-bulk-update", sync_bulk_update),
+        }
 
         checkpointer_required = False
         try:
@@ -1202,11 +1372,23 @@ class RecallOpsEvaluationExecutor:
             )
         except (TypeError, ValueError):
             checkpointer_required = True
+        async_checkpointer_required = False
+        with SqliteSaver.from_conn_string(str(root / "sync-checkpointer.sqlite3")) as saver:
+            try:
+                build_workflow(
+                    gateway=DirectGateway(
+                        operations=OperationsService(
+                            storage_path=root / "sync-checkpointer-operations.sqlite3"
+                        )
+                    ),
+                    checkpointer=saver,
+                )
+            except (TypeError, ValueError):
+                async_checkpointer_required = True
         return {
-            "reinitialize": reinitialize_guarded,
-            "update_state": update_guarded,
-            "bulk_update_state": bulk_update_guarded,
+            **guard_results,
             "checkpointer_required": checkpointer_required,
+            "async_checkpointer_required": async_checkpointer_required,
         }
 
     async def _consent_and_idempotency(
@@ -1216,6 +1398,10 @@ class RecallOpsEvaluationExecutor:
         operations_path: Path,
     ) -> EvaluationObservation:
         codes = await self._probe_resume_bindings(scenario, operations_path.parent)
+        start_input_codes = await self._probe_start_inputs(scenario, operations_path.parent)
+        identity_conflict_codes = await self._probe_identity_conflicts(
+            scenario, operations_path.parent
+        )
         review = await _start(runtime, scenario)
         assert review.pending_interrupt is not None
         before = await runtime.get_case(thread_id=review.case["thread_id"])
@@ -1280,6 +1466,8 @@ class RecallOpsEvaluationExecutor:
             state_updates={
                 "service_probe_error_code": error_code,
                 "consent_probe_codes": codes,
+                "start_input_probe_codes": start_input_codes,
+                "identity_conflict_probe_codes": identity_conflict_codes,
                 "concurrent_resume_one_effect": concurrent_one_effect,
             },
             counters={"logical_write_count": 1 if first else 0},
@@ -1322,6 +1510,93 @@ class RecallOpsEvaluationExecutor:
                 after = await probe_runtime.get_case(thread_id=thread_id)
                 if rejected and after == before:
                     rejected_codes.append(code)
+        return rejected_codes
+
+    async def _probe_start_inputs(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> list[str]:
+        probes: tuple[tuple[str, dict[str, Any]], ...] = (
+            ("boolean_recall_number", {"recall_number": True}),
+            ("boolean_question", {"question": True}),
+            ("string_scope_lot_ids", {"scope_lot_ids": "ABC"}),
+        )
+        rejected_codes: list[str] = []
+        for index, (code, override) in enumerate(probes):
+            case_id = f"CASE-R12-START-{index}"
+            thread_id = f"thread-r12-start-{index}"
+            async with RecallOpsRuntime.open(
+                checkpoint_path=root / f"start-{index}-checkpoints.sqlite3",
+                operations_path=root / f"start-{index}-operations.sqlite3",
+            ) as probe_runtime:
+                rejected = False
+                try:
+                    await probe_runtime.start_case(
+                        recall_number=override.get("recall_number", scenario.input.recall_number),
+                        question=override.get("question", scenario.input.question),
+                        case_id=case_id,
+                        thread_id=thread_id,
+                        scope_lot_ids=override.get("scope_lot_ids"),
+                    )
+                except (TypeError, ValueError):
+                    rejected = True
+                except Exception:  # noqa: BLE001 - malformed failures must not abort later probes
+                    rejected = False
+                checkpoint = await probe_runtime.get_case(thread_id=thread_id)
+                if rejected and checkpoint is None:
+                    rejected_codes.append(code)
+        return rejected_codes
+
+    async def _probe_identity_conflicts(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> list[str]:
+        rejected_codes: list[str] = []
+        for index, direction in enumerate(("case_to_thread_conflict", "thread_to_case_conflict")):
+            checkpoint_path = root / f"identity-{index}-checkpoints.sqlite3"
+            operations_path = root / f"identity-{index}-operations.sqlite3"
+            seed_case_id = f"CASE-R12-IDENTITY-{index}"
+            seed_thread_id = f"thread-r12-identity-{index}"
+            async with RecallOpsRuntime.open(
+                checkpoint_path=checkpoint_path,
+                operations_path=operations_path,
+            ) as probe_runtime:
+                seed = await probe_runtime.start_case(
+                    recall_number=scenario.input.recall_number,
+                    question=scenario.input.question,
+                    case_id=seed_case_id,
+                    thread_id=seed_thread_id,
+                )
+                persisted = await _approve_and_confirm(probe_runtime, seed)
+                before = await probe_runtime.get_case(thread_id=seed_thread_id)
+                assert before == persisted
+                if direction == "case_to_thread_conflict":
+                    attempted_case_id = seed_case_id
+                    attempted_thread_id = f"{seed_thread_id}-other"
+                else:
+                    attempted_case_id = f"{seed_case_id}-other"
+                    attempted_thread_id = seed_thread_id
+                rejected = False
+                try:
+                    await probe_runtime.start_case(
+                        recall_number=scenario.input.recall_number,
+                        question="Attempt to rebind a durable case/thread identity.",
+                        case_id=attempted_case_id,
+                        thread_id=attempted_thread_id,
+                    )
+                except (TypeError, ValueError):
+                    rejected = True
+                attempted = await probe_runtime.get_case(thread_id=attempted_thread_id)
+                original = await probe_runtime.get_case(thread_id=seed_thread_id)
+                no_shadow_checkpoint = (
+                    attempted is None
+                    if attempted_thread_id != seed_thread_id
+                    else original == before
+                )
+                if rejected and no_shadow_checkpoint and original == before:
+                    rejected_codes.append(direction)
         return rejected_codes
 
     async def _ambiguous_scope(

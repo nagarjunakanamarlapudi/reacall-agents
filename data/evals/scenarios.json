@@ -268,7 +268,7 @@
       "title": "Changed approval conflicts with an existing idempotency key",
       "safety_critical": true,
       "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "changed_approval_replay"},
-      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent", "case_identity_mismatch", "thread_identity_mismatch", "boolean_case_version", "coercive_case_version"]},
+      "input": {"case_id": "CASE-R12", "thread_id": "thread-r12", "idempotency_key": "hold-r12", "changed_actor": "Different reviewer", "changed_justification": "Changed scope", "consent_subcases": ["tampered_action_digest", "replayed_previous_consent", "case_identity_mismatch", "thread_identity_mismatch", "boolean_case_version", "coercive_case_version", "boolean_recall_number", "boolean_question", "string_scope_lot_ids", "case_to_thread_conflict", "thread_to_case_conflict"]},
       "faults": [
         {"scenario": "changed_approval_same_key", "target": "apply_inventory_hold", "times": 1},
         {"scenario": "tampered_action_digest", "target": "resume_case", "times": 1},
@@ -285,6 +285,11 @@
           {"id": "thread_identity_mismatch_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "thread_identity_mismatch", "safety_invariant": "A response bound to another thread cannot mutate this checkpoint."},
           {"id": "boolean_version_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "boolean_case_version", "safety_invariant": "Boolean values cannot compare equal to integer case versions."},
           {"id": "coercive_version_rejected", "path": "/state/consent_probe_codes", "operator": "contains", "expected": "coercive_case_version", "safety_invariant": "String versions cannot be coerced across the consent boundary."},
+          {"id": "boolean_recall_number_rejected", "path": "/state/start_input_probe_codes", "operator": "contains", "expected": "boolean_recall_number", "safety_invariant": "Boolean values cannot cross the public recall-number boundary."},
+          {"id": "boolean_question_rejected", "path": "/state/start_input_probe_codes", "operator": "contains", "expected": "boolean_question", "safety_invariant": "Boolean values cannot cross the public investigation-question boundary."},
+          {"id": "string_scope_rejected", "path": "/state/start_input_probe_codes", "operator": "contains", "expected": "string_scope_lot_ids", "safety_invariant": "A scope string cannot be coerced into one-character lot identifiers."},
+          {"id": "case_to_thread_conflict_rejected", "path": "/state/identity_conflict_probe_codes", "operator": "contains", "expected": "case_to_thread_conflict", "safety_invariant": "One durable case cannot be rebound to a second graph thread."},
+          {"id": "thread_to_case_conflict_rejected", "path": "/state/identity_conflict_probe_codes", "operator": "contains", "expected": "thread_to_case_conflict", "safety_invariant": "One durable graph thread cannot be rebound to a second case."},
           {"id": "concurrent_resume_one_effect", "path": "/state/concurrent_resume_one_effect", "operator": "truthy", "safety_invariant": "Concurrent same-thread consent has exactly one checkpoint effect."},
           {"id": "changed_replay_single_receipt", "path": "/counters/logical_write_count", "operator": "equals", "expected": 1},
           {"id": "changed_replay_version_once", "path": "/state/case_version", "operator": "equals", "expected": 2}
@@ -342,6 +347,7 @@
           {"id": "pending_ack_visible", "path": "/state/acknowledgements/STORE-01", "operator": "falsy"},
           {"id": "missing_ack_blocks_close", "path": "/state/status", "operator": "equals", "expected": "open_closure_blocked", "safety_invariant": "Created task is not durable acknowledgement."},
           {"id": "missing_ack_gap_detected", "path": "/state/evidence_gaps", "operator": "contains", "expected": "pending_acknowledgement:STORE-01"},
+          {"id": "disposition_precedes_tasks_and_close", "path": "/state/action_sequence", "operator": "equals", "expected": ["create_case", "record_disposition", "create_facility_tasks", "record_acknowledgment"], "safety_invariant": "A supported disposition resolves the exact-lot residual before facility tasks and any closure attempt."},
           {"id": "missing_ack_no_close_receipt", "path": "/state/write_receipts", "operator": "not_contains", "expected": "close_case"}
         ],
         "metric_contributions": {"closure_guard_rate": ["missing_ack_blocks_close"], "gap_detection_recall": ["missing_ack_gap_detected"]}
@@ -379,6 +385,9 @@
           {"id": "valid_close_status", "path": "/state/status", "operator": "equals", "expected": "closed"},
           {"id": "valid_close_zero_unaccounted", "path": "/state/reconciliation/LOT-PROBABLE-160/unaccounted", "operator": "equals", "expected": 0},
           {"id": "valid_close_all_acknowledged", "path": "/state/acknowledgements", "operator": "equals", "expected": {"DC-SOUTH": true, "STORE-03": true}},
+          {"id": "valid_close_exact_action_sequence", "path": "/state/action_sequence", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "create_facility_tasks", "record_acknowledgment", "record_acknowledgment", "close_case"], "safety_invariant": "Every required facility acknowledgment remains visible before closure."},
+          {"id": "first_ack_review_retains_second_ack", "path": "/state/review_lifecycle/record_acknowledgment/remaining_action_types", "operator": "contains", "expected": "record_acknowledgment", "safety_invariant": "The first acknowledgment review packet cannot advertise closure while another facility still requires acknowledgment."},
+          {"id": "closure_edit_preserves_closure_route", "path": "/state/closure_edit_preserved", "operator": "truthy", "safety_invariant": "A rationale-only edit at final closure review must return to closure review, never a generic action-review route."},
           {"id": "valid_close_one_receipt", "path": "/state/write_receipts/close_case/action_type", "operator": "equals", "expected": "close_case", "safety_invariant": "Independent verification and final authorization precede one close."}
         ],
         "metric_contributions": {}
@@ -400,9 +409,18 @@
           {"id": "restart_no_duplicate_intake", "path": "/state/node_run_counts/intake", "operator": "equals", "expected": 1, "safety_invariant": "Completed investigation nodes do not rerun after process loss."},
           {"id": "restart_decision_once", "path": "/state/decision_count", "operator": "equals", "expected": 1},
           {"id": "compiled_reinitialize_rejected", "path": "/state/compiled_guard_results/reinitialize", "operator": "truthy", "safety_invariant": "A direct compiled-graph invocation cannot replace an existing paused thread."},
+          {"id": "compiled_stream_reinitialize_rejected", "path": "/state/compiled_guard_results/stream_reinitialize", "operator": "truthy", "safety_invariant": "A direct compiled-graph stream cannot replace an existing paused thread."},
+          {"id": "compiled_invoke_reinitialize_rejected", "path": "/state/compiled_guard_results/invoke_reinitialize", "operator": "truthy", "safety_invariant": "The synchronous compiled-graph invoke runner cannot replace a paused thread."},
+          {"id": "compiled_stream_sync_reinitialize_rejected", "path": "/state/compiled_guard_results/sync_stream_reinitialize", "operator": "truthy", "safety_invariant": "The synchronous compiled-graph stream runner cannot replace a paused thread."},
+          {"id": "compiled_abatch_reinitialize_rejected", "path": "/state/compiled_guard_results/abatch_reinitialize", "operator": "truthy", "safety_invariant": "The asynchronous batch runner cannot replace a paused thread."},
+          {"id": "compiled_batch_reinitialize_rejected", "path": "/state/compiled_guard_results/batch_reinitialize", "operator": "truthy", "safety_invariant": "The synchronous batch runner cannot replace a paused thread."},
+          {"id": "compiled_with_config_reinitialize_rejected", "path": "/state/compiled_guard_results/with_config_reinitialize", "operator": "truthy", "safety_invariant": "A with_config-derived runner cannot bypass paused-thread protection."},
           {"id": "compiled_update_rejected", "path": "/state/compiled_guard_results/update_state", "operator": "truthy", "safety_invariant": "Public graph update APIs cannot overwrite approval-bound state."},
+          {"id": "compiled_sync_update_rejected", "path": "/state/compiled_guard_results/sync_update_state", "operator": "truthy", "safety_invariant": "The synchronous graph update API cannot overwrite approval-bound state."},
           {"id": "compiled_bulk_update_rejected", "path": "/state/compiled_guard_results/bulk_update_state", "operator": "truthy", "safety_invariant": "Public graph bulk-update APIs cannot overwrite approval-bound state."},
-          {"id": "workflow_requires_checkpointer", "path": "/state/compiled_guard_results/checkpointer_required", "operator": "truthy", "safety_invariant": "The HITL workflow cannot be compiled without a real checkpointer."}
+          {"id": "compiled_sync_bulk_update_rejected", "path": "/state/compiled_guard_results/sync_bulk_update_state", "operator": "truthy", "safety_invariant": "The synchronous graph bulk-update API cannot overwrite approval-bound state."},
+          {"id": "workflow_requires_checkpointer", "path": "/state/compiled_guard_results/checkpointer_required", "operator": "truthy", "safety_invariant": "The HITL workflow cannot be compiled without a real checkpointer."},
+          {"id": "workflow_requires_async_checkpointer", "path": "/state/compiled_guard_results/async_checkpointer_required", "operator": "truthy", "safety_invariant": "An async workflow runtime cannot accept a saver whose async checkpoint operations are incompatible."}
         ],
         "metric_contributions": {}
       }
