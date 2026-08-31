@@ -1896,6 +1896,11 @@ class RecallOpsEvaluationExecutor:
                         for item in history_before
                     ),
                     "history_grew_after_resume": len(history_after) > len(history_before),
+                    "prior_checkpoint_ids_preserved": {
+                        item.checkpoint_id for item in history_before if item.checkpoint_id
+                    }.issubset(
+                        {item.checkpoint_id for item in history_after if item.checkpoint_id}
+                    ),
                     "history_count": len(history_after),
                 },
                 "execution_confirmation_history": _execution_confirmation_evidence(history_after),
