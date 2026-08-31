@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -10,7 +11,6 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Overwrite, interrupt
 from pydantic import ValidationError
@@ -76,11 +76,15 @@ class GuardedCompiledWorkflow:
         raise AttributeError(f"compiled graph surface {name!r} is disabled and not exposed")
 
     def __dir__(self) -> list[str]:
-        return sorted({*super().__dir__(), *self._EXPOSED_READS, "ainvoke"})
+        return sorted({*super().__dir__(), *self._EXPOSED_READS})
 
     @staticmethod
-    def _thread_id(config: Mapping[str, Any] | None) -> str:
-        configurable = (config or {}).get("configurable", {})
+    def _execution_thread_id(config: Mapping[str, Any] | None) -> str:
+        if type(config) is not dict or set(config) != {"configurable"}:
+            raise ValueError("execution config must contain only configurable.thread_id")
+        configurable = config.get("configurable")
+        if type(configurable) is not dict or set(configurable) != {"thread_id"}:
+            raise ValueError("execution configurable keys must contain only thread_id")
         thread_id = configurable.get("thread_id")
         if type(thread_id) is not str or not thread_id.strip():
             raise ValueError("configurable.thread_id must be a nonblank string")
@@ -92,13 +96,13 @@ class GuardedCompiledWorkflow:
         checkpoint_id = config.get("configurable", {}).get("checkpoint_id")
         return type(checkpoint_id) is str and bool(checkpoint_id)
 
-    async def ainvoke(
+    async def _execute(
         self,
         input: Any,
         config: Mapping[str, Any] | None = None,
-        **kwargs: Any,
     ) -> Any:
-        thread_id = self._thread_id(config)
+        """Execute through the trusted runtime path with fixed durability settings."""
+        thread_id = self._execution_thread_id(config)
         lock, users = self._locks.get(thread_id, (asyncio.Lock(), 0))
         self._locks[thread_id] = (lock, users + 1)
         try:
@@ -128,7 +132,13 @@ class GuardedCompiledWorkflow:
                     raise TypeError(
                         "compiled graph input must be initial state or resume-only Command"
                     )
-                return await self._graph.ainvoke(input, config, **kwargs)
+                return await self._graph.ainvoke(
+                    input,
+                    config,
+                    version="v2",
+                    stream_mode="values",
+                    durability="sync",
+                )
         finally:
             current_lock, current_users = self._locks[thread_id]
             if current_lock is lock and current_users == 1:
@@ -455,8 +465,24 @@ def build_workflow(
     """Compile the explicit coordinator with trusted dependencies in node closures."""
     if not isinstance(checkpointer, BaseCheckpointSaver):
         raise TypeError("checkpointer must be a real BaseCheckpointSaver")
-    if isinstance(checkpointer, SqliteSaver):
-        raise TypeError("checkpointer must be async-compatible; use AsyncSqliteSaver")
+    async_methods = {
+        "aget_tuple": inspect.iscoroutinefunction,
+        "alist": inspect.isasyncgenfunction,
+        "aput": inspect.iscoroutinefunction,
+        "aput_writes": inspect.iscoroutinefunction,
+        "adelete_thread": inspect.iscoroutinefunction,
+    }
+    unsupported = [
+        name
+        for name, predicate in async_methods.items()
+        if getattr(type(checkpointer), name, None) is getattr(BaseCheckpointSaver, name)
+        or not predicate(getattr(type(checkpointer), name, None))
+    ]
+    if unsupported:
+        raise TypeError(
+            "checkpointer must be async-compatible; missing concrete async methods: "
+            f"{', '.join(unsupported)}"
+        )
     trusted_gateway = gateway or DirectGateway()
     trusted_operations = operations_service
     if trusted_operations is None and isinstance(trusted_gateway, DirectGateway):

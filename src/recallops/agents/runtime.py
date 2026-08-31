@@ -57,12 +57,14 @@ class RecallOpsRuntime:
         checkpointer: AsyncSqliteSaver,
         checkpoint_key: str,
         operations_service: OperationsService,
+        checkpoint_owner_token: str,
     ) -> None:
         self.graph = graph
         self._failures = failures
         self._checkpointer = checkpointer
         self._checkpoint_key = checkpoint_key
         self._operations_service = operations_service
+        self._checkpoint_owner_token = checkpoint_owner_token
 
     @classmethod
     def _active_lock_count(cls) -> int:
@@ -162,6 +164,9 @@ class RecallOpsRuntime:
                 checkpointer=saver,
                 checkpoint_key=str(checkpoint),
                 operations_service=operations_service,
+                checkpoint_owner_token=str(
+                    uuid5(NAMESPACE_URL, f"recallops-checkpoint-owner:{checkpoint}")
+                ),
             )
 
     @staticmethod
@@ -274,21 +279,19 @@ class RecallOpsRuntime:
                     )
                 await self._validate_checkpoint_identity(generated_case, generated_thread)
                 reserved = self._operations_service.reserve_workflow_identity(
-                    generated_case, generated_thread
+                    generated_case,
+                    generated_thread,
+                    self._checkpoint_owner_token,
                 )
                 try:
-                    await self.graph.ainvoke(
-                        initial,
-                        config,
-                        version="v2",
-                        stream_mode="values",
-                        durability="sync",
-                    )
+                    await self.graph._execute(initial, config)
                 except BaseException:
                     created = await self.graph.aget_state(config)
                     if reserved and self._checkpoint_id(created) is None:
                         self._operations_service.release_workflow_identity(
-                            generated_case, generated_thread
+                            generated_case,
+                            generated_thread,
+                            self._checkpoint_owner_token,
                         )
                     raise
                 return self._result(await self.graph.aget_state(config))
@@ -352,13 +355,7 @@ class RecallOpsRuntime:
             current = await self.graph.aget_state(config)
             if self._checkpoint_id(current) != before_checkpoint_id:
                 raise RuntimeError("checkpoint changed during resume binding validation")
-            await self.graph.ainvoke(
-                Command(resume=normalized),
-                config,
-                version="v2",
-                stream_mode="values",
-                durability="sync",
-            )
+            await self.graph._execute(Command(resume=normalized), config)
             return self._result(await self.graph.aget_state(config))
 
     async def get_case(self, *, thread_id: str) -> RuntimeResult | None:

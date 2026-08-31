@@ -82,7 +82,8 @@ class OperationsService:
                       case_id TEXT PRIMARY KEY REFERENCES cases(case_id),
                       thread_id TEXT NOT NULL UNIQUE);
                     CREATE TABLE IF NOT EXISTS workflow_identities (
-                      case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE);
+                      case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
+                      owner_token TEXT);
                     CREATE TABLE IF NOT EXISTS receipts (
                       receipt_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
                       case_id TEXT NOT NULL REFERENCES cases(case_id), action_type TEXT NOT NULL,
@@ -127,6 +128,11 @@ class OperationsService:
         """Backfill and validate the durable one-to-one identity mapping atomically."""
         try:
             connection.execute("BEGIN IMMEDIATE")
+            identity_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(workflow_identities)")
+            }
+            if "owner_token" not in identity_columns:
+                connection.execute("ALTER TABLE workflow_identities ADD COLUMN owner_token TEXT")
             rows = connection.execute("SELECT case_id, state_json FROM cases").fetchall()
             for row in rows:
                 state = RecallCaseState.model_validate_json(row["state_json"])
@@ -163,7 +169,7 @@ class OperationsService:
                     )
                 if not workflow_by_case:
                     connection.execute(
-                        "INSERT INTO workflow_identities VALUES (?, ?)",
+                        "INSERT INTO workflow_identities (case_id, thread_id) VALUES (?, ?)",
                         (state.case_id, state.thread_id),
                     )
             connection.execute("COMMIT")
@@ -365,16 +371,24 @@ class OperationsService:
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to read operation store: {error}") from error
 
-    def reserve_workflow_identity(self, case_id: str, thread_id: str) -> bool:
+    def reserve_workflow_identity(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+    ) -> bool:
         """Atomically reserve the public case/thread identity before graph initialization."""
         if type(case_id) is not str or not case_id.strip():
             raise ValueError("case_id must be a nonblank exact string")
         if type(thread_id) is not str or not thread_id.strip():
             raise ValueError("thread_id must be a nonblank exact string")
+        if type(owner_token) is not str or not owner_token.strip():
+            raise ValueError("owner_token must be a nonblank exact string")
         try:
             with self._transaction() as conn:
                 by_case = conn.execute(
-                    "SELECT thread_id FROM workflow_identities WHERE case_id=?", (case_id,)
+                    "SELECT thread_id, owner_token FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
                 ).fetchone()
                 by_thread = conn.execute(
                     "SELECT case_id FROM workflow_identities WHERE thread_id=?", (thread_id,)
@@ -388,23 +402,37 @@ class OperationsService:
                         f"thread_id {thread_id!r} is already bound to case {by_thread['case_id']!r}"
                     )
                 if by_case:
+                    if by_case["owner_token"] != owner_token:
+                        raise ValueError(
+                            f"case_id {case_id!r} is reserved by another checkpoint store"
+                        )
                     return False
-                conn.execute("INSERT INTO workflow_identities VALUES (?, ?)", (case_id, thread_id))
+                conn.execute(
+                    "INSERT INTO workflow_identities (case_id, thread_id, owner_token) "
+                    "VALUES (?, ?, ?)",
+                    (case_id, thread_id, owner_token),
+                )
                 return True
         except ValueError:
             raise
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to reserve workflow identity: {error}") from error
 
-    def release_workflow_identity(self, case_id: str, thread_id: str) -> None:
+    def release_workflow_identity(
+        self,
+        case_id: str,
+        thread_id: str,
+        owner_token: str,
+    ) -> None:
         """Release only an unmaterialized exact reservation after failed initialization."""
         try:
             with self._transaction() as conn:
                 if conn.execute("SELECT 1 FROM cases WHERE case_id=?", (case_id,)).fetchone():
                     return
                 conn.execute(
-                    "DELETE FROM workflow_identities WHERE case_id=? AND thread_id=?",
-                    (case_id, thread_id),
+                    "DELETE FROM workflow_identities "
+                    "WHERE case_id=? AND thread_id=? AND owner_token=?",
+                    (case_id, thread_id, owner_token),
                 )
         except (OSError, sqlite3.Error) as error:
             raise OperationStoreError(f"unable to release workflow identity: {error}") from error
@@ -667,7 +695,7 @@ class OperationsService:
                     raise IdempotencyConflictError("thread_id is already bound to another case")
                 if not by_case:
                     conn.execute(
-                        "INSERT INTO workflow_identities VALUES (?, ?)",
+                        "INSERT INTO workflow_identities (case_id, thread_id) VALUES (?, ?)",
                         (case_id, durable_thread_id),
                     )
                 replay = self._replay_or_conflict(

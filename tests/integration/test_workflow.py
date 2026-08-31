@@ -281,6 +281,79 @@ async def test_case_and_thread_identity_is_bidirectional_across_restarts_and_sto
 
 
 @pytest.mark.asyncio
+async def test_exact_identity_cannot_start_in_a_second_checkpoint_store(tmp_path: Path) -> None:
+    """Break caught: an exact durable reservation is treated as reusable by another store."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    first_checkpoint = tmp_path / "first-checkpoints.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=first_checkpoint,
+        operations_path=operations_path,
+    ) as runtime:
+        original = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reserve this case and thread for one checkpoint store.",
+            case_id="CASE-OWNED",
+            thread_id="THREAD-OWNED",
+        )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "second-checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        with pytest.raises(ValueError, match="reserved|checkpoint store|already bound"):
+            await runtime.start_case(
+                recall_number="H-1230-2026",
+                question="A second checkpoint store must not own this workflow.",
+                case_id="CASE-OWNED",
+                thread_id="THREAD-OWNED",
+            )
+
+    async with RecallOpsRuntime.open(
+        checkpoint_path=first_checkpoint,
+        operations_path=operations_path,
+    ) as runtime:
+        assert await runtime.get_case(thread_id="THREAD-OWNED") == original
+
+
+@pytest.mark.asyncio
+async def test_concurrent_checkpoint_stores_have_one_exact_identity_winner(tmp_path: Path) -> None:
+    """Break caught: two stores concurrently create independent graphs for one identity."""
+    from recallops.agents.runtime import RecallOpsRuntime, RuntimeResult
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with (
+        RecallOpsRuntime.open(
+            checkpoint_path=tmp_path / "first-checkpoints.sqlite3",
+            operations_path=operations_path,
+        ) as first,
+        RecallOpsRuntime.open(
+            checkpoint_path=tmp_path / "second-checkpoints.sqlite3",
+            operations_path=operations_path,
+        ) as second,
+    ):
+        starts = await asyncio.gather(
+            first.start_case(
+                recall_number="H-1230-2026",
+                question="Exactly one checkpoint store may own this workflow.",
+                case_id="CASE-CONCURRENT-OWNER",
+                thread_id="THREAD-CONCURRENT-OWNER",
+            ),
+            second.start_case(
+                recall_number="H-1230-2026",
+                question="Exactly one checkpoint store may own this workflow.",
+                case_id="CASE-CONCURRENT-OWNER",
+                thread_id="THREAD-CONCURRENT-OWNER",
+            ),
+            return_exceptions=True,
+        )
+
+    assert sum(isinstance(item, RuntimeResult) for item in starts) == 1
+    assert sum(isinstance(item, ValueError) for item in starts) == 1
+
+
+@pytest.mark.asyncio
 async def test_real_stdio_runtime_reaches_one_approved_mcp_write(tmp_path: Path) -> None:
     """Break caught: runtime claims MCP orchestration but hardcodes in-process gateways."""
     from recallops.agents.runtime import RecallOpsRuntime
@@ -642,7 +715,7 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     )
     thread_id = f"THREAD-RECEIPT-{field}"
     config = {"configurable": {"thread_id": thread_id}}
-    await graph.ainvoke(
+    await graph._execute(
         {
             "case_id": f"CASE-RECEIPT-{field}",
             "thread_id": thread_id,
@@ -651,26 +724,17 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
             "scope_lot_ids": [],
         },
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     review = (await graph.aget_state(config)).interrupts[0].value
-    await graph.ainvoke(
+    await graph._execute(
         Command(resume=_bound_response(review, decision="approve")),
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     confirmation = (await graph.aget_state(config)).interrupts[0].value
     original_key = confirmation["idempotency_key"]
-    await graph.ainvoke(
+    await graph._execute(
         Command(resume=_bound_response(confirmation, decision="confirm")),
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
 
     unknown = await graph.aget_state(config)
@@ -682,12 +746,9 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     assert recovery["idempotency_key"] == original_key
     assert _operation_count(operations_path) == 1
 
-    await graph.ainvoke(
+    await graph._execute(
         Command(resume=_bound_response(recovery, decision="retry")),
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     recovered = await graph.aget_state(config)
     assert recovered.values["case_version"] == 1
@@ -735,7 +796,7 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "THREAD-NO-COMMIT"}}
-    await graph.ainvoke(
+    await graph._execute(
         {
             "case_id": "CASE-NO-COMMIT",
             "thread_id": "THREAD-NO-COMMIT",
@@ -744,25 +805,16 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
             "scope_lot_ids": [],
         },
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     review = (await graph.aget_state(config)).interrupts[0].value
-    await graph.ainvoke(
+    await graph._execute(
         Command(resume=_bound_response(review, decision="approve")),
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     confirmation = (await graph.aget_state(config)).interrupts[0].value
-    await graph.ainvoke(
+    await graph._execute(
         Command(resume=_bound_response(confirmation, decision="confirm")),
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
 
     unknown = await graph.aget_state(config)
@@ -933,7 +985,7 @@ async def test_compiled_graph_also_rejects_a_direct_unbound_command(tmp_path: Pa
     )
     graph = build_workflow(gateway=gateway, checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "THREAD-DIRECT"}}
-    await graph.ainvoke(
+    await graph._execute(
         {
             "case_id": "THREAD-DIRECT",
             "thread_id": "THREAD-DIRECT",
@@ -942,27 +994,23 @@ async def test_compiled_graph_also_rejects_a_direct_unbound_command(tmp_path: Pa
             "scope_lot_ids": [],
         },
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     pending = (await graph.aget_state(config)).interrupts[0].value
     response = _bound_response(pending, decision="approve")
     response["case_id"] = "CASE-ATTACKER"
 
     with pytest.raises(ValueError, match="case_id"):
-        await graph.ainvoke(
+        await graph._execute(
             Command(resume=response),
             config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
         )
     assert _operation_count(tmp_path / "operations.sqlite3") == 0
 
 
 def test_build_workflow_requires_a_real_checkpointer(tmp_path: Path) -> None:
     """Break caught: a compiled HITL graph advertises durability but cannot checkpoint."""
+    from langgraph.checkpoint.base import BaseCheckpointSaver
+
     from recallops.agents.workflow import build_workflow
     from recallops.mcp.gateway import DirectGateway
     from recallops.services.operations import OperationsService
@@ -983,6 +1031,143 @@ def test_build_workflow_requires_a_real_checkpointer(tmp_path: Path) -> None:
             build_workflow(gateway=gateway, checkpointer=SqliteSaver(connection))
     finally:
         connection.close()
+
+    class SyncOnlySaver(BaseCheckpointSaver):
+        def get_tuple(self, config):
+            return None
+
+        def list(self, config, **kwargs):
+            return iter(())
+
+        def put(self, config, checkpoint, metadata, new_versions):
+            return config
+
+        def put_writes(self, config, writes, task_id, task_path=""):
+            return None
+
+    with pytest.raises(TypeError, match="async-compatible"):
+        build_workflow(gateway=gateway, checkpointer=SyncOnlySaver())
+
+
+def test_compiled_graph_public_surface_is_read_only(tmp_path: Path) -> None:
+    """Break caught: callers obtain the mutable Runnable executor from ``runtime.graph``."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from recallops.agents.workflow import build_workflow
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    graph = build_workflow(
+        gateway=DirectGateway(
+            operations=OperationsService(storage_path=tmp_path / "operations.sqlite3")
+        ),
+        checkpointer=InMemorySaver(),
+    )
+
+    assert callable(graph.aget_state)
+    assert callable(graph.aget_state_history)
+    with pytest.raises(AttributeError, match="not exposed|disabled"):
+        getattr(graph, "ainvoke")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra_key", "extra_value"),
+    [
+        ("checkpoint_id", "CURRENT"),
+        ("checkpoint_ns", "attacker-branch"),
+        ("unexpected", "attacker-value"),
+    ],
+)
+async def test_private_executor_rejects_branching_or_extra_config_without_state_change(
+    tmp_path: Path,
+    extra_key: str,
+    extra_value: str,
+) -> None:
+    """Break caught: a historical/alternate config becomes the latest durable branch."""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from recallops.agents.workflow import build_workflow
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    thread_id = f"THREAD-CONFIG-{extra_key}"
+    graph = build_workflow(
+        gateway=DirectGateway(
+            operations=OperationsService(storage_path=tmp_path / f"{extra_key}.sqlite3")
+        ),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": thread_id}}
+    await graph._execute(
+        {
+            "case_id": f"CASE-CONFIG-{extra_key}",
+            "thread_id": thread_id,
+            "recall_number": "H-1230-2026",
+            "question": "Historical reads must remain read-only.",
+            "scope_lot_ids": [],
+        },
+        config,
+    )
+    before = await graph.aget_state(config)
+    history_before = [snapshot async for snapshot in graph.aget_state_history(config)]
+    pending = before.interrupts[0].value
+    value = (
+        before.config["configurable"]["checkpoint_id"] if extra_value == "CURRENT" else extra_value
+    )
+    attack_config = {"configurable": {"thread_id": thread_id, extra_key: value}}
+
+    with pytest.raises(ValueError, match="configurable|execution config"):
+        await graph._execute(
+            Command(resume=_bound_response(pending, decision="reject")),
+            attack_config,
+        )
+
+    after = await graph.aget_state(config)
+    history_after = [snapshot async for snapshot in graph.aget_state_history(config)]
+    assert after.values == before.values
+    assert after.interrupts == before.interrupts
+    assert after.config == before.config
+    assert history_after == history_before
+    if extra_key == "checkpoint_id":
+        historical = await graph.aget_state(attack_config)
+        assert historical.values == before.values
+
+
+@pytest.mark.asyncio
+async def test_private_executor_rejects_caller_runtime_setting_overrides(tmp_path: Path) -> None:
+    """Break caught: callers weaken checkpoint durability through Runnable kwargs."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from recallops.agents.workflow import build_workflow
+    from recallops.mcp.gateway import DirectGateway
+    from recallops.services.operations import OperationsService
+
+    graph = build_workflow(
+        gateway=DirectGateway(
+            operations=OperationsService(storage_path=tmp_path / "operations.sqlite3")
+        ),
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "THREAD-FIXED-SETTINGS"}}
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        await graph._execute(
+            {
+                "case_id": "CASE-FIXED-SETTINGS",
+                "thread_id": "THREAD-FIXED-SETTINGS",
+                "recall_number": "H-1230-2026",
+                "question": "Runtime execution settings cannot be overridden.",
+                "scope_lot_ids": [],
+            },
+            config,
+            durability="exit",
+        )
+
+    untouched = await graph.aget_state(config)
+    assert untouched.values == {}
+    assert "checkpoint_id" not in untouched.config["configurable"]
 
 
 @pytest.mark.asyncio
@@ -1006,22 +1191,13 @@ async def test_compiled_graph_rejects_reinitializing_a_paused_thread(tmp_path: P
         "question": "Original investigation question.",
         "scope_lot_ids": [],
     }
-    await graph.ainvoke(
-        initial,
-        config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
-    )
+    await graph._execute(initial, config)
     before = await graph.aget_state(config)
 
     with pytest.raises(ValueError, match="already has a durable checkpoint"):
-        await graph.ainvoke(
+        await graph._execute(
             {**initial, "question": "Overwrite the paused investigation."},
             config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
         )
 
     after = await graph.aget_state(config)
@@ -1055,7 +1231,7 @@ async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "THREAD-SEALED-RUNNERS"}}
-    await graph.ainvoke(
+    await graph._execute(
         {
             "case_id": "CASE-SEALED-RUNNERS",
             "thread_id": "THREAD-SEALED-RUNNERS",
@@ -1064,9 +1240,6 @@ async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
             "scope_lot_ids": [],
         },
         config,
-        version="v2",
-        stream_mode="values",
-        durability="sync",
     )
     before = await graph.aget_state(config)
 
@@ -1109,15 +1282,12 @@ async def test_compiled_graph_exposes_no_alternate_execution_or_mutation_runner(
 
     pending = before.interrupts[0].value
     with pytest.raises(ValueError, match="resume-only"):
-        await graph.ainvoke(
+        await graph._execute(
             Command(
                 update={"case_id": "CASE-COMMAND-OVERWRITE"},
                 resume=_bound_response(pending, decision="reject"),
             ),
             config,
-            version="v2",
-            stream_mode="values",
-            durability="sync",
         )
 
     after = await graph.aget_state(config)

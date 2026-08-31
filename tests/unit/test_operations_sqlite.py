@@ -153,6 +153,29 @@ def test_legacy_cases_are_transactionally_backfilled_into_case_threads(tmp_path:
     assert migrated.get_case_for_thread("THREAD-LEGACY-TWO").case_id == "CASE-LEGACY-TWO"
 
 
+def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_path: Path) -> None:
+    """Break caught: ownership hardening makes an existing Operations DB unreadable."""
+    database = tmp_path / "legacy-identity-schema.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE workflow_identities (case_id TEXT PRIMARY KEY, thread_id TEXT UNIQUE)"
+        )
+        connection.execute(
+            "INSERT INTO workflow_identities VALUES ('CASE-LEGACY', 'THREAD-LEGACY')"
+        )
+
+    OperationsService(storage_path=database)
+    OperationsService(storage_path=database)
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(workflow_identities)")}
+        mapping = connection.execute(
+            "SELECT case_id, thread_id, owner_token FROM workflow_identities"
+        ).fetchone()
+    assert columns == {"case_id", "thread_id", "owner_token"}
+    assert mapping == ("CASE-LEGACY", "THREAD-LEGACY", None)
+
+
 def test_legacy_create_hash_replays_once_then_migrates_to_thread_bound_hash(
     tmp_path: Path,
 ) -> None:
