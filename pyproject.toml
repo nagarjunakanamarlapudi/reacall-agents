@@ -13,7 +13,11 @@ dependencies = [
   "langgraph==1.2.11",
   "pydantic>=2.12,<3",
   "scikit-learn>=1.8,<2",
+  "streamlit>=1.49,<2",
 ]
+
+[project.scripts]
+recallops = "recallops.cli:main"
 
 [dependency-groups]
 dev = [
