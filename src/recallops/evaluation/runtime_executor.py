@@ -941,7 +941,7 @@ class RecallOpsEvaluationExecutor:
         root: Path,
         operations_path: Path,
     ) -> EvaluationObservation:
-        del scenario, root
+        disposition_lifecycle = await self._probe_disposition_lifecycle(scenario, root)
         traceability = TraceabilityService()
         service = OperationsService(storage_path=operations_path, traceability=traceability)
         case_id = "CASE-R15-SERVICE"
@@ -972,9 +972,48 @@ class RecallOpsEvaluationExecutor:
                 "status": "open_closure_blocked",
                 "evidence_gaps": ["pending_acknowledgement:STORE-01"],
                 "service_probe_error_code": error_code,
+                "disposition_lifecycle": disposition_lifecycle,
             },
             route_actual=["execute_one_operation", "monitor", "closure_review", "end"],
         )
+
+    async def _probe_disposition_lifecycle(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> dict[str, Any]:
+        async with RecallOpsRuntime.open(
+            checkpoint_path=root / "disposition-lifecycle-checkpoints.sqlite3",
+            operations_path=root / "disposition-lifecycle-operations.sqlite3",
+        ) as runtime:
+            result = await runtime.start_case(
+                recall_number=scenario.input.recall_number,
+                question="Resolve the exact lot residual before tasks or closure.",
+                case_id="CASE-R15-DISPOSITION-LIFECYCLE",
+                thread_id="thread-r15-disposition-lifecycle",
+                scope_lot_ids=["LOT-EXACT-170"],
+            )
+            reviewed: list[str] = []
+            disposition_remaining: list[str] = []
+            while result.pending_interrupt is not None and len(reviewed) < 4:
+                pending = result.pending_interrupt
+                if pending["kind"] not in {"action_review", "closure_review"}:
+                    break
+                action_type = pending["action"]["action_type"]
+                reviewed.append(action_type)
+                if action_type == "record_disposition":
+                    disposition_remaining = list(pending.get("remaining_action_types", []))
+                if action_type == "create_facility_tasks":
+                    break
+                result = await _approve_and_confirm(runtime, result)
+        return {
+            "reviewed_action_types": reviewed,
+            "receipt_action_types": [
+                receipt["action_type"] for receipt in result.case.get("write_receipts", [])
+            ],
+            "disposition_remaining_action_types": disposition_remaining,
+            "terminal_status": result.case.get("status"),
+        }
 
     async def _scenario_r16(
         self,
