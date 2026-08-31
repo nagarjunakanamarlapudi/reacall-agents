@@ -13,7 +13,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from recallops.agents.planner import plan_investigation
@@ -114,12 +114,24 @@ class DurableRuntimeAdapter:
     """Thin product adapter over the locked, SQLite-backed RecallOpsRuntime."""
 
     runtime_label = "Durable LangGraph + SQLite"
-    transport_label = "direct gateway · same typed MCP contract"
+    transport_label = "direct MCP gateway"
     available_failure_scenarios = tuple(_RUNTIME_FAILURES)
 
-    def __init__(self, *, checkpoint_path: Path | str, operations_path: Path | str) -> None:
+    def __init__(
+        self,
+        *,
+        checkpoint_path: Path | str,
+        operations_path: Path | str,
+        transport: Literal["direct", "stdio"] = "direct",
+    ) -> None:
+        if transport not in {"direct", "stdio"}:
+            raise ValueError("transport must be 'direct' or 'stdio'")
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         self.operations_path = Path(operations_path).expanduser().resolve()
+        self.transport = transport
+        self.transport_label = (
+            "direct MCP gateway" if transport == "direct" else "stdio MCP subprocesses"
+        )
 
     async def open_case(self, recall_number: str) -> dict[str, Any]:
         """Open only the official notice; graph investigation remains explicit."""
@@ -206,6 +218,7 @@ class DurableRuntimeAdapter:
         async with RecallOpsRuntime.open(
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
+            transport=self.transport,
         ) as runtime:
             applied = self._arm_failure(runtime, current, stage="run")
             result = await runtime.start_case(
@@ -215,17 +228,18 @@ class DurableRuntimeAdapter:
                 thread_id=current["thread_id"],
                 scope_lot_ids=current.get("scope_lot_ids") or None,
             )
-        return self._project_failure(normalize_runtime_result(result), current, applied)
+        return self._project_failure(self._normalize_result(result), current, applied)
 
     async def load_case(self, thread_id: str) -> dict[str, Any]:
         async with RecallOpsRuntime.open(
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
+            transport=self.transport,
         ) as runtime:
             result = await runtime.get_case(thread_id=thread_id)
         if result is None:
             raise KeyError(f"Unknown durable thread {thread_id!r}.")
-        return normalize_runtime_result(result)
+        return self._normalize_result(result)
 
     async def resume_review(
         self,
@@ -252,6 +266,7 @@ class DurableRuntimeAdapter:
             async with RecallOpsRuntime.open(
                 checkpoint_path=self.checkpoint_path,
                 operations_path=self.operations_path,
+                transport=self.transport,
             ) as runtime:
                 applied = self._arm_failure(runtime, current, stage="review")
                 result = await runtime.resume_case(
@@ -262,7 +277,7 @@ class DurableRuntimeAdapter:
                 restored = await self.load_case(current["thread_id"])
                 return self._project_failure(restored, current, True, observed_detail=str(error))
             raise
-        return self._project_failure(normalize_runtime_result(result), current, applied)
+        return self._project_failure(self._normalize_result(result), current, applied)
 
     async def simulate_approved_actions(self, case: Mapping[str, Any]) -> dict[str, Any]:
         current = self._bound_copy(case)
@@ -274,10 +289,11 @@ class DurableRuntimeAdapter:
         async with RecallOpsRuntime.open(
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
+            transport=self.transport,
         ) as runtime:
             applied = self._arm_failure(runtime, current, stage="simulate")
             result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
-        return self._project_failure(normalize_runtime_result(result), current, applied)
+        return self._project_failure(self._normalize_result(result), current, applied)
 
     async def request_closure(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Reload authoritative checkpoint state and present its closure gates read-only."""
@@ -386,6 +402,11 @@ class DurableRuntimeAdapter:
         if isinstance(version, bool) or not isinstance(version, int):
             raise ValueError("Current case version is required.")
         return current
+
+    def _normalize_result(self, result: Any) -> dict[str, Any]:
+        projected = normalize_runtime_result(result)
+        projected["transport_mode"] = self.transport_label
+        return projected
 
     @staticmethod
     def _pending(current: Mapping[str, Any], *, expected: tuple[str, ...]) -> dict[str, Any]:

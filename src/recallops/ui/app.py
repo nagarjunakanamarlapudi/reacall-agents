@@ -47,9 +47,11 @@ def _build_adapter():
     if mode != "durable":
         raise ValueError("RECALLOPS_UI_MODE must be 'durable' or 'demo'")
     runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
+    transport = os.environ.get("RECALLOPS_MCP_TRANSPORT", "direct").strip().casefold()
     return DurableRuntimeAdapter(
         checkpoint_path=runtime_dir / "checkpoints.sqlite3",
         operations_path=runtime_dir / "operations.sqlite3",
+        transport=transport,
     )
 
 

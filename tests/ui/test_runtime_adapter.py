@@ -23,6 +23,30 @@ def _receipt_count(path: Path) -> int:
         connection.close()
 
 
+def test_durable_adapter_exposes_only_real_runtime_transports(tmp_path: Path) -> None:
+    direct = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "direct-checkpoints.sqlite3",
+        operations_path=tmp_path / "direct-operations.sqlite3",
+    )
+    assert direct.transport == "direct"
+    assert direct.transport_label == "direct MCP gateway"
+
+    stdio = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "stdio-checkpoints.sqlite3",
+        operations_path=tmp_path / "stdio-operations.sqlite3",
+        transport="stdio",
+    )
+    assert stdio.transport == "stdio"
+    assert stdio.transport_label == "stdio MCP subprocesses"
+
+    with pytest.raises(ValueError, match="direct.*stdio"):
+        DurableRuntimeAdapter(
+            checkpoint_path=tmp_path / "bad-checkpoints.sqlite3",
+            operations_path=tmp_path / "bad-operations.sqlite3",
+            transport="pretend",  # type: ignore[arg-type]
+        )
+
+
 @pytest.mark.asyncio
 async def test_durable_adapter_projects_runtime_and_survives_reopen(tmp_path: Path) -> None:
     checkpoint = tmp_path / "checkpoints.sqlite3"

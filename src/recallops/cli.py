@@ -47,10 +47,11 @@ def _data_validate() -> int:
     return 0
 
 
-async def _run_demo(recall_number: str, runtime_dir: Path) -> int:
+async def _run_demo(recall_number: str, runtime_dir: Path, transport: str) -> int:
     adapter = DurableRuntimeAdapter(
         checkpoint_path=runtime_dir / "checkpoints.sqlite3",
         operations_path=runtime_dir / "operations.sqlite3",
+        transport=transport,
     )
     case = await adapter.open_case(recall_number)
     case["case_id"] = f"CASE-DEMO-{recall_number}"
@@ -62,7 +63,7 @@ async def _run_demo(recall_number: str, runtime_dir: Path) -> int:
     case = await adapter.run_investigation(case)
     print("Agentic RAG: BM25 sparse + LSA dense → RRF → deterministic rerank → critic")
     print("Runtime: Durable LangGraph + SQLite")
-    print("Transport: direct gateway · same typed MCP contract")
+    print(f"Transport: {adapter.transport_label}")
     print(
         "Planner: deterministic | Specialists: Regulatory Intake, Product & Lot Matching, Traceability, Containment | Independent verifier"
     )
@@ -92,11 +93,12 @@ async def _run_demo(recall_number: str, runtime_dir: Path) -> int:
 
 
 def _demo(recall_number: str) -> int:
+    transport = os.environ.get("RECALLOPS_MCP_TRANSPORT", "direct").strip().casefold()
     configured_runtime_dir = os.environ.get("RECALLOPS_RUNTIME_DIR")
     if configured_runtime_dir:
-        return asyncio.run(_run_demo(recall_number, Path(configured_runtime_dir)))
+        return asyncio.run(_run_demo(recall_number, Path(configured_runtime_dir), transport))
     with tempfile.TemporaryDirectory(prefix="recallops-demo-") as temporary:
-        return asyncio.run(_run_demo(recall_number, Path(temporary)))
+        return asyncio.run(_run_demo(recall_number, Path(temporary), transport))
 
 
 def _eval(report_path: Path) -> int:

@@ -56,3 +56,12 @@ def test_demo_command_is_reentrant_and_deterministic(capsys, monkeypatch) -> Non
     assert main(["demo", "--recall-number", "H-1230-2026"]) == 0
     second = capsys.readouterr().out
     assert second == first
+
+
+def test_demo_rejects_unknown_mcp_transport(capsys, monkeypatch) -> None:
+    monkeypatch.setenv("RECALLOPS_MCP_TRANSPORT", "pretend")
+    assert main(["demo", "--recall-number", "H-1230-2026"]) == 2
+    captured = capsys.readouterr()
+    assert "direct" in captured.err
+    assert "stdio" in captured.err
+    assert "Traceback" not in captured.err
