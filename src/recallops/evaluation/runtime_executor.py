@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import shutil
+import sqlite3
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence, Set
 from copy import deepcopy
@@ -12,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Event, Thread
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -399,6 +404,8 @@ def _checkpoint_fence_error_code(error: Any) -> str:
     messages = {
         "workflow mutation is already active or uncertain": "active_mutation_fenced",
         "checkpoint head is stale and cannot fork the durable workflow": "stale_head_fenced",
+        "checkpoint mutation marker request digest does not match": "request_digest_mismatch",
+        "workflow mutation request digest does not match this attempt": ("request_digest_mismatch"),
     }
     return messages.get(str(error), "")
 
@@ -1951,6 +1958,7 @@ class RecallOpsEvaluationExecutor:
                 thread_id=thread_id,
             )
             assert review.pending_interrupt is not None
+            assert review.checkpoint_id is not None
         first_copy = root / "copied-head-a.sqlite3"
         second_copy = root / "copied-head-b.sqlite3"
         shutil.copy2(seed_checkpoint, first_copy)
@@ -2005,6 +2013,10 @@ class RecallOpsEvaluationExecutor:
                 except (RuntimeError, ValueError) as error:
                     sequential_error_code = _checkpoint_fence_error_code(error)
                     sequential_fenced = sequential_error_code == "stale_head_fenced"
+        expired_response_probe = await self._probe_expired_copied_marker_response_binding(
+            scenario,
+            root,
+        )
         return {
             "concurrent_fenced": concurrent_fenced,
             "sequential_fenced": sequential_fenced,
@@ -2013,6 +2025,345 @@ class RecallOpsEvaluationExecutor:
             "sequential_error_code": sequential_error_code,
             "success_count": len(successes),
             "failure_count": len(failures),
+            **expired_response_probe,
+        }
+
+    async def _probe_expired_copied_marker_response_binding(
+        self,
+        scenario: EvaluationScenario,
+        root: Path,
+    ) -> dict[str, Any]:
+        """Crash after preparing approval and prove a clone cannot change that request."""
+        import recallops.agents.runtime as runtime_module
+
+        def checkpoint_marker(path: Path) -> dict[str, Any] | None:
+            with sqlite3.connect(path) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    "SELECT * FROM recallops_mutation_attempts WHERE case_id=? AND thread_id=?",
+                    (case_id, thread_id),
+                ).fetchone()
+            return dict(row) if row is not None else None
+
+        def operations_identity() -> dict[str, Any] | None:
+            with sqlite3.connect(operations_path) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute(
+                    "SELECT * FROM workflow_identities WHERE case_id=? AND thread_id=?",
+                    (case_id, thread_id),
+                ).fetchone()
+            return dict(row) if row is not None else None
+
+        def request_digest(row: dict[str, Any] | None) -> str:
+            if row is None:
+                return ""
+            candidates = [
+                value
+                for key, value in row.items()
+                if "request" in key and ("digest" in key or "hash" in key)
+            ]
+            if len(candidates) != 1 or type(candidates[0]) is not str:
+                return ""
+            return candidates[0]
+
+        def canonical_digest(
+            response: dict[str, Any],
+            *,
+            expected_checkpoint_head: str,
+            pending: Mapping[str, Any],
+        ) -> str:
+            contract = {
+                "schema": "recallops-mutation-request-v1",
+                "case_id": case_id,
+                "thread_id": thread_id,
+                "expected_checkpoint_head": expected_checkpoint_head,
+                "interrupt_kind": pending["kind"],
+                "human_response": response,
+                "pending_action_id": pending.get("action_id")
+                or pending.get("action", {}).get("action_id"),
+                "pending_action_digest": pending.get("action_digest"),
+                "execution_id": pending.get("execution_id"),
+                "idempotency_key": pending.get("idempotency_key"),
+                "initial_payload": None,
+            }
+            payload = json.dumps(
+                contract,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode()
+            return hashlib.sha256(payload).hexdigest()
+
+        original_path = root / "expired-marker-original.sqlite3"
+        changed_copy_path = root / "expired-marker-changed-copy.sqlite3"
+        exact_copy_path = root / "expired-marker-exact-copy.sqlite3"
+        operations_path = root / "expired-marker-operations.sqlite3"
+        case_id = "CASE-R18-EXPIRED-MARKER"
+        thread_id = "thread-r18-expired-marker"
+        async with RecallOpsRuntime.open(
+            checkpoint_path=original_path,
+            operations_path=operations_path,
+        ) as runtime:
+            review = await runtime.start_case(
+                recall_number=scenario.input.recall_number,
+                question="Bind recovery of an expired checkpoint marker to one exact decision.",
+                case_id=case_id,
+                thread_id=thread_id,
+            )
+            assert review.pending_interrupt is not None
+            assert review.checkpoint_id is not None
+
+        approve = _bound_response(review.pending_interrupt, decision="approve")
+        reject = _bound_response(review.pending_interrupt, decision="reject")
+        execution_entered = asyncio.Event()
+        release_execution = asyncio.Event()
+        original_execute = runtime_module._execute_workflow
+        original_release = OperationsService.release_workflow_mutation
+        marker_copied = False
+        request_digest_bound = False
+        live_state_proven = False
+        live_original_marker: dict[str, Any] | None = None
+        live_identity: dict[str, Any] | None = None
+
+        async def pause_before_mutation(*args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            execution_entered.set()
+            await release_execution.wait()
+            raise RuntimeError("simulated process death before checkpoint mutation")
+
+        def fail_fence_release(*args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            raise RuntimeError("simulated process death before fence release")
+
+        try:
+            runtime_module._execute_workflow = pause_before_mutation
+            OperationsService.release_workflow_mutation = fail_fence_release
+            async with RecallOpsRuntime.open(
+                checkpoint_path=original_path,
+                operations_path=operations_path,
+            ) as original:
+                failed_resume: asyncio.Task[RuntimeResult] | None = asyncio.create_task(
+                    original.resume_case(thread_id=thread_id, response=approve)
+                )
+                try:
+                    await asyncio.wait_for(execution_entered.wait(), timeout=5)
+                    live_original_marker = checkpoint_marker(original_path)
+                    live_identity = operations_identity()
+                    live_state_proven = (
+                        live_original_marker is not None
+                        and live_original_marker.get("state") == "prepared"
+                        and live_identity is not None
+                        and live_identity.get("attempt_state") == "active"
+                        and type(live_identity.get("attempt_expires_at")) is float
+                        and live_identity["attempt_expires_at"] > time.time()
+                    )
+                    for copied_path in (changed_copy_path, exact_copy_path):
+                        with (
+                            sqlite3.connect(original_path) as source,
+                            sqlite3.connect(copied_path) as destination,
+                        ):
+                            source.backup(destination)
+                finally:
+                    release_execution.set()
+                    outcomes = await asyncio.gather(failed_resume, return_exceptions=True)
+                    failed_resume = None
+                if (
+                    len(outcomes) != 1
+                    or not isinstance(outcomes[0], RuntimeError)
+                    or "fence release" not in str(outcomes[0])
+                ):
+                    raise AssertionError("simulated pre-mutation crash did not retain its fence")
+        finally:
+            release_execution.set()
+            runtime_module._execute_workflow = original_execute
+            OperationsService.release_workflow_mutation = original_release
+
+        original_marker = checkpoint_marker(original_path)
+        changed_marker = checkpoint_marker(changed_copy_path)
+        exact_marker = checkpoint_marker(exact_copy_path)
+        identity_before_expiry = operations_identity()
+        changed_copy_review: RuntimeResult | None
+        exact_copy_review: RuntimeResult | None
+        async with (
+            RecallOpsRuntime.open(
+                checkpoint_path=changed_copy_path,
+                operations_path=operations_path,
+            ) as changed_copy,
+            RecallOpsRuntime.open(
+                checkpoint_path=exact_copy_path,
+                operations_path=operations_path,
+            ) as exact_copy,
+        ):
+            changed_copy_review, exact_copy_review = await asyncio.gather(
+                changed_copy.get_case(thread_id=thread_id),
+                exact_copy.get_case(thread_id=thread_id),
+            )
+        marker_copied = (
+            live_state_proven
+            and original_marker is not None
+            and original_marker == live_original_marker == changed_marker == exact_marker
+            and identity_before_expiry == live_identity
+            and original_marker.get("attempt_token")
+            == (identity_before_expiry or {}).get("attempt_token")
+            and original_marker.get("expected_checkpoint_head") == review.checkpoint_id
+            and (identity_before_expiry or {}).get("attempt_expected_head") == review.checkpoint_id
+            and (identity_before_expiry or {}).get("checkpoint_head") == review.checkpoint_id
+            and changed_copy_review == exact_copy_review == review
+        )
+        approve_digest = canonical_digest(
+            approve,
+            expected_checkpoint_head=review.checkpoint_id,
+            pending=review.pending_interrupt,
+        )
+        reject_digest = canonical_digest(
+            reject,
+            expected_checkpoint_head=review.checkpoint_id,
+            pending=review.pending_interrupt,
+        )
+        request_digest_bound = (
+            approve_digest != reject_digest
+            and request_digest(original_marker)
+            == request_digest(changed_marker)
+            == request_digest(exact_marker)
+            == request_digest(identity_before_expiry)
+            == approve_digest
+        )
+
+        with sqlite3.connect(operations_path) as connection:
+            updated = connection.execute(
+                "UPDATE workflow_identities SET attempt_expires_at=0 WHERE case_id=?",
+                (case_id,),
+            )
+            if updated.rowcount != 1:
+                raise AssertionError("expired-marker probe did not retain its mutation lease")
+        identity_after_expiry = operations_identity()
+        expected_after_expiry = dict(identity_before_expiry or {})
+        expected_after_expiry["attempt_expires_at"] = 0.0
+        expiry_exact = identity_after_expiry == expected_after_expiry
+
+        changed_response_fenced = False
+        changed_response_error_code = ""
+        async with RecallOpsRuntime.open(
+            checkpoint_path=changed_copy_path,
+            operations_path=operations_path,
+        ) as copied:
+            copied_before = await copied.get_case(thread_id=thread_id)
+            copied_history_before = await copied.get_case_history(thread_id=thread_id)
+            marker_before_mismatch = checkpoint_marker(changed_copy_path)
+            identity_before_mismatch = operations_identity()
+            try:
+                await copied.resume_case(thread_id=thread_id, response=reject)
+            except ValueError as error:
+                changed_response_error_code = _checkpoint_fence_error_code(error)
+                copied_after = await copied.get_case(thread_id=thread_id)
+                copied_history_after = await copied.get_case_history(thread_id=thread_id)
+                changed_response_fenced = (
+                    changed_response_error_code == "request_digest_mismatch"
+                    and copied_after == copied_before == changed_copy_review == review
+                    and copied_history_after == copied_history_before
+                    and checkpoint_marker(changed_copy_path) == marker_before_mismatch
+                    and operations_identity() == identity_before_mismatch
+                )
+
+        exact_response_recovered = False
+        exact_confirmation_bound = False
+        exact_checkpoint_advanced_once = False
+        exact_recovery_markers_cleared = False
+        async with RecallOpsRuntime.open(
+            checkpoint_path=exact_copy_path,
+            operations_path=operations_path,
+        ) as original:
+            exact_history_before = await original.get_case_history(thread_id=thread_id)
+            try:
+                confirmation = await original.resume_case(
+                    thread_id=thread_id,
+                    response=approve,
+                )
+            except (RuntimeError, ValueError):
+                pass
+            else:
+                exact_history_after = await original.get_case_history(thread_id=thread_id)
+                pending = confirmation.pending_interrupt
+                review_pending = review.pending_interrupt
+                expected_execution_id = str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"{thread_id}:{review_pending.get('case_version')}:"
+                        f"{review_pending.get('action', {}).get('action_id')}:"
+                        f"{review_pending.get('action_digest')}",
+                    )
+                )
+                expected_idempotency_key = f"recallops:{expected_execution_id}"
+                exact_confirmation_bound = (
+                    pending is not None
+                    and review_pending is not None
+                    and pending.get("kind") == "execution_confirmation"
+                    and pending.get("case_id") == review_pending.get("case_id")
+                    and pending.get("thread_id") == review_pending.get("thread_id")
+                    and pending.get("case_version") == review_pending.get("case_version")
+                    and pending.get("action_id")
+                    == review_pending.get("action", {}).get("action_id")
+                    and pending.get("action_digest") == review_pending.get("action_digest")
+                    and pending.get("execution_id") == expected_execution_id
+                    and pending.get("idempotency_key") == expected_idempotency_key
+                    and confirmation.case.get("execution_id") == expected_execution_id
+                    and confirmation.case.get("idempotency_key") == expected_idempotency_key
+                    and confirmation.case.get("execution_request") == pending
+                    and confirmation.next_nodes == ("execution_confirmation",)
+                )
+                identity_after_recovery = operations_identity()
+                prior_checkpoint_ids = {
+                    item.checkpoint_id
+                    for item in exact_history_before
+                    if item.checkpoint_id is not None
+                }
+                new_history = exact_history_after[:2]
+                exact_checkpoint_advanced_once = (
+                    len(exact_history_after) == len(exact_history_before) + 2
+                    and exact_history_after[2:] == exact_history_before
+                    and len(new_history) == 2
+                    and len({item.checkpoint_id for item in new_history}) == 2
+                    and all(item.checkpoint_id not in prior_checkpoint_ids for item in new_history)
+                    and confirmation == exact_history_after[0]
+                    and (identity_after_recovery or {}).get("checkpoint_head")
+                    == confirmation.checkpoint_id
+                )
+                exact_recovery_markers_cleared = (
+                    checkpoint_marker(exact_copy_path) is None
+                    and identity_after_recovery is not None
+                    and tuple(
+                        identity_after_recovery.get(key)
+                        for key in (
+                            "attempt_token",
+                            "attempt_expected_head",
+                            "attempt_request_digest",
+                            "attempt_state",
+                            "attempt_expires_at",
+                        )
+                    )
+                    == (None, None, None, None, None)
+                )
+                exact_response_recovered = (
+                    marker_copied
+                    and request_digest_bound
+                    and changed_response_fenced
+                    and exact_confirmation_bound
+                    and exact_checkpoint_advanced_once
+                    and exact_recovery_markers_cleared
+                )
+
+        return {
+            "expired_recovery_marker_copied": marker_copied,
+            "expired_recovery_live_state_proven": live_state_proven,
+            "expired_recovery_expiry_exact": expiry_exact,
+            "expired_recovery_request_digest_bound": request_digest_bound,
+            "expired_changed_response_fenced": changed_response_fenced,
+            "expired_changed_response_error_code": changed_response_error_code,
+            "expired_exact_response_recovered": exact_response_recovered,
+            "expired_exact_confirmation_bound": exact_confirmation_bound,
+            "expired_exact_checkpoint_advanced_once": exact_checkpoint_advanced_once,
+            "expired_exact_recovery_markers_cleared": exact_recovery_markers_cleared,
         }
 
     async def _probe_compiled_workflow_guards(
