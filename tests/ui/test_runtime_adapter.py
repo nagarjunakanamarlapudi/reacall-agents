@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from recallops.ui.adapter import DurableRuntimeAdapter
+from recallops.agents.runtime import RecallOpsRuntime
+from recallops.ui.adapter import DurableRuntimeAdapter, normalize_runtime_result
 from recallops.ui.presenters import (
     APPROVAL_JUSTIFICATION,
     build_match_rows,
@@ -21,6 +25,106 @@ def _receipt_count(path: Path) -> int:
         return int(connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0])
     finally:
         connection.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_adapter_projects_compact_checkpoint_history(tmp_path: Path) -> None:
+    """Break caught: the product loses durable history when raw graph access is removed."""
+
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    )
+    reviewed = await adapter.run_investigation(await adapter.open_case("H-1230-2026"))
+
+    assert reviewed["checkpoint_history"]
+    assert reviewed["checkpoint_history"][0] == {
+        "checkpoint_id": reviewed["checkpoint_id"],
+        "status": "review_required",
+        "case_version": 0,
+        "pending_kind": "action_review",
+        "next_nodes": ["action_review"],
+    }
+    assert json.loads(json.dumps(reviewed["checkpoint_history"])) == reviewed[
+        "checkpoint_history"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_immutable_runtime_result_normalizes_to_detached_ui_json(tmp_path: Path) -> None:
+    """Break caught: a UI projection mutates or leaks the runtime's frozen audit result."""
+
+    checkpoint = tmp_path / "checkpoints.sqlite3"
+    operations = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint,
+        operations_path=operations,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Project immutable runtime results into detached product state.",
+            case_id="CASE-IMMUTABLE-UI",
+            thread_id="THREAD-IMMUTABLE-UI",
+        )
+        projected = normalize_runtime_result(result)
+        projected["status"] = "caller-only"
+        projected["pending_interrupt"]["kind"] = "caller-only"
+        fresh = await runtime.get_case(thread_id="THREAD-IMMUTABLE-UI")
+
+    with pytest.raises(TypeError):
+        result.case["status"] = "forged"
+    assert fresh.case["status"] == "review_required"
+    assert fresh.pending_interrupt["kind"] == "action_review"
+    assert json.loads(json.dumps(projected))["status"] == "caller-only"
+
+
+@pytest.mark.asyncio
+async def test_copied_store_adapters_surface_one_fenced_review_winner(tmp_path: Path) -> None:
+    """Break caught: two product adapters fork one copied durable checkpoint head."""
+
+    original_checkpoint = tmp_path / "original-checkpoints.sqlite3"
+    copied_checkpoint = tmp_path / "copied-checkpoints.sqlite3"
+    operations = tmp_path / "operations.sqlite3"
+    original = DurableRuntimeAdapter(
+        checkpoint_path=original_checkpoint,
+        operations_path=operations,
+    )
+    reviewed = await original.run_investigation(await original.open_case("H-1230-2026"))
+    shutil.copy2(original_checkpoint, copied_checkpoint)
+    copied = DurableRuntimeAdapter(
+        checkpoint_path=copied_checkpoint,
+        operations_path=operations,
+    )
+
+    outcomes = await asyncio.gather(
+        original.resume_review(
+            reviewed,
+            decision="approve",
+            actor="Food-safety manager",
+            justification=APPROVAL_JUSTIFICATION,
+            edited_action="",
+        ),
+        copied.resume_review(
+            reviewed,
+            decision="reject",
+            actor="Food-safety manager",
+            justification="Reject the proposed action while evidence is rechecked.",
+            edited_action="",
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(item, dict) for item in outcomes) == 1
+    assert sum(isinstance(item, ValueError) for item in outcomes) == 1
+    stale = copied if isinstance(outcomes[0], dict) else original
+    with pytest.raises(ValueError, match="checkpoint|head|stale|mutation"):
+        await stale.resume_review(
+            reviewed,
+            decision="approve",
+            actor="Food-safety manager",
+            justification=APPROVAL_JUSTIFICATION,
+            edited_action="",
+        )
 
 
 def test_durable_adapter_exposes_only_real_runtime_transports(tmp_path: Path) -> None:

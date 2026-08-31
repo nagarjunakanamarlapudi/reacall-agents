@@ -107,3 +107,20 @@ def test_app_default_product_mode_uses_durable_runtime(monkeypatch, tmp_path) ->
         assert connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0] == 1
     finally:
         connection.close()
+
+
+def test_app_durable_audit_shows_detached_checkpoint_history(monkeypatch, tmp_path) -> None:
+    """Break caught: the audit view loses durable history after raw graph access is sealed."""
+
+    monkeypatch.delenv("RECALLOPS_UI_MODE", raising=False)
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(tmp_path / "runtime"))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.button(key="open_case_button").click().run()
+    app.radio(key="ui_active_view").set_value("Investigation").run()
+    app.button(key="run_investigation_button").click().run(timeout=30)
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+
+    assert any("Durable checkpoint history" in item.value for item in app.markdown)
+    history = app.session_state.ui_case["checkpoint_history"]
+    assert history[0]["checkpoint_id"] == app.session_state.ui_case["checkpoint_id"]
+    assert history[0]["pending_kind"] == "action_review"

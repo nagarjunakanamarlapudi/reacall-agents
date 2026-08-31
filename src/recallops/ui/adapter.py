@@ -87,10 +87,10 @@ class RecallOpsUIAdapter(Protocol):
 def normalize_runtime_result(result: Any) -> dict[str, Any]:
     """Normalize the locked RuntimeResult without importing the runtime early.
 
-    This is the only seam the future LangGraph adapter needs: ``RuntimeResult``
-    exposes ``case``, ``pending_interrupt``, ``next_nodes`` and
-    ``checkpoint_id``.  Mapping fixtures with the same fields are accepted for
-    integration tests.
+    This is the product seam over the durable LangGraph runtime:
+    ``RuntimeResult`` exposes ``case``, ``pending_interrupt``, ``next_nodes``
+    and ``checkpoint_id`` as an immutable, detached audit view. Mapping
+    fixtures with the same fields are accepted for integration tests.
     """
 
     if hasattr(result, "model_dump"):
@@ -108,6 +108,33 @@ def normalize_runtime_result(result: Any) -> dict[str, Any]:
         next_nodes=list(payload.get("next_nodes") or []),
         checkpoint_id=payload.get("checkpoint_id"),
     )
+
+
+def normalize_runtime_history(results: Any) -> list[dict[str, Any]]:
+    """Return a compact JSON audit trail from detached runtime history results."""
+
+    history: list[dict[str, Any]] = []
+    for result in results:
+        if hasattr(result, "model_dump"):
+            payload = result.model_dump(mode="json")
+        elif isinstance(result, Mapping):
+            payload = copy.deepcopy(dict(result))
+        else:
+            raise TypeError("runtime history items must be mappings or Pydantic models")
+        case = payload.get("case")
+        if not isinstance(case, Mapping):
+            raise ValueError("runtime history item lacks a case mapping")
+        pending = payload.get("pending_interrupt")
+        history.append(
+            {
+                "checkpoint_id": payload.get("checkpoint_id"),
+                "status": case.get("status"),
+                "case_version": case.get("case_version"),
+                "pending_kind": pending.get("kind") if isinstance(pending, Mapping) else None,
+                "next_nodes": list(payload.get("next_nodes") or []),
+            }
+        )
+    return history
 
 
 class DurableRuntimeAdapter:
@@ -208,6 +235,7 @@ class DurableRuntimeAdapter:
             "closure": None,
             "evaluation_report": None,
             "checkpoint_id": None,
+            "checkpoint_history": [],
             "next_nodes": [],
         }
 
@@ -237,7 +265,10 @@ class DurableRuntimeAdapter:
                 thread_id=current["thread_id"],
                 scope_lot_ids=scope or None,
             )
-        return self._project_failure(self._normalize_result(result), current, applied)
+            history = await runtime.get_case_history(thread_id=current["thread_id"])
+        return self._project_failure(
+            self._normalize_result(result, history=history), current, applied
+        )
 
     async def load_case(self, thread_id: str) -> dict[str, Any]:
         async with RecallOpsRuntime.open(
@@ -246,9 +277,10 @@ class DurableRuntimeAdapter:
             transport=self.transport,
         ) as runtime:
             result = await runtime.get_case(thread_id=thread_id)
+            history = await runtime.get_case_history(thread_id=thread_id)
         if result is None:
             raise KeyError(f"Unknown durable thread {thread_id!r}.")
-        return self._normalize_result(result)
+        return self._normalize_result(result, history=history)
 
     async def resume_review(
         self,
@@ -281,12 +313,15 @@ class DurableRuntimeAdapter:
                 result = await runtime.resume_case(
                     thread_id=current["thread_id"], response=response
                 )
+                history = await runtime.get_case_history(thread_id=current["thread_id"])
         except ValueError as error:
             if applied and current.get("ui_failure_request") == "stale_decision_version":
                 restored = await self.load_case(current["thread_id"])
                 return self._project_failure(restored, current, True, observed_detail=str(error))
             raise
-        return self._project_failure(self._normalize_result(result), current, applied)
+        return self._project_failure(
+            self._normalize_result(result, history=history), current, applied
+        )
 
     async def simulate_approved_actions(self, case: Mapping[str, Any]) -> dict[str, Any]:
         current = self._bound_copy(case)
@@ -302,7 +337,10 @@ class DurableRuntimeAdapter:
         ) as runtime:
             applied = self._arm_failure(runtime, current, stage="simulate")
             result = await runtime.resume_case(thread_id=current["thread_id"], response=response)
-        return self._project_failure(self._normalize_result(result), current, applied)
+            history = await runtime.get_case_history(thread_id=current["thread_id"])
+        return self._project_failure(
+            self._normalize_result(result, history=history), current, applied
+        )
 
     async def request_closure(self, case: Mapping[str, Any]) -> dict[str, Any]:
         """Reload authoritative checkpoint state and present its closure gates read-only."""
@@ -444,8 +482,9 @@ class DurableRuntimeAdapter:
             raise ValueError("Current case version is required.")
         return current
 
-    def _normalize_result(self, result: Any) -> dict[str, Any]:
+    def _normalize_result(self, result: Any, *, history: Any = ()) -> dict[str, Any]:
         projected = normalize_runtime_result(result)
+        projected["checkpoint_history"] = normalize_runtime_history(history)
         projected["transport_mode"] = self.transport_label
         return projected
 

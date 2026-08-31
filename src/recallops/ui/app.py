@@ -511,6 +511,13 @@ def _render_audit() -> None:
             st.dataframe([asdict(row) for row in timeline], width="stretch", hide_index=True)
         else:
             st.info("No audit timeline has been returned.")
+        checkpoint_history = case.raw.get("checkpoint_history", [])
+        if checkpoint_history:
+            st.markdown("### Durable checkpoint history")
+            st.caption(
+                "Detached, read-only checkpoint summaries; no graph runner or mutable runtime state is exposed."
+            )
+            st.dataframe(checkpoint_history, width="stretch", hide_index=True)
         st.markdown("### Receipts and review history")
         history = case.raw.get("review_history", [])
         if history:
