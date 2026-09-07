@@ -13,7 +13,7 @@ import streamlit as st
 
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
-from recallops.ui.evaluation_reports import load_evaluation_scorecard
+from recallops.ui.evaluation_reports import EvaluationProjection, load_evaluation_scorecard
 from recallops.ui.presenters import (
     DECISIONS,
     EQUATION,
@@ -26,12 +26,14 @@ from recallops.ui.presenters import (
     build_evaluation_rows,
     build_evidence_rows,
     build_lineage_rows,
+    build_live_summary_rows,
     build_match_rows,
     build_orchestration_delta_rows,
     build_predicate_rows,
     build_receipt_rows,
     build_reconciliation_presentation,
     build_retrieval_ablation_rows,
+    build_retrieval_chart_spec,
     build_retrieval_delta_rows,
     build_retrieval_rows,
     build_review_packet,
@@ -511,8 +513,11 @@ def _render_human_review() -> None:
 
 
 def _render_evaluation() -> None:
-    paths = RepositoryPaths(Path(os.environ.get("RECALLOPS_REPOSITORY_ROOT", PROJECT_ROOT)))
-    projection = load_evaluation_scorecard(paths)
+    try:
+        paths = RepositoryPaths(Path(os.environ.get("RECALLOPS_REPOSITORY_ROOT", PROJECT_ROOT)))
+        projection = load_evaluation_scorecard(paths)
+    except (OSError, RuntimeError, ValueError):
+        projection = EvaluationProjection()
     st.markdown("### Evaluation scorecard")
     if projection.verification_status != "verified":
         st.warning(
@@ -577,7 +582,7 @@ def _render_evaluation() -> None:
     selected = None if family == "All families" else family
     rows = build_retrieval_ablation_rows(projection, selected)
     st.dataframe(rows, width="stretch", hide_index=True)
-    st.bar_chart(rows, x="Configuration", y=["Recall@5", "nDCG@5"])
+    st.vega_lite_chart(rows, spec=build_retrieval_chart_spec(rows), width="stretch")
     st.dataframe(build_retrieval_delta_rows(projection), width="stretch", hide_index=True)
     st.caption(
         "Critic stop counts; rewrite wins/losses/no-change, citation precision, grounding, routing, latency and budget compliance appear in the ablation table."
@@ -598,6 +603,12 @@ def _render_evaluation() -> None:
     st.caption(
         f"Status: {projection.optional_live_status} · Excluded from offline gates · Model judges: not used"
     )
+    live_rows = build_live_summary_rows(projection)
+    if live_rows:
+        st.caption(
+            "Model and prompt are identified by persisted SHA-256 digests. Rates are case means; usage totals are shown only when available in the verified live report."
+        )
+        st.dataframe(live_rows, width="stretch", hide_index=True)
     st.markdown("##### Artifact digests")
     st.caption(
         "Report/corpus SHA-256 values bind exact file bytes. The scorecard SHA-256 is its canonical self-digest with the self-digest field excluded. Source reports do not record generation timestamps."

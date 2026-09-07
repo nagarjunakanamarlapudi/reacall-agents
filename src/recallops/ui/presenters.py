@@ -12,9 +12,76 @@ import html
 import re
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from recallops.ui.evaluation_reports import EvaluationProjection
+if TYPE_CHECKING:
+    from recallops.ui.evaluation_reports import EvaluationProjection
+
+
+def build_retrieval_chart_spec(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare distinct unit-scale metrics side by side, in artifact order."""
+    return {
+        "mark": "bar",
+        "transform": [{"fold": ["Recall@5", "nDCG@5"], "as": ["Metric", "Score"]}],
+        "encoding": {
+            "x": {
+                "field": "Configuration",
+                "type": "nominal",
+                "sort": [row["Configuration"] for row in rows],
+            },
+            "xOffset": {"field": "Metric", "type": "nominal", "sort": ["Recall@5", "nDCG@5"]},
+            "y": {
+                "field": "Score",
+                "type": "quantitative",
+                "stack": None,
+                "scale": {"domain": [0, 1]},
+            },
+            "color": {
+                "field": "Metric",
+                "type": "nominal",
+                "scale": {"domain": ["Recall@5", "nDCG@5"]},
+            },
+            "tooltip": [
+                {"field": "Configuration"},
+                {"field": "Metric"},
+                {"field": "Score", "type": "quantitative"},
+            ],
+        },
+    }
+
+
+def build_live_summary_rows(projection: EvaluationProjection) -> list[dict[str, str]]:
+    if (
+        projection.verification_status != "verified"
+        or projection.optional_live_summary.status != "completed"
+    ):
+        return []
+    live = projection.optional_live_summary
+    values = (
+        ("Provider", live.provider),
+        ("Model SHA-256", live.model_sha256),
+        ("Prompt SHA-256", live.prompt_sha256),
+        ("Repetitions", live.repetitions),
+        ("Executed cases", live.executed_case_count),
+        ("Task success rate", live.task_success_rate),
+        ("Evidence fact coverage", live.evidence_fact_coverage),
+        ("Budget compliance", live.budget_compliance),
+        ("Total tool calls", live.total_tool_calls),
+        ("Duplicate tool call ratio", live.duplicate_tool_call_ratio),
+        ("Prohibited tool calls", live.prohibited_tool_call_count),
+        ("Duration (ms)", live.duration_ms),
+        ("Tokens available", live.tokens_available),
+        ("Tokens", live.tokens if live.tokens_available else None),
+        ("Cost available", live.cost_available),
+        ("Estimated cost", live.estimated_cost if live.cost_available else None),
+    )
+    return [
+        {
+            "Live metric": label,
+            "Value": "Unavailable" if value is None else mask_display_value(value),
+        }
+        for label, value in values
+    ]
 
 
 def build_retrieval_ablation_rows(

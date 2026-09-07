@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -8,6 +9,49 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 APP = Path(__file__).parents[2] / "src" / "recallops" / "ui" / "app.py"
+
+
+@pytest.mark.parametrize("mode", ["demo", "durable"])
+def test_audit_symlink_loop_keeps_all_sections_and_closure_controls(monkeypatch, tmp_path, mode):
+    repository = tmp_path / "repository"
+    _write_compact_evaluation_report(repository)
+    path = repository / "data" / "evals" / "retrieval_report.json"
+    path.unlink()
+    path.symlink_to(path.name)
+    monkeypatch.setenv("RECALLOPS_UI_MODE", mode)
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("RECALLOPS_REPOSITORY_ROOT", str(repository))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.button(key="open_case_button").click().run()
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    assert not app.exception
+    assert any("Unavailable" in item.value for item in app.warning)
+    rendered = "\n".join(item.value for item in app.markdown)
+    assert all(
+        name in rendered for name in ("Safety", "Retrieval quality", "Orchestration quality")
+    )
+    assert sum(item.value == "Unavailable" for item in app.markdown) == 3
+    assert not app.button(key="request_closure_button").disabled
+    assert app.button(key="inject_failure_button")
+    assert not app.success
+
+
+def test_completed_live_metrics_render_separately(monkeypatch, completed_live_repository):
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
+    monkeypatch.setenv("RECALLOPS_REPOSITORY_ROOT", str(completed_live_repository.root))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    assert not app.exception
+    frames = [item.value for item in app.dataframe]
+    live = next(frame for frame in frames if "Live metric" in frame.columns)
+    values = dict(zip(live["Live metric"], live["Value"], strict=True))
+    assert values["Executed cases"] == "24"
+    assert values["Tokens"] == "264"
+    assert values["Estimated cost"] == "3.0"
+    assert values["Provider"] == "[MASKED]"
+    assert values["Model SHA-256"] == "a" * 64
+    assert "excluded from offline gate" in " ".join(item.value.lower() for item in app.caption)
+    assert any("Verified offline scorecard" in item.value for item in app.success)
 
 
 def test_audit_evaluation_available_without_opening_case_and_family_filter(monkeypatch, tmp_path):
@@ -32,6 +76,10 @@ def test_audit_evaluation_available_without_opening_case_and_family_filter(monke
     frames = [item.value for item in app.dataframe]
     assert any(len(frame) == 6 and "Recall@5" in frame.columns for frame in frames)
     assert any(len(frame) == 2 and "profile" in frame.columns for frame in frames)
+    chart = json.loads(app.get("vega_lite_chart")[0].proto.spec)
+    assert chart["encoding"]["xOffset"]["field"] == "Metric"
+    assert chart["encoding"]["y"]["stack"] is None
+    assert chart["encoding"]["y"]["scale"]["domain"] == [0, 1]
     app.selectbox(key="ui_evaluation_family").set_value("lineage").run()
     frame = next(item.value for item in app.dataframe if "Recall@5" in item.value.columns)
     assert list(frame["Cases"]) == [16] * 6

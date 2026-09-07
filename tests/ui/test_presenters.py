@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -732,3 +732,46 @@ def test_evaluation_presenters_escape_labels_and_mask_sensitive_text():
     assert "&lt;script&gt;" in str(rows)
     projection.retrieval.configurations[0]["name"] = "user@example.com sk-examplekey123"
     assert presenters.build_retrieval_ablation_rows(projection)[0]["Configuration"] == "[MASKED]"
+
+
+def test_retrieval_chart_groups_metrics_on_unit_scale_in_report_order():
+    rows = [
+        {"Configuration": name, "Recall@5": 0.75, "nDCG@5": 0.8}
+        for name in (
+            "sparse_bm25",
+            "dense_lsa",
+            "naive_hybrid",
+            "rrf_fusion",
+            "rrf_plus_rerank",
+            "agentic_rag",
+        )
+    ]
+    spec = presenters.build_retrieval_chart_spec(rows)
+    encoding = spec["encoding"]
+    assert encoding["x"]["sort"] == [row["Configuration"] for row in rows]
+    assert encoding["xOffset"]["field"] == "Metric"
+    assert encoding["y"]["stack"] is None
+    assert encoding["y"]["scale"]["domain"] == [0, 1]
+    assert spec["transform"][0]["fold"] == ["Recall@5", "nDCG@5"]
+
+
+def test_live_presenter_escapes_untrusted_labels_and_never_renders_noncompleted_rows(
+    completed_live_repository,
+):
+    from recallops.ui.evaluation_reports import load_evaluation_scorecard
+
+    projection = load_evaluation_scorecard(completed_live_repository)
+    unsafe = replace(
+        projection,
+        optional_live_summary=replace(
+            projection.optional_live_summary, provider='<script>alert("x")</script>'
+        ),
+    )
+    rows = presenters.build_live_summary_rows(unsafe)
+    assert "<script>" not in str(rows) and "&lt;script&gt;" in str(rows)
+    for status in ("error", "not_run_missing_credentials"):
+        compact = replace(
+            projection,
+            optional_live_summary=replace(projection.optional_live_summary, status=status),
+        )
+        assert presenters.build_live_summary_rows(compact) == []
