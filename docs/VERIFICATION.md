@@ -212,3 +212,171 @@ Observed target results:
 An initial verification attempt ran `make setup` and `make diagrams` concurrently; `npm ci` replaced `node_modules` while Mermaid was importing Puppeteer, so that render attempt failed. After setup completed, the documented serial `make diagrams` invocation passed with full parity. The composed `make verify` target does not include setup and therefore cannot create that race.
 
 `make -s -n verify` expanded to all 14 expected underlying commands: data validation; Ruff format/lint; lock and package checks; complete pytest; notebook rebuild/execution; diagram parity; MCP smoke; evaluator summary; Python dependency audit; medium/high Bandit gate; and production npm audit.
+
+## Evaluation expansion final integration — 7 September 2026
+
+**Integrated code and artifact baseline inspected:** `main` at
+`a9ef2c27ae1a36f21b9d8794994c55795782a639`. The following documentation-only
+evidence is appended by the surrounding final Task 11 commit.
+
+### Scope ruling and literal Make workflow
+
+Task 11 exposed an integration defect in the written four-command sequence. At
+the pre-fix baseline `869caa9`, fresh `make eval-safety`, `make eval-retrieval`,
+and `make eval-orchestration` reports all passed independently, but the following
+`make eval-summary` correctly exited nonzero because the existing scorecard was
+still bound to the previous report bytes. The failure was preserved; no measured
+output was edited.
+
+The coordinator explicitly brought the minimal upstream correction into Task 11
+scope. A RED integration test first reproduced the stale-scorecard failure. The
+Makefile now declares `scorecard.json` as a file target depending on all three
+suite reports. Make rebuilds the aggregate from validated report bytes only when
+one of those inputs is newer, after which `eval-summary` remains a strict
+validator. The focused Make suite finished `13 passed`. The exact literal
+sequence was then rerun:
+
+```bash
+make eval-safety
+make eval-retrieval
+make eval-orchestration
+make eval-summary
+```
+
+Observed: all four commands exited 0. Safety finished 21/21; retrieval finished
+96 cases × 6 configurations = 576 persisted results; orchestration finished 24
+cases × 2 offline profiles = 48 persisted results; and the digest-bound combined
+offline gate passed.
+
+### Fresh deterministic evaluation observations
+
+The safety report contains 21 result rows and 320 assertion observations. Every
+required rate is 1.0, while unauthorized writes, duplicate logical writes, false
+closes, and receipt-integrity violations are all zero.
+
+The fresh retrieval report recorded:
+
+| Measurement | Observed value |
+|---|---:|
+| Agentic RAG Recall@5 | 0.9753787878787878 |
+| Agentic RAG nDCG@5 | 0.9521676712287099 |
+| Fusion Recall@5 delta | +0.005681818181818121 |
+| Rerank nDCG@5 delta | +0.005266955662502459 |
+| Agentic prohibited hits | 0 |
+| Agentic unsupported answers | 0 |
+
+The fresh orchestration report recorded task success and evidence coverage of
+1.0 for both `bounded_single_agent` and `fixed_specialists`, 150 total tool calls
+for each profile, zero duplicate tool-call ratio, zero prohibited-tool exposure,
+and zero prohibited calls. The measured fixed-specialist minus single-agent
+deltas were 0.0 for task success, evidence coverage, duplicate-call ratio, and
+total calls; measured timing deltas remained visible rather than being converted
+into an uplift claim. Optional live Deep Agents remained
+`not_run_missing_credentials`, with zero executed cases and no token or cost
+claim; it was excluded from the offline gate.
+
+Content-integrity anchors at the inspected commit:
+
+```text
+d5e57b2db680d5925882c91585386141f82f4a43e898ba04e9e212e3e0c7bb31  scenarios.json
+f2e347a72d4e8d0b9388cde3cf00f2fbf4e0fc834e1f34da875b5a68caed7976  report.json
+f2759a1d993a5eec0be253aeecef25159aabe9e92b1eb5da422ed5649c4ea9bd  retrieval_cases.json
+a23dadb43963b39819afdab5b2884ba6d583e8ad6139f298ae076d27360820dd  retrieval_report.json
+ab10bc840cb47720392304406f363fcb8ced2c3562ff8613faf1046f12f7730c  orchestration_cases.json
+466ebcbee7ad9167b2a9a4c634c4682c26ee6bdfc39f5ef7391bf56a12dd95bf  orchestration_report.json
+94036038a5025fa342d874cd72ba7fe025799204b6d1e549e250329228a01f03  canonical scorecard self-digest
+```
+
+The scorecard additionally binds all six corpus/report file digests. Its file
+SHA-256 is `9d0b74bb9bc30f00b22b3da901b9737f46166084cfc2ba3b7ff087e642591ab5`;
+the different canonical self-digest above excludes its own digest field by
+design.
+
+### Complete product gates
+
+Commands and exact observations:
+
+| Command | Observed result |
+|---|---|
+| `make data-validate` | Exit 0; 48 products, 144 lots, and 577 events; official/synthetic boundary labels present. |
+| `make test` | Exit 0; `1292 passed in 907.38s (0:15:07)` against the post-fix integrated baseline. |
+| `make lint` | Exit 0; 110 files formatted, Ruff clean, 180 lock packages resolved, and 172 installed packages compatible. |
+| `make notebooks` | Exit 0; seven notebooks rebuilt and `10 passed`. |
+| `make diagrams` | Exit 0; ten diagrams passed stable double-render and committed-SVG parity. |
+| `make mcp-smoke` | Exit 0; `16 passed in 228.35s (0:03:48)` across direct and stdio behavior. |
+| `make security` | Exit 0; pip-audit found no known vulnerabilities, Bandit found no medium/high issues, and the production npm tree had zero vulnerabilities. |
+
+The ten committed diagram SHA-256 values from the stable fresh render were:
+
+```text
+3ff4bde62dfe8ad1d8fb344fcc283c41e725d956bdedfbd8fc1749fb0cd10679  01_data_provenance.svg
+289e3a8a14113a8af563b103b3a7e92652a9b5be4c86f45eaee7c23f65012af7  02_system_architecture.svg
+487680c071ca59bb605111b48387c20a21c639ada11b958be80b63498e9d90a6  03_orchestration.svg
+948c29396f5680442d1624964d799bba06d805d8f22a23b107be5caa0303d52c  04_mcp_tool_safety.svg
+08254a3cb9c88f080b88a312437f56d96062a78be6bbbd23a3befcf5594d0645  05_middleware_lifecycle.svg
+840ac98dd6b9c4420a3385b5bf2cb39f77eee1b517cb51cb0257fe9a6dc15c7c  06_hitl_closure.svg
+0dc1679282f22b591e32fb115f1994af5dde3ac02319eed5cd50a9ef4d1eef4f  07_demo_story.svg
+50dcb3be9670a4820726fa4bdb9ef7ed860b802aefa0cfca3c9253b2847523e0  08_business_recall_lifecycle.svg
+3e9c78b6c3b5eb83b911e3c37bdcd131e517cf4015198a2556be9fac72af98f3  09_domain_evidence_model.svg
+eb3d274e1e73d848b8e8e23a7a51546c6424237c6d422712e934705728b1cb15  10_evaluation_architecture.svg
+```
+
+`make security-full` was run separately and intentionally exited 2. It reported
+38 low-severity Bandit findings, zero medium/high findings, no known Python
+dependency vulnerabilities, zero production npm vulnerabilities, and five high
+findings confined to the pinned Mermaid/Puppeteer development renderer chain.
+No forced dependency change was applied.
+
+### Durable direct and stdio UI evidence
+
+Two independent Streamlit processes used distinct ports and fresh exact runtime
+directories created under `/tmp`:
+
+| Mode | Port | Runtime directory | Root response | Evaluation AppTest |
+|---|---:|---|---|---|
+| Durable direct | 8771 | `/tmp/recallops-task11-direct.PwnGWe` | `200 text/html; charset=utf-8`, 11,141 bytes | 1 passed |
+| Durable stdio | 8772 | `/tmp/recallops-task11-stdio.BgHCuS` | `200 text/html; charset=utf-8`, 11,141 bytes | 1 passed |
+
+Each AppTest opened the durable case, selected **Audit & Evaluation**, verified
+the committed report metrics plus R13/R18, and produced no exception. Only the
+two spawned Streamlit sessions were interrupted after the checks.
+
+### Six adversarial temporary-copy probes
+
+Each mutation was applied to a separate copy under one fresh temporary
+repository. The relevant CLI validator exited 1 and the UI projector returned
+`verification_status=unavailable` plus `offline_gate_passed=False` in every case:
+
+1. changed one retrieval relevance grade;
+2. deleted one persisted retrieval result and recomputed the report self-digest;
+3. replaced one retrieval report self-digest;
+4. set the orchestration prohibited-tool count to one and recomputed its self-digest;
+5. forged `offline_gate_passed` and recomputed the scorecard self-digest; and
+6. removed `optional_live_status` and recomputed the scorecard self-digest.
+
+This demonstrates that corpus, completeness, report-integrity, safety-isolation,
+aggregate-consistency, and optional-live schema mutations fail closed in both
+the command and presentation boundaries.
+
+### Final static, dependency, documentation, and repository gate
+
+Commands:
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv lock --check
+uv pip check
+uv run pytest --collect-only -q
+uv run pytest -q tests/docs/test_documentation.py
+git diff --check
+git status --short --branch
+```
+
+Observed: all commands exited 0. Ruff reported 110 files already formatted and
+no lint findings; the lock resolved 180 packages; all 172 installed packages
+were compatible; pytest collected exactly 1,292 tests; the documentation
+contract finished `40 passed in 23.81s`; and patch whitespace was clean. The
+pre-commit status listed only this verification record and its synchronized
+submission checklist. After the final evidence commit, a separate status check
+confirmed a clean `main` worktree.
