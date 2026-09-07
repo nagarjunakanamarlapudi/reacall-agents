@@ -462,6 +462,13 @@ class DocumentationContractTests(unittest.TestCase):
             for target in targets:
                 self.assertIn(target, content, f"{path.name} must feature {target}")
 
+    def test_submission_entrypoints_distinguish_current_demo_and_verification_scope(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        checklist = (DOCS / "SUBMISSION_CHECKLIST.md").read_text(encoding="utf-8")
+
+        self.assertIn("The Streamlit walkthrough then shows two complete consent cycles", readme)
+        self.assertIn("current post-remediation complete tree finishes `1347 passed`", checklist)
+
     def test_evaluation_demo_contract_is_bounded_and_matches_committed_reports(self) -> None:
         contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
         retrieval = json.loads(

@@ -80,7 +80,7 @@ The flagship mixed-lot case reaches human review with official citations, synthe
 
 `received = on_hand + quarantined + sold + returned + disposed + unaccounted`
 
-The demo then shows two complete consent cycles:
+The Streamlit walkthrough then shows two complete consent cycles:
 
 1. approve `create_case`, separately confirm execution, and record the v0→v1 receipt;
 2. review the newly planned `apply_inventory_hold`, approve it, separately confirm execution, and record the v1→v2 receipt.

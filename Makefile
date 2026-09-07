@@ -85,7 +85,7 @@ ui-stdio:
 	RECALLOPS_RUNTIME_DIR="$(RUNTIME_DIR)" RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py --server.port "$(PORT)"
 
 mcp-config:
-	uv run recallops mcp-config
+	@uv run recallops mcp-config
 
 mcp-smoke:
 	uv run pytest -q tests/integration/test_mcp_servers.py

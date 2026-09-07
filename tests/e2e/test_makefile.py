@@ -109,6 +109,24 @@ def test_make_ui_stdio_dry_run_selects_stdio_transport() -> None:
     assert "RECALLOPS_MCP_TRANSPORT=stdio" in result.stdout
 
 
+def test_make_mcp_config_outputs_machine_readable_json() -> None:
+    result = subprocess.run(
+        ["make", "--no-print-directory", "-f", str(ROOT / "Makefile"), "mcp-config"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert set(payload["mcpServers"]) == {
+        "recall-registry",
+        "traceability",
+        "operations",
+    }
+
+
 def test_make_verify_dry_run_covers_submission_gates() -> None:
     result = _make("-n", "verify")
 

@@ -47,12 +47,13 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 - [x] The 4:55 walkthrough is rehearsed with the exact copy/paste card, exact 45-second evaluation narration, and a fresh explicit runtime directory.
 - [x] No secret, real PII, unlabelled synthetic claim, production action claim, unsupported test count, or stale integration-status wording remains.
 
-## Final Task 11 evidence — 7 September 2026
+## Historical Task 11 integration evidence — 7 September 2026
 
 - [x] The literal `eval-safety → eval-retrieval → eval-orchestration → eval-summary` sequence exits 0 from the integrated `main` baseline `a9ef2c27ae1a36f21b9d8794994c55795782a639`; the scorecard is rebuilt only when a validated suite report is newer.
 - [x] Fresh artifacts contain 21/21 safety results with 320 assertions, 96 retrieval cases with 576 results, 24 orchestration cases with 48 offline results, and one passing six-digest scorecard.
-- [x] The post-fix complete tree finishes `1292 passed`; the focused Make contract finishes `13 passed`; the MCP direct/stdio smoke finishes `16 passed`.
+- [x] At that integration checkpoint, the complete tree finished `1292 passed`; the focused Make contract finished `13 passed`; the MCP direct/stdio smoke finished `16 passed`.
 - [x] Durable direct and stdio Streamlit processes each return HTTP 200 on distinct ports and fresh runtimes, and each transport environment passes the Audit & Evaluation AppTest.
 - [x] Relevance, completeness, digest, prohibited-tool, aggregate-gate, and optional-live mutations each produce a nonzero validator plus a non-passing UI projection.
 - [x] Production security audits the fully hashed `uv.lock` production export with no advisory ignores and exits 0; the separate full audit records 43 low Bandit findings and five development-only Mermaid/Puppeteer advisories without a forced npm upgrade.
 - [x] Exact artifact hashes, all ten diagram hashes, measured retrieval/orchestration deltas, optional-live status, and command outcomes are recorded in [Verification](VERIFICATION.md#evaluation-expansion-final-integration--7-september-2026).
+- [x] The current post-remediation complete tree finishes `1347 passed`; the FastMCP/MCP-focused selection finishes `37 passed`; and the final Make/CI/dependency/documentation contracts finish `63 passed`.
