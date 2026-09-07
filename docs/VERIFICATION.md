@@ -412,3 +412,29 @@ safety gate reported 21/21 safety-critical scenarios passed; the combined
 scorecard reported safety 21/21, retrieval 96 cases/576 results, orchestration 24
 cases/48 results, and `Offline evaluation gate: PASSED`. Ruff format/lint and
 patch-whitespace checks exited zero.
+
+## 2026-09-07 Runtime-only authorization and evaluator-scope follow-up
+
+The consumer `OperationsService` and MCP gateway surfaces now expose no workflow
+reservation, claim, recovery, or grant-issuance method. A runtime-only broker is
+bound to the checkpoint store's persisted random UUIDv4 capability. The active
+attempt stores the exact confirmed execution ID and execution-request digest;
+issuance and atomic consumption both authenticate those bindings alongside the
+checkpoint head, workflow request, case/version, action, actor, and operation
+request.
+
+R15/R16 lifecycle receipts are explicitly tagged
+`privileged_lower_layer_lifecycle_fixture`. They remain evidence for sequence,
+integrity, and closure assertions but are excluded from the end-to-end
+dual-consent population. A mirrored approval-only fixture cannot authorize a
+runtime receipt, and omitted or promoted scope is rejected during persisted
+report validation.
+
+Fresh observed results: consumer-service/lifecycle unit tests `63 passed`;
+workflow `92 passed`; direct/real-stdio MCP `23 passed`; evaluator end-to-end
+`33 passed`; scorecard/tamper validation `241 passed`; safety `21/21` with
+`320/320` assertions and all four unsafe counters zero. `make eval-summary`
+reported every offline suite passing. The regenerated bindings are safety corpus
+`483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`, safety
+report `76dad415cc0c18e79942ce82ca3db6050a559e47e4b2276e2471539dac96a8ad`, and
+scorecard `b11edb68db8783d26812434b7e6f5b119ee551195d25aa15e522fd17137d8346`.

@@ -26,7 +26,7 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 Each action uses two separate durable interrupts:
 
 1. **Action review.** `interrupt()` presents one exact `ProposedAction`, current case version, canonical SHA-256 action digest, official/synthetic evidence, RAG citations/gaps, verification, and remaining action types. `approve` records an `ApprovalDecision` but performs zero writes.
-2. **Execution confirmation.** The graph derives a stable execution UUID and idempotency key from thread/version/action/digest, then pauses again. Only a matching `confirm` response powers **Simulate approved actions** and permits the active checkpoint resume to mint one single-use, request-bound execution grant.
+2. **Execution confirmation.** The graph derives a stable execution UUID and idempotency key from thread/version/action/digest, then pauses again. Only a matching `confirm` response powers **Simulate approved actions** and permits the runtime-only authorization broker to mint one single-use grant bound to the active checkpoint head and exact execution request. Normal service and MCP consumers can only consume that capability; they cannot create one.
 
 `edit` may change rationale only and returns through verification/re-review. Scope, target IDs, evidence IDs, action type, case identity, and version are immutable. `reject` keeps the case open without execution. `escalate` ends safely. `cancel` at execution confirmation also writes nothing.
 

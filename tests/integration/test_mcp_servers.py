@@ -5,6 +5,7 @@ import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -22,6 +23,7 @@ from recallops.services.operations import (
     ApprovalRequiredError,
     IdempotencyConflictError,
     OperationsService,
+    _workflow_authorization_broker,
 )
 from recallops.services.traceability import TraceabilityService
 
@@ -233,9 +235,14 @@ class WorkflowGrantedGateway:
             return await getattr(self.gateway, name)(**kwargs, execution_grant="completed-replay")
         state = self.operations.get_case(case_id)
         thread_id = kwargs.get("thread_id") or (state.thread_id if state else case_id)
-        owner = f"MCP-TEST-OWNER:{case_id}"
+        with sqlite3.connect(self.operations.storage_path) as connection:
+            owner_row = connection.execute(
+                "SELECT owner_token FROM workflow_identities WHERE case_id=?", (case_id,)
+            ).fetchone()
+        owner = owner_row[0] if owner_row and owner_row[0] else str(uuid4())
+        broker = _workflow_authorization_broker(self.operations, owner)
         if self.operations.get_thread_for_case(case_id) is None:
-            self.operations.reserve_workflow_identity(case_id, thread_id, owner)
+            broker.reserve_workflow_identity(case_id, thread_id)
         with sqlite3.connect(self.operations.storage_path) as connection:
             head = connection.execute(
                 "SELECT checkpoint_head FROM workflow_identities WHERE case_id=?", (case_id,)
@@ -243,9 +250,19 @@ class WorkflowGrantedGateway:
         request_digest = hashlib.sha256(
             f"{case_id}:{thread_id}:{head}:{name}:{expected}:{key}".encode()
         ).hexdigest()
-        attempt = f"MCP-ATTEMPT:{name}:{expected}:{key}"
-        self.operations.claim_workflow_mutation(
-            case_id, thread_id, owner, head, attempt, request_digest
+        attempt = str(uuid4())
+        execution_id = f"MCP-EXECUTION:{name}:{expected}:{key}"
+        execution_request_digest = hashlib.sha256(
+            f"mcp-execution:{case_id}:{name}:{expected}:{key}".encode()
+        ).hexdigest()
+        broker.claim_workflow_mutation(
+            case_id,
+            thread_id,
+            head,
+            attempt,
+            request_digest,
+            execution_id=execution_id,
+            execution_request_digest=execution_request_digest,
         )
         fields = {
             "create_case": (
@@ -280,17 +297,15 @@ class WorkflowGrantedGateway:
         action = kwargs["proposed_action"]
         approval = kwargs["approval"]
         try:
-            grant = self.operations.issue_workflow_execution_grant(
+            grant = broker.issue_workflow_execution_grant(
                 case_id=case_id,
                 thread_id=thread_id,
                 proposed_action=action,
                 approval=approval,
                 expected_case_version=expected,
                 idempotency_key=key,
-                execution_id=f"MCP-EXECUTION:{name}:{expected}:{key}",
-                execution_request_digest=hashlib.sha256(
-                    f"mcp-execution:{case_id}:{name}:{expected}:{key}".encode()
-                ).hexdigest(),
+                execution_id=execution_id,
+                execution_request_digest=execution_request_digest,
                 details=details,
                 target_ids=list(action.target_ids),
                 evidence_ids=(
@@ -303,14 +318,11 @@ class WorkflowGrantedGateway:
             )
             receipt = await getattr(self.gateway, name)(**kwargs, execution_grant=grant)
         except BaseException:
-            self.operations.release_workflow_mutation(
-                case_id, thread_id, owner, head, attempt, request_digest
-            )
+            broker.release_workflow_mutation(case_id, thread_id, head, attempt, request_digest)
             raise
-        self.operations.advance_workflow_mutation(
+        broker.advance_workflow_mutation(
             case_id,
             thread_id,
-            owner,
             head,
             f"MCP-CHECKPOINT:{case_id}:{receipt['case_version']}:{receipt['receipt_id']}",
             attempt,

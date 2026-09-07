@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
 
@@ -60,7 +60,7 @@ def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-class OperationsService:
+class _OperationsStore:
     """Every mutation is one SQLite IMMEDIATE transaction with a CAS version check."""
 
     def __init__(
@@ -94,6 +94,7 @@ class OperationsService:
                       case_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL UNIQUE,
                       owner_token TEXT, checkpoint_head TEXT, attempt_token TEXT,
                       attempt_expected_head TEXT, attempt_request_digest TEXT,
+                      attempt_execution_id TEXT, attempt_execution_request_digest TEXT,
                       attempt_state TEXT,
                       attempt_expires_at REAL);
                     CREATE TABLE IF NOT EXISTS receipts (
@@ -166,6 +167,8 @@ class OperationsService:
                 ("attempt_token", "TEXT"),
                 ("attempt_expected_head", "TEXT"),
                 ("attempt_request_digest", "TEXT"),
+                ("attempt_execution_id", "TEXT"),
+                ("attempt_execution_request_digest", "TEXT"),
                 ("attempt_state", "TEXT"),
                 ("attempt_expires_at", "REAL"),
             ):
@@ -643,6 +646,7 @@ class OperationsService:
     def issue_workflow_execution_grant(
         self,
         *,
+        owner_token: str,
         case_id: str,
         thread_id: str,
         proposed_action: ProposedAction,
@@ -664,6 +668,7 @@ class OperationsService:
         for name, value in (
             ("case_id", case_id),
             ("thread_id", thread_id),
+            ("owner_token", owner_token),
             ("execution_id", execution_id),
             ("idempotency_key", idempotency_key),
         ):
@@ -691,18 +696,22 @@ class OperationsService:
         try:
             with self._transaction() as conn:
                 identity = conn.execute(
-                    "SELECT thread_id, owner_token, checkpoint_head, attempt_expected_head, "
-                    "attempt_request_digest, attempt_state, attempt_expires_at "
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
+                    "attempt_expected_head, attempt_request_digest, attempt_execution_id, "
+                    "attempt_execution_request_digest, attempt_state, attempt_expires_at "
                     "FROM workflow_identities WHERE case_id=?",
                     (case_id,),
                 ).fetchone()
                 if (
                     identity is None
                     or identity["thread_id"] != thread_id
-                    or not identity["owner_token"]
+                    or identity["owner_token"] != owner_token
                     or not identity["checkpoint_head"]
+                    or not identity["attempt_token"]
                     or identity["attempt_expected_head"] != identity["checkpoint_head"]
                     or not identity["attempt_request_digest"]
+                    or identity["attempt_execution_id"] != execution_id
+                    or identity["attempt_execution_request_digest"] != execution_request_digest
                     or identity["attempt_state"] != "active"
                     or (identity["attempt_expires_at"] or 0) <= time.time()
                 ):
@@ -788,6 +797,8 @@ class OperationsService:
             "SELECT grant.*, identity.checkpoint_head AS active_checkpoint_head, "
             "identity.attempt_expected_head AS active_attempt_head, "
             "identity.attempt_request_digest AS active_request_digest, "
+            "identity.attempt_execution_id AS active_execution_id, "
+            "identity.attempt_execution_request_digest AS active_execution_request_digest, "
             "identity.attempt_state AS active_attempt_state, "
             "identity.attempt_expires_at AS active_attempt_expires_at "
             "FROM execution_grants AS grant "
@@ -812,6 +823,8 @@ class OperationsService:
             row["active_checkpoint_head"] != row["checkpoint_head"]
             or row["active_attempt_head"] != row["checkpoint_head"]
             or row["active_request_digest"] != row["workflow_request_digest"]
+            or row["active_execution_id"] != row["execution_id"]
+            or row["active_execution_request_digest"] != row["execution_request_digest"]
             or row["active_attempt_state"] != "active"
             or (row["active_attempt_expires_at"] or 0) <= time.time()
         ):
@@ -836,6 +849,8 @@ class OperationsService:
         attempt_token: str,
         request_digest: str,
         *,
+        execution_id: str | None = None,
+        execution_request_digest: str | None = None,
         lease_seconds: float = WORKFLOW_MUTATION_LEASE_SECONDS,
     ) -> None:
         """Atomically fence one mutation attempt at the exact durable checkpoint head."""
@@ -849,6 +864,12 @@ class OperationsService:
             if type(value) is not str or not value.strip():
                 raise ValueError(f"{name} must be a nonblank exact string")
         self._validate_request_digest(request_digest)
+        if (execution_id is None) != (execution_request_digest is None):
+            raise ValueError("execution_id and execution_request_digest must be supplied together")
+        if execution_id is not None:
+            if type(execution_id) is not str or not execution_id.strip():
+                raise ValueError("execution_id must be a nonblank exact string")
+            self._validate_request_digest(execution_request_digest)
         if isinstance(lease_seconds, bool) or not isinstance(lease_seconds, (int, float)):
             raise TypeError("lease_seconds must be a positive number")
         if lease_seconds <= 0:
@@ -858,8 +879,8 @@ class OperationsService:
             with self._transaction() as conn:
                 row = conn.execute(
                     "SELECT thread_id, owner_token, checkpoint_head, attempt_token, "
-                    "attempt_expected_head, attempt_request_digest, attempt_state, "
-                    "attempt_expires_at "
+                    "attempt_expected_head, attempt_request_digest, attempt_execution_id, "
+                    "attempt_execution_request_digest, attempt_state, attempt_expires_at "
                     "FROM workflow_identities "
                     "WHERE case_id=?",
                     (case_id,),
@@ -884,12 +905,15 @@ class OperationsService:
                     conn.execute(
                         "UPDATE workflow_identities SET attempt_token=?, "
                         "attempt_expected_head=?, attempt_request_digest=?, "
+                        "attempt_execution_id=?, attempt_execution_request_digest=?, "
                         "attempt_state='active', attempt_expires_at=? "
                         "WHERE case_id=? AND thread_id=? AND owner_token=?",
                         (
                             attempt_token,
                             expected_checkpoint_head,
                             request_digest,
+                            execution_id,
+                            execution_request_digest,
                             expires_at,
                             case_id,
                             thread_id,
@@ -904,6 +928,11 @@ class OperationsService:
                         raise ValueError(
                             "workflow mutation request digest does not match this attempt"
                         )
+                    if (
+                        row["attempt_execution_id"] != execution_id
+                        or row["attempt_execution_request_digest"] != execution_request_digest
+                    ):
+                        raise ValueError("workflow execution request does not match this attempt")
                     elif (
                         row["attempt_state"] == "active"
                         and (row["attempt_expires_at"] or 0) > time.time()
@@ -976,6 +1005,7 @@ class OperationsService:
                 conn.execute(
                     "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
                     "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_execution_id=NULL, attempt_execution_request_digest=NULL, "
                     "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (new_checkpoint_head, case_id),
@@ -1032,6 +1062,7 @@ class OperationsService:
                 conn.execute(
                     "UPDATE workflow_identities SET attempt_token=NULL, "
                     "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_execution_id=NULL, attempt_execution_request_digest=NULL, "
                     "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (case_id,),
@@ -1091,6 +1122,7 @@ class OperationsService:
                 conn.execute(
                     "UPDATE workflow_identities SET checkpoint_head=?, attempt_token=NULL, "
                     "attempt_expected_head=NULL, attempt_request_digest=NULL, "
+                    "attempt_execution_id=NULL, attempt_execution_request_digest=NULL, "
                     "attempt_state=NULL, attempt_expires_at=NULL "
                     "WHERE case_id=?",
                     (recovered_checkpoint_head, case_id),
@@ -1930,3 +1962,218 @@ class OperationsService:
             transform=lambda s: s.model_copy(update={"status": "closed"}),
             validator=validator,
         )
+
+
+class OperationsService:
+    """Consumer-facing Operations API: reads and grant-consuming mutations only."""
+
+    __slots__ = ("__store",)
+
+    def __init__(
+        self,
+        storage_path: Path | None = None,
+        failure_injector: Callable[[str], None] | None = None,
+        before_cas_hook: Callable[[str], None] | None = None,
+        traceability: TraceabilityService | None = None,
+    ) -> None:
+        self.__store = _OperationsStore(
+            storage_path=storage_path,
+            failure_injector=failure_injector,
+            before_cas_hook=before_cas_hook,
+            traceability=traceability,
+        )
+
+    @property
+    def storage_path(self) -> Path:
+        return self.__store.storage_path
+
+    @property
+    def source_mode(self) -> str:
+        return self.__store.source_mode
+
+    @property
+    def traceability(self) -> TraceabilityService:
+        return self.__store.traceability
+
+    def get_case(self, case_id: str) -> RecallCaseState | None:
+        return self.__store.get_case(case_id)
+
+    def get_receipt(self, idempotency_key: str) -> AuditReceipt | None:
+        return self.__store.get_receipt(idempotency_key)
+
+    def get_thread_for_case(self, case_id: str) -> str | None:
+        return self.__store.get_thread_for_case(case_id)
+
+    def get_case_id_for_thread(self, thread_id: str) -> str | None:
+        return self.__store.get_case_id_for_thread(thread_id)
+
+    def get_case_for_thread(self, thread_id: str) -> RecallCaseState | None:
+        return self.__store.get_case_for_thread(thread_id)
+
+    def get_lot_evidence_ids(self, lot_id: str) -> frozenset[str]:
+        return frozenset(self.__store._lot_evidence_ids(lot_id))
+
+    def get_facility_evidence_ids(
+        self,
+        state: RecallCaseState,
+        facility_id: str,
+    ) -> frozenset[str]:
+        return frozenset(self.__store._facility_evidence_ids(state, facility_id))
+
+    @property
+    def cases(self) -> dict[str, RecallCaseState]:
+        return self.__store.cases
+
+    def create_case(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.create_case(**kwargs)
+
+    def apply_inventory_hold(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.apply_inventory_hold(**kwargs)
+
+    def create_facility_tasks(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.create_facility_tasks(**kwargs)
+
+    def record_acknowledgment(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.record_acknowledgment(**kwargs)
+
+    def record_disposition(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.record_disposition(**kwargs)
+
+    def close_case(self, **kwargs: Any) -> AuditReceipt:
+        return self.__store.close_case(**kwargs)
+
+
+class _WorkflowAuthorizationBroker:
+    """Runtime-only owner capability for checkpoint fencing and grant issuance."""
+
+    __slots__ = ("__store", "__owner_token")
+
+    def __init__(self, service: OperationsService, owner_token: str) -> None:
+        try:
+            parsed = UUID(owner_token)
+        except (AttributeError, TypeError, ValueError) as error:
+            raise ValueError("workflow owner capability must be a canonical random UUID") from error
+        if parsed.version != 4 or str(parsed) != owner_token:
+            raise ValueError("workflow owner capability must be a canonical random UUID")
+        self.__store = object.__getattribute__(service, "_OperationsService__store")
+        self.__owner_token = owner_token
+
+    def reserve_workflow_identity(self, case_id: str, thread_id: str) -> bool:
+        return self.__store.reserve_workflow_identity(case_id, thread_id, self.__owner_token)
+
+    def validate_or_claim_workflow_identity(
+        self,
+        case_id: str,
+        thread_id: str,
+        *,
+        legacy_owner_token: str,
+        checkpoint_case_id: str,
+        checkpoint_thread_id: str,
+        checkpoint_id: str,
+    ) -> None:
+        self.__store.validate_or_claim_workflow_identity(
+            case_id,
+            thread_id,
+            self.__owner_token,
+            legacy_owner_token=legacy_owner_token,
+            checkpoint_case_id=checkpoint_case_id,
+            checkpoint_thread_id=checkpoint_thread_id,
+            checkpoint_id=checkpoint_id,
+        )
+
+    def claim_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        expected_checkpoint_head: str,
+        attempt_token: str,
+        request_digest: str,
+        *,
+        execution_id: str | None = None,
+        execution_request_digest: str | None = None,
+        lease_seconds: float = WORKFLOW_MUTATION_LEASE_SECONDS,
+    ) -> None:
+        self.__store.claim_workflow_mutation(
+            case_id,
+            thread_id,
+            self.__owner_token,
+            expected_checkpoint_head,
+            attempt_token,
+            request_digest,
+            execution_id=execution_id,
+            execution_request_digest=execution_request_digest,
+            lease_seconds=lease_seconds,
+        )
+
+    def issue_workflow_execution_grant(self, **kwargs: Any) -> str:
+        return self.__store.issue_workflow_execution_grant(
+            owner_token=self.__owner_token,
+            **kwargs,
+        )
+
+    def advance_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        expected_checkpoint_head: str,
+        new_checkpoint_head: str,
+        attempt_token: str,
+        request_digest: str,
+    ) -> None:
+        self.__store.advance_workflow_mutation(
+            case_id,
+            thread_id,
+            self.__owner_token,
+            expected_checkpoint_head,
+            new_checkpoint_head,
+            attempt_token,
+            request_digest,
+        )
+
+    def release_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        expected_checkpoint_head: str,
+        attempt_token: str,
+        request_digest: str,
+    ) -> None:
+        self.__store.release_workflow_mutation(
+            case_id,
+            thread_id,
+            self.__owner_token,
+            expected_checkpoint_head,
+            attempt_token,
+            request_digest,
+        )
+
+    def recover_workflow_mutation(
+        self,
+        case_id: str,
+        thread_id: str,
+        expected_checkpoint_head: str,
+        recovered_checkpoint_head: str,
+        attempt_token: str,
+        request_digest: str,
+    ) -> None:
+        self.__store.recover_workflow_mutation(
+            case_id,
+            thread_id,
+            self.__owner_token,
+            expected_checkpoint_head,
+            recovered_checkpoint_head,
+            attempt_token,
+            request_digest,
+        )
+
+    def release_workflow_identity(self, case_id: str, thread_id: str) -> None:
+        self.__store.release_workflow_identity(case_id, thread_id, self.__owner_token)
+
+
+def _workflow_authorization_broker(
+    service: OperationsService,
+    owner_token: str,
+) -> _WorkflowAuthorizationBroker:
+    """Create the private broker used only by runtime/checkpoint coordination."""
+
+    return _WorkflowAuthorizationBroker(service, owner_token)

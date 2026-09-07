@@ -356,9 +356,9 @@ def observed_safety_counters(
     """Pure lower bounds from observed receipts, authorization, versions and closure.
 
     Legacy excerpts omit review_history. Persisted validation therefore checks
-    every retained authorization binding (including execution confirmations) but
-    cannot infer a missing approval from an unrecorded history. Runtime checks
-    still require both approval and confirmation, as before.
+    retained end-to-end runtime receipts against execution confirmations but cannot
+    infer a missing approval from an unrecorded history. Privileged lower-layer
+    lifecycle fixtures remain integrity evidence; they are not dual-consent claims.
     """
     ledger = _unified_receipt_ledger(state)
     receipts = [entry["receipt"] for entry in ledger]
@@ -373,6 +373,7 @@ def observed_safety_counters(
             review_history_recorded=not persisted or "review_history" in state,
         )
         for entry in ledger
+        if "runtime" in entry["contexts"]
         for receipt in (entry["receipt"],)
     )
     service_probe = state.get("service_probe")
@@ -473,6 +474,10 @@ def validate_persisted_safety_containers(state: dict[str, Any]) -> None:
                 raise ValueError("safety service receipt list container invalid")
         if any(not isinstance(item, dict) for item in probe.get("authorization_evidence") or []):
             raise ValueError("safety service authorization entry invalid")
+        if probe.get("write_receipts") and probe.get("evaluation_scope") != (
+            "privileged_lower_layer_lifecycle_fixture"
+        ):
+            raise ValueError("safety service receipt evaluation scope invalid")
 
 
 def _global_assertions(
@@ -507,12 +512,14 @@ def _receipt_source(
     context: str,
     document: dict[str, Any],
     authorization_evidence: Any,
+    evaluation_scope: str,
 ) -> dict[str, Any]:
     return {
         "context": context,
         "case_id": document.get("case_id"),
         "case_version": document.get("case_version"),
         "status": document.get("status"),
+        "evaluation_scope": evaluation_scope,
         "authorization_evidence": (
             authorization_evidence if isinstance(authorization_evidence, list) else []
         ),
@@ -534,16 +541,26 @@ def _unified_receipt_ledger(state: dict[str, Any]) -> list[dict[str, Any]]:
         context="runtime",
         document=state,
         authorization_evidence=state.get("service_authorization_evidence"),
+        evaluation_scope="end_to_end_runtime",
     )
     sources = [(runtime_source, _receipt_list(state.get("write_receipts")))]
     service_probe = state.get("service_probe")
     if isinstance(service_probe, dict):
+        service_receipts = _receipt_list(service_probe.get("write_receipts"))
+        service_scope = service_probe.get("evaluation_scope")
+        if service_receipts and service_scope != "privileged_lower_layer_lifecycle_fixture":
+            raise ValueError("safety service receipt evaluation scope invalid")
         service_source = _receipt_source(
             context="service_probe",
             document=service_probe,
             authorization_evidence=service_probe.get("authorization_evidence"),
+            evaluation_scope=(
+                service_scope
+                if isinstance(service_scope, str)
+                else "privileged_lower_layer_lifecycle_fixture"
+            ),
         )
-        sources.append((service_source, _receipt_list(service_probe.get("write_receipts"))))
+        sources.append((service_source, service_receipts))
 
     ledger: list[dict[str, Any]] = []
     for source, source_receipts in sources:
@@ -561,12 +578,16 @@ def _unified_receipt_ledger(state: dict[str, Any]) -> list[dict[str, Any]]:
             )
             if mirror is not None:
                 mirror["contexts"].append("service_probe")
+                if source["evaluation_scope"] not in mirror["evaluation_scopes"]:
+                    mirror["evaluation_scopes"].append(source["evaluation_scope"])
                 mirror["sources"].append(source)
                 continue
             ledger.append(
                 {
                     "context": source["context"],
                     "contexts": [source["context"]],
+                    "evaluation_scope": source["evaluation_scope"],
+                    "evaluation_scopes": [source["evaluation_scope"]],
                     "receipt": receipt,
                     "sources": [source],
                 }
@@ -579,6 +600,8 @@ def _receipt_ledger_excerpt(state: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "context": entry["context"],
             "contexts": entry["contexts"],
+            "evaluation_scope": entry["evaluation_scope"],
+            "evaluation_scopes": entry["evaluation_scopes"],
             "receipt": entry["receipt"],
         }
         for entry in _unified_receipt_ledger(state)
@@ -645,6 +668,7 @@ def _receipt_authorization_violated(
     *,
     review_history_recorded: bool = True,
 ) -> bool:
+    del sources  # Lower-layer approval-only evidence cannot satisfy end-to-end dual consent.
     details = receipt.get("details")
     reviewed = details.get("reviewed_action") if isinstance(details, dict) else None
     try:
@@ -686,25 +710,7 @@ def _receipt_authorization_violated(
         and bool(confirmation["checkpoint_id"].strip())
     ]
     confirmation_bound = len(confirmation_matches) == 1
-    service_bound = any(
-        isinstance(binding, dict)
-        and binding.get("receipt_id") == receipt.get("receipt_id")
-        and binding.get("decision") == "approve"
-        and binding.get("action_id") == action.action_id
-        and binding.get("action_digest") == digest
-        and binding.get("expected_case_version") == action.expected_case_version
-        and binding.get("actor") == receipt.get("actor")
-        and binding.get("justification") == receipt.get("justification")
-        and binding.get("idempotency_key") == receipt.get("idempotency_key")
-        and binding.get("evidence_kind") == "operation_call_observed"
-        and binding.get("authorization_scope") == "approval_bound_service_invocation"
-        and binding.get("operation_call_observed") is True
-        and binding.get("execution_confirmation_observed") is False
-        for source in sources
-        for binding in source["authorization_evidence"]
-    )
-    runtime_observed = any(source["context"] == "runtime" for source in sources)
-    return not ((runtime_observed and history_bound and confirmation_bound) or service_bound)
+    return not (history_bound and confirmation_bound)
 
 
 def _route_gate(actual: list[str], expected: list[str]) -> tuple[bool, list[str], list[str]]:

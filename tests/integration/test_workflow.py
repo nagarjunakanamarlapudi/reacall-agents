@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 from copy import deepcopy
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -31,6 +32,56 @@ def _operation_count(path: Path) -> int:
         return int(connection.execute("SELECT COUNT(*) FROM receipts").fetchone()[0])
     finally:
         connection.close()
+
+
+def _privileged_direct_graph_authorization_fixture(operations):
+    """Supply a real fence only to low-level graph tests that intentionally bypass Runtime."""
+    from recallops.services.operations import _WorkflowAuthorizationBroker
+
+    class DirectGraphAuthorization(_WorkflowAuthorizationBroker):
+        def issue_workflow_execution_grant(self, **kwargs):
+            case_id = kwargs["case_id"]
+            thread_id = kwargs["thread_id"]
+            if operations.get_thread_for_case(case_id) is None:
+                self.reserve_workflow_identity(case_id, thread_id)
+            with sqlite3.connect(operations.storage_path) as connection:
+                row = connection.execute(
+                    "SELECT checkpoint_head, attempt_token, attempt_request_digest, "
+                    "attempt_execution_id, attempt_execution_request_digest, attempt_state "
+                    "FROM workflow_identities "
+                    "WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+            if row[5] == "active" and (
+                row[3] != kwargs["execution_id"] or row[4] != kwargs["execution_request_digest"]
+            ):
+                self.release_workflow_mutation(
+                    case_id,
+                    thread_id,
+                    row[0],
+                    row[1],
+                    row[2],
+                )
+                row = (row[0], None, None, None, None, None)
+            if row[5] != "active":
+                request_digest = hashlib.sha256(
+                    (
+                        f"{case_id}:{thread_id}:{row[0]}:{kwargs['execution_id']}:"
+                        f"{kwargs['execution_request_digest']}"
+                    ).encode()
+                ).hexdigest()
+                self.claim_workflow_mutation(
+                    case_id,
+                    thread_id,
+                    row[0],
+                    str(uuid4()),
+                    request_digest,
+                    execution_id=kwargs["execution_id"],
+                    execution_request_digest=kwargs["execution_request_digest"],
+                )
+            return super().issue_workflow_execution_grant(**kwargs)
+
+    return DirectGraphAuthorization(operations, str(uuid4()))
 
 
 def _case_count(path: Path) -> int:
@@ -823,7 +874,7 @@ async def test_winning_store_recovers_crash_between_checkpoint_and_head_advance(
 ) -> None:
     """Break caught: a crash after checkpoint commit strands the winning lease forever."""
     from recallops.agents.runtime import RecallOpsRuntime
-    from recallops.services.operations import OperationsService
+    from recallops.services.operations import _WorkflowAuthorizationBroker
 
     checkpoint_path = tmp_path / "checkpoints.sqlite3"
     operations_path = tmp_path / "operations.sqlite3"
@@ -840,7 +891,7 @@ async def test_winning_store_recovers_crash_between_checkpoint_and_head_advance(
 
         with monkeypatch.context() as crash:
             crash.setattr(
-                OperationsService,
+                _WorkflowAuthorizationBroker,
                 "advance_workflow_mutation",
                 lambda *args, **kwargs: (_ for _ in ()).throw(
                     SystemExit("simulated process death after checkpoint commit")
@@ -914,7 +965,7 @@ async def test_copied_expired_marker_rejects_changed_request_and_exact_retry_rec
     """Break caught: a copied expired marker changes approve to reject under one token."""
     import recallops.agents.runtime as runtime_module
     from recallops.agents.runtime import RecallOpsRuntime
-    from recallops.services.operations import OperationsService
+    from recallops.services.operations import _WorkflowAuthorizationBroker
 
     original_path = tmp_path / "original-checkpoints.sqlite3"
     copied_path = tmp_path / "copied-checkpoints.sqlite3"
@@ -942,7 +993,11 @@ async def test_copied_expired_marker_rejects_changed_request_and_exact_retry_rec
     ) as original:
         with monkeypatch.context() as crash:
             crash.setattr(runtime_module, "_execute_workflow", die_before_mutation)
-            crash.setattr(OperationsService, "release_workflow_mutation", die_before_release)
+            crash.setattr(
+                _WorkflowAuthorizationBroker,
+                "release_workflow_mutation",
+                die_before_release,
+            )
             with pytest.raises(SystemExit, match="fence release"):
                 await original.resume_case(
                     thread_id="THREAD-EXPIRED-FENCE",
@@ -1031,6 +1086,7 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
     tmp_path: Path,
 ) -> None:
     """Break caught: a losing runtime deletes the active winner's crash-recovery proof."""
+    import recallops.agents.runtime as runtime_module
     from recallops.agents.runtime import (
         RecallOpsRuntime,
         _clear_checkpoint_attempt,
@@ -1038,7 +1094,6 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
         _mutation_request_digest,
         _prepare_checkpoint_attempt,
     )
-    from recallops.services.operations import OperationsService
 
     checkpoint_path = tmp_path / "checkpoints.sqlite3"
     operations_path = tmp_path / "operations.sqlite3"
@@ -1068,11 +1123,10 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
             review.checkpoint_id,
             request_digest,
         )
-        operations = OperationsService(storage_path=operations_path)
-        operations.claim_workflow_mutation(
+        authorization = runtime_module._RUNTIME_AUTHORIZERS[runtime]
+        authorization.claim_workflow_mutation(
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
-            runtime._checkpoint_owner_token,
             review.checkpoint_id,
             token,
             request_digest,
@@ -1089,10 +1143,9 @@ async def test_rejected_live_claim_cannot_delete_the_winners_recovery_marker(
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
         ) == (token, review.checkpoint_id, request_digest)
-        operations.release_workflow_mutation(
+        authorization.release_workflow_mutation(
             "CASE-LIVE-MARKER",
             "THREAD-LIVE-MARKER",
-            runtime._checkpoint_owner_token,
             review.checkpoint_id,
             token,
             request_digest,
@@ -1576,35 +1629,8 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     from recallops.services.operations import OperationsService
 
     operations_path = tmp_path / f"{field}.sqlite3"
-
-    class DirectGraphOperations(OperationsService):
-        """Supply the runtime fence omitted only by this low-level graph harness."""
-
-        def issue_workflow_execution_grant(self, **kwargs):
-            case_id = kwargs["case_id"]
-            thread_id = kwargs["thread_id"]
-            owner = f"DIRECT-GRAPH-TEST:{case_id}"
-            if self.get_thread_for_case(case_id) is None:
-                self.reserve_workflow_identity(case_id, thread_id, owner)
-            with sqlite3.connect(self.storage_path) as connection:
-                row = connection.execute(
-                    "SELECT checkpoint_head, attempt_state FROM workflow_identities "
-                    "WHERE case_id=?",
-                    (case_id,),
-                ).fetchone()
-            if row[1] != "active":
-                digest = hashlib.sha256(f"{case_id}:{thread_id}:{row[0]}".encode()).hexdigest()
-                self.claim_workflow_mutation(
-                    case_id,
-                    thread_id,
-                    owner,
-                    row[0],
-                    f"DIRECT-GRAPH-ATTEMPT:{case_id}",
-                    digest,
-                )
-            return super().issue_workflow_execution_grant(**kwargs)
-
-    operations = DirectGraphOperations(storage_path=operations_path)
+    operations = OperationsService(storage_path=operations_path)
+    authorization = _privileged_direct_graph_authorization_fixture(operations)
 
     class CorruptingGateway(DirectGateway):
         corrupt_next = True
@@ -1625,6 +1651,7 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     graph = build_workflow(
         gateway=gateway,
         operations_service=operations,
+        authorization_broker=authorization,
         checkpointer=InMemorySaver(),
     )
     thread_id = f"THREAD-RECEIPT-{field}"
@@ -1690,6 +1717,7 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
 
     operations_path = tmp_path / "operations.sqlite3"
     operations = OperationsService(storage_path=operations_path)
+    authorization = _privileged_direct_graph_authorization_fixture(operations)
 
     class NoCommitGateway(DirectGateway):
         async def create_case(self, **kwargs):
@@ -1711,6 +1739,7 @@ async def test_exact_looking_receipt_without_operations_commit_is_not_trusted(
     graph = build_workflow(
         gateway=NoCommitGateway(operations=operations),
         operations_service=operations,
+        authorization_broker=authorization,
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "THREAD-NO-COMMIT"}}
@@ -2071,7 +2100,19 @@ async def test_runtime_object_exposes_no_graph_or_executor_capability(tmp_path: 
         checkpoint_path=tmp_path / "checkpoints.sqlite3",
         operations_path=tmp_path / "operations.sqlite3",
     ) as runtime:
-        for surface in ("graph", "_graph", "_execute", "compiled_graph", "runner"):
+        for surface in (
+            "graph",
+            "_graph",
+            "_execute",
+            "compiled_graph",
+            "runner",
+            "operations_service",
+            "_operations_service",
+            "authorization_broker",
+            "_authorization_broker",
+            "checkpoint_owner_token",
+            "_checkpoint_owner_token",
+        ):
             with pytest.raises(AttributeError):
                 getattr(runtime, surface)
 

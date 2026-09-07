@@ -418,6 +418,23 @@ def test_fix_persisted_receipt_invariants_cannot_be_resigned_away(paths, tmp_pat
         build(paths, tmp_path)
 
 
+@pytest.mark.parametrize("tamper", ["missing", "promoted"])
+def test_privileged_fixture_scope_cannot_forge_end_to_end_metric_population(
+    paths, tmp_path, tamper
+):
+    payload = json.loads(paths.safety_report.read_bytes())
+    probe = payload["results"][14]["state_excerpt"]["service_probe"]
+    assert probe["write_receipts"]
+    if tamper == "missing":
+        probe.pop("evaluation_scope")
+    else:
+        probe["evaluation_scope"] = "end_to_end_runtime"
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+
+    with pytest.raises(ValueError, match="receipt evaluation scope"):
+        build(paths, tmp_path)
+
+
 @pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
 @pytest.mark.parametrize("kind", ["report", "corpus"])
 @pytest.mark.parametrize("link", ["hard", "symbolic"])

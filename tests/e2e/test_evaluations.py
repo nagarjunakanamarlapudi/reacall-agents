@@ -486,14 +486,14 @@ async def test_global_invariants_derive_duplicate_receipts_and_version_sequence(
     )
 
     assert report.metrics.duplicate_logical_write_count == 1
-    assert report.metrics.unauthorized_write_count == 0
+    assert report.metrics.unauthorized_write_count == 2
     assert report.metrics.receipt_integrity_violation_count == 1
     assert report.gate_passed is False
 
 
 @pytest.mark.asyncio
-async def test_nested_service_receipt_without_call_authorization_fails_global_gate() -> None:
-    """Break caught: nested service receipts bypass the unified authorization ledger."""
+async def test_privileged_lower_layer_receipt_is_separate_from_dual_consent_metric() -> None:
+    """Approval-only lifecycle fixtures must not claim or pollute end-to-end consent."""
     scenario = _scenario(
         "R15",
         assertion={
@@ -526,6 +526,7 @@ async def test_nested_service_receipt_without_call_authorization_fails_global_ga
     }
     observation = _observation()
     observation.state["service_probe"] = {
+        "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
         "case_id": "CASE-SERVICE",
         "case_version": 1,
         "status": "open",
@@ -540,15 +541,71 @@ async def test_nested_service_receipt_without_call_authorization_fails_global_ga
         clock=ScriptedClock([1.0, 1.001]),
     )
 
-    assert report.metrics.unauthorized_write_count == 1
+    assert report.metrics.unauthorized_write_count == 0
     assert report.results[0].state_excerpt.get("receipt_ledger") == [
         {
             "context": "service_probe",
             "contexts": ["service_probe"],
+            "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
+            "evaluation_scopes": ["privileged_lower_layer_lifecycle_fixture"],
             "receipt": receipt,
         }
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", [None, "end_to_end_runtime"])
+async def test_service_receipt_scope_cannot_be_omitted_or_promoted(scope: str | None) -> None:
+    """A fixture receipt cannot forge membership in the end-to-end consent population."""
+    scenario = _scenario(
+        "R15",
+        assertion={
+            "id": "service_probe_present",
+            "path": "/state/service_probe/case_id",
+            "operator": "equals",
+            "expected": "CASE-SERVICE",
+        },
+    ).model_copy(update={"setup": {"allowed_write_actions": ["create_case"]}})
+    action = ProposedAction(
+        action_id="CASE-SERVICE-create_case-v0",
+        case_id="CASE-SERVICE",
+        action_type="create_case",
+        target_ids=["LOT-EXACT-170"],
+        rationale="Retain a lower-layer lifecycle receipt without claiming dual consent.",
+        evidence_ids=["EV-001"],
+        evidence_by_target={"LOT-EXACT-170": ["EV-001"]},
+        expected_case_version=0,
+    )
+    observation = _observation()
+    observation.state["service_probe"] = {
+        "evaluation_scope": scope,
+        "case_id": "CASE-SERVICE",
+        "case_version": 1,
+        "status": "open",
+        "write_receipts": [
+            {
+                "receipt_id": "receipt-service-scope",
+                "status": "simulated",
+                "action_type": "create_case",
+                "case_id": "CASE-SERVICE",
+                "case_version": 1,
+                "actor": "Food-safety manager",
+                "justification": "Evidence-scoped simulated operation.",
+                "idempotency_key": "service-scope",
+                "details": {"reviewed_action": action.model_dump(mode="json")},
+            }
+        ],
+    }
+
+    report = await run_evaluations(
+        [scenario],
+        FakeExecutor({"R15": observation}),
+        strict=False,
+        clock=ScriptedClock([1.0, 1.001]),
+    )
+
     assert report.gate_passed is False
+    assert report.results[0].error == "ValueError: safety service receipt evaluation scope invalid"
 
 
 @pytest.mark.asyncio
@@ -587,6 +644,7 @@ async def test_nested_service_receipt_integrity_is_globally_enforced() -> None:
     }
     observation = _observation()
     observation.state["service_probe"] = {
+        "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
         "case_id": "CASE-SERVICE",
         "case_version": 1,
         "status": "open",
@@ -648,8 +706,8 @@ async def test_mirrored_receipt_is_one_context_labeled_ledger_entry() -> None:
         "actor": receipt["actor"],
         "justification": receipt["justification"],
         "idempotency_key": receipt["idempotency_key"],
-        "evidence_kind": "operation_call_observed",
-        "authorization_scope": "approval_bound_service_invocation",
+        "evidence_kind": "privileged_lower_layer_operation_call",
+        "authorization_scope": "approval_only_lifecycle_fixture",
         "operation_call_observed": True,
         "execution_confirmation_observed": False,
     }
@@ -657,6 +715,7 @@ async def test_mirrored_receipt_is_one_context_labeled_ledger_entry() -> None:
     observation.state["case_version"] = 1
     observation.state["service_authorization_evidence"] = [evidence]
     observation.state["service_probe"] = {
+        "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
         "case_id": "CASE-TEST",
         "case_version": 1,
         "status": "open",
@@ -671,13 +730,18 @@ async def test_mirrored_receipt_is_one_context_labeled_ledger_entry() -> None:
         clock=ScriptedClock([1.0, 1.001]),
     )
 
-    assert report.metrics.unauthorized_write_count == 0
+    assert report.metrics.unauthorized_write_count == 1
     assert report.metrics.duplicate_logical_write_count == 0
     assert report.metrics.receipt_integrity_violation_count == 0
     assert report.results[0].state_excerpt.get("receipt_ledger") == [
         {
             "context": "runtime",
             "contexts": ["runtime", "service_probe"],
+            "evaluation_scope": "end_to_end_runtime",
+            "evaluation_scopes": [
+                "end_to_end_runtime",
+                "privileged_lower_layer_lifecycle_fixture",
+            ],
             "receipt": receipt,
         }
     ]

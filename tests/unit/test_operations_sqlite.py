@@ -8,6 +8,7 @@ from multiprocessing import get_context
 from pathlib import Path
 from threading import Event, Thread
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -19,11 +20,13 @@ from recallops.models import (
     proposed_action_digest,
 )
 from recallops.services.operations import (
+    INITIAL_CHECKPOINT_HEAD,
     ApprovalRequiredError,
     ClosureBlockedError,
     IdempotencyConflictError,
     OperationStoreError,
     StaleCaseVersionError,
+    _workflow_authorization_broker,
 )
 from recallops.services.operations import OperationsService as RawOperationsService
 from recallops.services.traceability import TraceabilityService
@@ -53,9 +56,14 @@ def trusted_execute(
         return operation(**kwargs)
     state = service.get_case(case_id)
     thread_id = kwargs.get("thread_id") or (state.thread_id if state else case_id)
-    owner = f"TEST-CHECKPOINT-OWNER:{case_id}"
+    with sqlite3.connect(service.storage_path) as connection:
+        owner_row = connection.execute(
+            "SELECT owner_token FROM workflow_identities WHERE case_id=?", (case_id,)
+        ).fetchone()
+    owner = owner_row[0] if owner_row and owner_row[0] else str(uuid4())
+    broker = _workflow_authorization_broker(service, owner)
     if service.get_thread_for_case(case_id) is None:
-        service.reserve_workflow_identity(case_id, thread_id, owner)
+        broker.reserve_workflow_identity(case_id, thread_id)
     with sqlite3.connect(service.storage_path) as connection:
         row = connection.execute(
             "SELECT checkpoint_head FROM workflow_identities WHERE case_id=?", (case_id,)
@@ -64,8 +72,20 @@ def trusted_execute(
     request_digest = hashlib.sha256(
         f"{case_id}:{thread_id}:{head}:{method_name}:{expected}:{key}".encode()
     ).hexdigest()
-    attempt = f"ATTEMPT:{method_name}:{expected}:{key}"
-    service.claim_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+    attempt = str(uuid4())
+    execution_id = f"EXECUTION:{method_name}:{expected}:{key}"
+    execution_request_digest = hashlib.sha256(
+        f"execution:{case_id}:{method_name}:{expected}:{key}".encode()
+    ).hexdigest()
+    broker.claim_workflow_mutation(
+        case_id,
+        thread_id,
+        head,
+        attempt,
+        request_digest,
+        execution_id=execution_id,
+        execution_request_digest=execution_request_digest,
+    )
     detail_fields = {
         "create_case": (
             "recall_number",
@@ -96,17 +116,15 @@ def trusted_execute(
         else:
             details[name] = kwargs[name]
     try:
-        grant = service.issue_workflow_execution_grant(
+        grant = broker.issue_workflow_execution_grant(
             case_id=case_id,
             thread_id=thread_id,
             proposed_action=action,
             approval=approval,
             expected_case_version=expected,
             idempotency_key=key,
-            execution_id=f"EXECUTION:{method_name}:{expected}:{key}",
-            execution_request_digest=hashlib.sha256(
-                f"execution:{case_id}:{method_name}:{expected}:{key}".encode()
-            ).hexdigest(),
+            execution_id=execution_id,
+            execution_request_digest=execution_request_digest,
             details=details,
             target_ids=list(action.target_ids),
             evidence_ids=(
@@ -119,12 +137,10 @@ def trusted_execute(
         )
         receipt = operation(**kwargs, execution_grant=grant)
     except BaseException:
-        service.release_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+        broker.release_workflow_mutation(case_id, thread_id, head, attempt, request_digest)
         raise
     new_head = f"CHECKPOINT:{case_id}:{receipt.case_version}:{receipt.receipt_id}"
-    service.advance_workflow_mutation(
-        case_id, thread_id, owner, head, new_head, attempt, request_digest
-    )
+    broker.advance_workflow_mutation(case_id, thread_id, head, new_head, attempt, request_digest)
     return receipt
 
 
@@ -156,6 +172,10 @@ class OperationsService(RawOperationsService):
 
     def close_case(self, **kwargs: Any):
         return self._workflow_write("close_case", kwargs)
+
+    def _request_hash(self, *args: Any, **kwargs: Any) -> str:
+        store = object.__getattribute__(self, "_OperationsService__store")
+        return store._request_hash(*args, **kwargs)
 
 
 def reviewed(
@@ -296,6 +316,77 @@ def test_direct_caller_authored_approval_cannot_create_a_case_without_workflow_g
         )
 
     assert service.get_case(case_id) is None
+
+
+def test_normal_operations_service_exposes_no_workflow_authority_capability(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a normal mutation consumer can reserve, claim, or mint authority."""
+    service = RawOperationsService(storage_path=tmp_path / "public-service.sqlite3")
+
+    for surface in (
+        "reserve_workflow_identity",
+        "validate_or_claim_workflow_identity",
+        "claim_workflow_mutation",
+        "advance_workflow_mutation",
+        "release_workflow_mutation",
+        "recover_workflow_mutation",
+        "release_workflow_identity",
+        "issue_workflow_execution_grant",
+    ):
+        with pytest.raises(AttributeError):
+            getattr(service, surface)
+
+
+def test_broker_authenticates_execution_identity_against_the_active_attempt(
+    tmp_path: Path,
+) -> None:
+    """Break caught: grant issuance accepts execution metadata absent from the active resume."""
+    service = RawOperationsService(storage_path=tmp_path / "execution-binding.sqlite3")
+    broker = _workflow_authorization_broker(service, str(uuid4()))
+    case_id = "CASE-EXECUTION-BINDING"
+    thread_id = "THREAD-EXECUTION-BINDING"
+    payload = case_input()
+    review = reviewed(
+        case_id,
+        "create_case",
+        0,
+        payload["confirmed_lot_ids"],
+        evidence_ids=payload["trace_event_ids"],
+    )
+    request_digest = hashlib.sha256(b"trusted-runtime-resume").hexdigest()
+    execution_digest = hashlib.sha256(b"trusted-execution-request").hexdigest()
+    broker.reserve_workflow_identity(case_id, thread_id)
+    broker.claim_workflow_mutation(
+        case_id,
+        thread_id,
+        INITIAL_CHECKPOINT_HEAD,
+        str(uuid4()),
+        request_digest,
+        execution_id="EXECUTION-TRUSTED",
+        execution_request_digest=execution_digest,
+    )
+
+    with pytest.raises(ApprovalRequiredError, match="active trusted workflow"):
+        broker.issue_workflow_execution_grant(
+            case_id=case_id,
+            thread_id=thread_id,
+            **review,
+            expected_case_version=0,
+            idempotency_key="execution-binding-create",
+            execution_id="EXECUTION-SUBSTITUTED",
+            execution_request_digest=hashlib.sha256(b"substituted-request").hexdigest(),
+            details={
+                **payload,
+                "question": "Authenticate the exact execution request.",
+                "thread_id": thread_id,
+                "reconciliation": [
+                    item.model_dump(mode="json") for item in payload["reconciliation"]
+                ],
+            },
+            target_ids=payload["confirmed_lot_ids"],
+            evidence_ids=payload["trace_event_ids"],
+        )
 
 
 def test_completed_replay_is_idempotent_but_grant_cannot_cross_action_or_version(
@@ -481,7 +572,7 @@ def test_disposition_appends_new_authoritative_event_and_preserves_base_evidence
     create(service, case_id, lot_id=GAPPED_LOT)
     base = service.get_case(case_id)
     base_trace_ids = list(base.trace_event_ids)
-    hold_evidence = sorted(service._lot_evidence_ids(GAPPED_LOT))
+    hold_evidence = sorted(service.get_lot_evidence_ids(GAPPED_LOT))
     trusted_execute(
         service,
         "apply_inventory_hold",
@@ -587,7 +678,8 @@ def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_pat
         columns = {row[1] for row in connection.execute("PRAGMA table_info(workflow_identities)")}
         mapping = connection.execute(
             "SELECT case_id, thread_id, owner_token, checkpoint_head, attempt_token, "
-            "attempt_expected_head, attempt_request_digest, attempt_state, attempt_expires_at "
+            "attempt_expected_head, attempt_request_digest, attempt_execution_id, "
+            "attempt_execution_request_digest, attempt_state, attempt_expires_at "
             "FROM workflow_identities"
         ).fetchone()
     assert columns == {
@@ -598,12 +690,16 @@ def test_legacy_two_column_identity_table_gains_owner_token_idempotently(tmp_pat
         "attempt_token",
         "attempt_expected_head",
         "attempt_request_digest",
+        "attempt_execution_id",
+        "attempt_execution_request_digest",
         "attempt_state",
         "attempt_expires_at",
     }
     assert mapping == (
         "CASE-LEGACY",
         "THREAD-LEGACY",
+        None,
+        None,
         None,
         None,
         None,
@@ -618,20 +714,19 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
     """Break caught: two live clones reuse one persisted attempt token concurrently."""
     database = tmp_path / "active-fence.sqlite3"
     service = OperationsService(storage_path=database)
-    service.reserve_workflow_identity("CASE-FENCE", "THREAD-FENCE", "OWNER-FENCE")
-    service.claim_workflow_mutation(
+    broker = _workflow_authorization_broker(service, str(uuid4()))
+    broker.reserve_workflow_identity("CASE-FENCE", "THREAD-FENCE")
+    broker.claim_workflow_mutation(
         "CASE-FENCE",
         "THREAD-FENCE",
-        "OWNER-FENCE",
         "__recallops_initial_checkpoint__",
         "ATTEMPT-FENCE",
         "a" * 64,
     )
     with pytest.raises(ValueError, match="active|uncertain"):
-        service.claim_workflow_mutation(
+        broker.claim_workflow_mutation(
             "CASE-FENCE",
             "THREAD-FENCE",
-            "OWNER-FENCE",
             "__recallops_initial_checkpoint__",
             "ATTEMPT-FENCE",
             "a" * 64,
@@ -645,10 +740,9 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
             "SELECT * FROM workflow_identities WHERE case_id='CASE-FENCE'"
         ).fetchone()
     with pytest.raises(ValueError, match="request digest"):
-        service.claim_workflow_mutation(
+        broker.claim_workflow_mutation(
             "CASE-FENCE",
             "THREAD-FENCE",
-            "OWNER-FENCE",
             "__recallops_initial_checkpoint__",
             "ATTEMPT-FENCE",
             "b" * 64,
@@ -660,10 +754,9 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
             ).fetchone()
             == before_changed_request
         )
-    service.claim_workflow_mutation(
+    broker.claim_workflow_mutation(
         "CASE-FENCE",
         "THREAD-FENCE",
-        "OWNER-FENCE",
         "__recallops_initial_checkpoint__",
         "ATTEMPT-FENCE",
         "a" * 64,
@@ -673,11 +766,11 @@ def test_active_fence_token_cannot_be_shared_by_a_second_live_claimant(tmp_path:
 def test_recovery_requires_the_exact_bound_request_digest(tmp_path: Path) -> None:
     database = tmp_path / "recovery-digest.sqlite3"
     service = OperationsService(storage_path=database)
-    service.reserve_workflow_identity("CASE-RECOVER", "THREAD-RECOVER", "OWNER-RECOVER")
-    service.claim_workflow_mutation(
+    broker = _workflow_authorization_broker(service, str(uuid4()))
+    broker.reserve_workflow_identity("CASE-RECOVER", "THREAD-RECOVER")
+    broker.claim_workflow_mutation(
         "CASE-RECOVER",
         "THREAD-RECOVER",
-        "OWNER-RECOVER",
         "__recallops_initial_checkpoint__",
         "ATTEMPT-RECOVER",
         "a" * 64,
@@ -688,10 +781,9 @@ def test_recovery_requires_the_exact_bound_request_digest(tmp_path: Path) -> Non
         ).fetchone()
 
     with pytest.raises(ValueError, match="recovery proof"):
-        service.recover_workflow_mutation(
+        broker.recover_workflow_mutation(
             "CASE-RECOVER",
             "THREAD-RECOVER",
-            "OWNER-RECOVER",
             "__recallops_initial_checkpoint__",
             "CHECKPOINT-RECOVERED",
             "ATTEMPT-RECOVER",
@@ -705,10 +797,9 @@ def test_recovery_requires_the_exact_bound_request_digest(tmp_path: Path) -> Non
             == before
         )
 
-    service.recover_workflow_mutation(
+    broker.recover_workflow_mutation(
         "CASE-RECOVER",
         "THREAD-RECOVER",
-        "OWNER-RECOVER",
         "__recallops_initial_checkpoint__",
         "CHECKPOINT-RECOVERED",
         "ATTEMPT-RECOVER",

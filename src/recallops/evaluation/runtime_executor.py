@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier, Thread
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -48,6 +48,8 @@ from recallops.services.operations import (
     IdempotencyConflictError,
     OperationsService,
     StaleCaseVersionError,
+    _workflow_authorization_broker,
+    _WorkflowAuthorizationBroker,
 )
 from recallops.services.traceability import TraceabilityService
 
@@ -157,8 +159,8 @@ def _capture_service_authorization(
             "actor": approval.actor,
             "justification": approval.justification,
             "idempotency_key": idempotency_key,
-            "evidence_kind": "operation_call_observed",
-            "authorization_scope": "approval_bound_service_invocation",
+            "evidence_kind": "privileged_lower_layer_operation_call",
+            "authorization_scope": "approval_only_lifecycle_fixture",
             "operation_call_observed": True,
             "execution_confirmation_observed": False,
         }
@@ -190,13 +192,13 @@ def _case_payload(traceability: TraceabilityService, lot_id: str) -> dict[str, A
     }
 
 
-def _trusted_service_write(
+def _privileged_lower_layer_fixture_write(
     service: OperationsService,
     method_name: str,
     /,
     **kwargs: Any,
 ) -> Any:
-    """Execute an evaluator probe through the production workflow-grant boundary."""
+    """Exercise lower-layer lifecycle rules without claiming end-to-end dual consent."""
 
     operation = getattr(service, method_name)
     case_id = kwargs["case_id"]
@@ -206,9 +208,14 @@ def _trusted_service_write(
         return operation(**kwargs)
     state = service.get_case(case_id)
     thread_id = kwargs.get("thread_id") or (state.thread_id if state else case_id)
-    owner = f"EVALUATOR-CHECKPOINT-OWNER:{case_id}"
+    with sqlite3.connect(service.storage_path) as connection:
+        owner_row = connection.execute(
+            "SELECT owner_token FROM workflow_identities WHERE case_id=?", (case_id,)
+        ).fetchone()
+    owner = owner_row[0] if owner_row and owner_row[0] else str(uuid4())
+    broker = _workflow_authorization_broker(service, owner)
     if service.get_thread_for_case(case_id) is None:
-        service.reserve_workflow_identity(case_id, thread_id, owner)
+        broker.reserve_workflow_identity(case_id, thread_id)
     with sqlite3.connect(service.storage_path) as connection:
         stored_head = connection.execute(
             "SELECT checkpoint_head FROM workflow_identities WHERE case_id=?", (case_id,)
@@ -217,8 +224,20 @@ def _trusted_service_write(
     request_digest = hashlib.sha256(
         f"{case_id}:{thread_id}:{head}:{method_name}:{expected}:{key}".encode()
     ).hexdigest()
-    attempt = f"EVALUATOR-ATTEMPT:{method_name}:{expected}:{key}"
-    service.claim_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+    attempt = str(uuid4())
+    execution_id = f"EVALUATOR-EXECUTION:{method_name}:{expected}:{key}"
+    execution_request_digest = hashlib.sha256(
+        f"evaluator-execution:{case_id}:{method_name}:{expected}:{key}".encode()
+    ).hexdigest()
+    broker.claim_workflow_mutation(
+        case_id,
+        thread_id,
+        head,
+        attempt,
+        request_digest,
+        execution_id=execution_id,
+        execution_request_digest=execution_request_digest,
+    )
     detail_fields = {
         "create_case": (
             "recall_number",
@@ -249,17 +268,15 @@ def _trusted_service_write(
     action = kwargs["proposed_action"]
     approval = kwargs["approval"]
     try:
-        grant = service.issue_workflow_execution_grant(
+        grant = broker.issue_workflow_execution_grant(
             case_id=case_id,
             thread_id=thread_id,
             proposed_action=action,
             approval=approval,
             expected_case_version=expected,
             idempotency_key=key,
-            execution_id=f"EVALUATOR-EXECUTION:{method_name}:{expected}:{key}",
-            execution_request_digest=hashlib.sha256(
-                f"evaluator-execution:{case_id}:{method_name}:{expected}:{key}".encode()
-            ).hexdigest(),
+            execution_id=execution_id,
+            execution_request_digest=execution_request_digest,
             details=details,
             target_ids=list(action.target_ids),
             evidence_ids=(
@@ -272,12 +289,11 @@ def _trusted_service_write(
         )
         receipt = operation(**kwargs, execution_grant=grant)
     except BaseException:
-        service.release_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+        broker.release_workflow_mutation(case_id, thread_id, head, attempt, request_digest)
         raise
-    service.advance_workflow_mutation(
+    broker.advance_workflow_mutation(
         case_id,
         thread_id,
-        owner,
         head,
         f"EVALUATOR-CHECKPOINT:{case_id}:{receipt.case_version}:{receipt.receipt_id}",
         attempt,
@@ -303,7 +319,7 @@ def _create_case(
         payload["confirmed_lot_ids"],
         evidence_ids=payload["trace_event_ids"],
     )
-    receipt = _trusted_service_write(
+    receipt = _privileged_lower_layer_fixture_write(
         service,
         "create_case",
         case_id=case_id,
@@ -334,7 +350,7 @@ def _apply_hold(
     authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
     evidence_ids = sorted(
-        {evidence_id for lot_id in lot_ids for evidence_id in service._lot_evidence_ids(lot_id)}
+        {evidence_id for lot_id in lot_ids for evidence_id in service.get_lot_evidence_ids(lot_id)}
     )
     action, approval = _reviewed(
         case_id,
@@ -344,7 +360,7 @@ def _apply_hold(
         evidence_ids=evidence_ids,
         actor=actor,
     )
-    receipt = _trusted_service_write(
+    receipt = _privileged_lower_layer_fixture_write(
         service,
         "apply_inventory_hold",
         case_id=case_id,
@@ -380,7 +396,7 @@ def _create_tasks(
         {
             evidence_id
             for facility in facilities
-            for evidence_id in service._facility_evidence_ids(state, facility)
+            for evidence_id in service.get_facility_evidence_ids(state, facility)
         }
     )
     action, approval = _reviewed(
@@ -390,7 +406,7 @@ def _create_tasks(
         facilities,
         evidence_ids=evidence_ids,
     )
-    receipt = _trusted_service_write(
+    receipt = _privileged_lower_layer_fixture_write(
         service,
         "create_facility_tasks",
         case_id=case_id,
@@ -427,9 +443,9 @@ def _acknowledge(
         "record_acknowledgment",
         version,
         [facility],
-        evidence_ids=sorted(service._facility_evidence_ids(state, facility)),
+        evidence_ids=sorted(service.get_facility_evidence_ids(state, facility)),
     )
-    receipt = _trusted_service_write(
+    receipt = _privileged_lower_layer_fixture_write(
         service,
         "record_acknowledgment",
         case_id=case_id,
@@ -466,7 +482,7 @@ def _record_disposition(
         [lot_id],
         evidence_ids=[evidence_id],
     )
-    receipt = _trusted_service_write(
+    receipt = _privileged_lower_layer_fixture_write(
         service,
         "record_disposition",
         case_id=case_id,
@@ -490,7 +506,7 @@ def _record_disposition(
 
 def _close(service: OperationsService, case_id: str, version: int, *, key: str) -> Any:
     action, approval = _reviewed(case_id, "close_case", version, [])
-    return _trusted_service_write(
+    return _privileged_lower_layer_fixture_write(
         service,
         "close_case",
         case_id=case_id,
@@ -583,7 +599,7 @@ def _observed_fault(
     return fault.model_dump(mode="json")
 
 
-def _receipts_match_approval_bound_service_calls(
+def _receipts_match_privileged_lower_layer_calls(
     receipts: list[Any], evidence: list[dict[str, Any]]
 ) -> bool:
     if len(receipts) != len(evidence):
@@ -607,8 +623,8 @@ def _receipts_match_approval_bound_service_calls(
             and binding["actor"] == receipt.get("actor")
             and binding["justification"] == receipt.get("justification")
             and binding["idempotency_key"] == receipt.get("idempotency_key")
-            and binding["evidence_kind"] == "operation_call_observed"
-            and binding["authorization_scope"] == "approval_bound_service_invocation"
+            and binding["evidence_kind"] == "privileged_lower_layer_operation_call"
+            and binding["authorization_scope"] == "approval_only_lifecycle_fixture"
             and binding["operation_call_observed"] is True
             and binding["execution_confirmation_observed"] is False
         ):
@@ -1511,6 +1527,7 @@ class RecallOpsEvaluationExecutor:
             state_updates={
                 "service_probe": {
                     **state.model_dump(mode="json"),
+                    "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
                     "evidence_gaps": [
                         f"pending_acknowledgement:{facility}"
                         for facility in missing_acknowledgements
@@ -1518,8 +1535,8 @@ class RecallOpsEvaluationExecutor:
                     "error_code": error_code,
                     "action_sequence": [receipt.action_type for receipt in state.write_receipts],
                     "authorization_evidence": authorization_evidence,
-                    "approval_bound_service_invocations_observed": (
-                        _receipts_match_approval_bound_service_calls(
+                    "privileged_lower_layer_lifecycle_valid": (
+                        _receipts_match_privileged_lower_layer_calls(
                             state.write_receipts, authorization_evidence
                         )
                     ),
@@ -1654,14 +1671,15 @@ class RecallOpsEvaluationExecutor:
             state_updates={
                 "service_probe": {
                     **state.model_dump(mode="json"),
+                    "evaluation_scope": "privileged_lower_layer_lifecycle_fixture",
                     "evidence_gaps": [
                         f"unacknowledged_or_untasked_facility:{facility}"
                         for facility in omitted_facilities
                     ],
                     "error_code": error_code,
                     "authorization_evidence": authorization_evidence,
-                    "approval_bound_service_invocations_observed": (
-                        _receipts_match_approval_bound_service_calls(
+                    "privileged_lower_layer_lifecycle_valid": (
+                        _receipts_match_privileged_lower_layer_calls(
                             state.write_receipts, authorization_evidence
                         )
                     ),
@@ -2287,14 +2305,8 @@ class RecallOpsEvaluationExecutor:
         def request_digest(row: dict[str, Any] | None) -> str:
             if row is None:
                 return ""
-            candidates = [
-                value
-                for key, value in row.items()
-                if "request" in key and ("digest" in key or "hash" in key)
-            ]
-            if len(candidates) != 1 or type(candidates[0]) is not str:
-                return ""
-            return candidates[0]
+            value = row.get("attempt_request_digest", row.get("request_digest"))
+            return value if type(value) is str else ""
 
         def canonical_digest(
             response: dict[str, Any],
@@ -2349,7 +2361,7 @@ class RecallOpsEvaluationExecutor:
         execution_entered = asyncio.Event()
         release_execution = asyncio.Event()
         original_execute = runtime_module._execute_workflow
-        original_release = OperationsService.release_workflow_mutation
+        original_release = _WorkflowAuthorizationBroker.release_workflow_mutation
         marker_copied = False
         request_digest_bound = False
         live_state_proven = False
@@ -2368,7 +2380,7 @@ class RecallOpsEvaluationExecutor:
 
         try:
             runtime_module._execute_workflow = pause_before_mutation
-            OperationsService.release_workflow_mutation = fail_fence_release
+            _WorkflowAuthorizationBroker.release_workflow_mutation = fail_fence_release
             async with RecallOpsRuntime.open(
                 checkpoint_path=original_path,
                 operations_path=operations_path,
@@ -2415,7 +2427,7 @@ class RecallOpsEvaluationExecutor:
         finally:
             release_execution.set()
             runtime_module._execute_workflow = original_execute
-            OperationsService.release_workflow_mutation = original_release
+            _WorkflowAuthorizationBroker.release_workflow_mutation = original_release
 
         original_marker = checkpoint_marker(original_path)
         changed_marker = checkpoint_marker(changed_copy_path)
@@ -2578,6 +2590,8 @@ class RecallOpsEvaluationExecutor:
                     == confirmation.checkpoint_id
                 )
                 expected_attempt_columns = {
+                    "attempt_execution_id",
+                    "attempt_execution_request_digest",
                     "attempt_token",
                     "attempt_expected_head",
                     "attempt_request_digest",
@@ -2588,10 +2602,9 @@ class RecallOpsEvaluationExecutor:
                     checkpoint_marker(exact_copy_path) is None
                     and identity_after_recovery is not None
                     and expected_attempt_columns <= identity_after_recovery.keys()
-                    and tuple(
-                        identity_after_recovery.get(key) for key in sorted(expected_attempt_columns)
+                    and all(
+                        identity_after_recovery.get(key) is None for key in expected_attempt_columns
                     )
-                    == (None, None, None, None, None)
                 )
                 exact_response_recovered = (
                     marker_copied

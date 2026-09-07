@@ -48,7 +48,12 @@ from recallops.retrieval.agentic import (
     ClosedRetrievalGateway,
     RetrievalInterruption,
 )
-from recallops.services.operations import ClosureBlockedError, OperationsService
+from recallops.services.operations import (
+    ApprovalRequiredError,
+    ClosureBlockedError,
+    OperationsService,
+    _WorkflowAuthorizationBroker,
+)
 
 OFFICIAL_PROVENANCE = "OFFICIAL_OPENFDA_SNAPSHOT"
 SYNTHETIC_ORIGIN = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
@@ -490,6 +495,7 @@ def build_workflow(
     retriever: AgenticRetriever | None = None,
     failures: FailureController | None = None,
     operations_service: OperationsService | None = None,
+    authorization_broker: _WorkflowAuthorizationBroker | None = None,
     checkpointer: BaseCheckpointSaver,
 ) -> Any:
     """Compile the explicit coordinator with trusted dependencies in node closures."""
@@ -519,6 +525,10 @@ def build_workflow(
         trusted_operations = trusted_gateway.operations
     if not isinstance(trusted_operations, OperationsService):
         raise TypeError("operations_service must be an authoritative OperationsService")
+    if authorization_broker is not None and not isinstance(
+        authorization_broker, _WorkflowAuthorizationBroker
+    ):
+        raise TypeError("authorization_broker must be the runtime-only workflow broker")
     trusted_retriever = retriever or AgenticRetriever(ClosedRetrievalGateway.direct())
     failure_controller = failures or FailureController()
 
@@ -1125,6 +1135,10 @@ def build_workflow(
         # One invocation receives exactly one write attempt; unknown outcomes are
         # checkpointed and require a new human-triggered invocation with the same key.
         CallBudget(1).consume()
+        if authorization_broker is None:
+            raise ApprovalRequiredError(
+                "operation execution requires the private runtime authorization broker"
+            )
         kwargs: dict[str, Any] = {
             "case_id": state["case_id"],
             "proposed_action": action,
@@ -1155,7 +1169,7 @@ def build_workflow(
                         if item["unaccounted"]
                     ],
                 }
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],
@@ -1171,7 +1185,7 @@ def build_workflow(
                 )
             elif action.action_type == "apply_inventory_hold":
                 details = {"lot_ids": list(action.target_ids)}
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],
@@ -1184,7 +1198,7 @@ def build_workflow(
                 )
             elif action.action_type == "create_facility_tasks":
                 details = {"facility_ids": list(action.target_ids)}
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],
@@ -1197,7 +1211,7 @@ def build_workflow(
                 )
             elif action.action_type == "record_acknowledgment":
                 details = {"facility_id": action.target_ids[0]}
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],
@@ -1218,7 +1232,7 @@ def build_workflow(
                     "disposition": disposition,
                     "evidence_id": evidence_id,
                 }
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],
@@ -1233,7 +1247,7 @@ def build_workflow(
                     **details,
                 )
             elif action.action_type == "close_case":
-                grant = trusted_operations.issue_workflow_execution_grant(
+                grant = authorization_broker.issue_workflow_execution_grant(
                     **kwargs,
                     thread_id=state["thread_id"],
                     execution_id=state["execution_id"],

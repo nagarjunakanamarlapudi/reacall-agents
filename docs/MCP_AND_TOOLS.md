@@ -75,7 +75,7 @@ Agents cannot see or invoke Operations tools. The trusted graph node may call on
 6. the active checkpoint resume persists a one-use execution grant bound to the checkpoint head, workflow/execution requests, case/version, action digest, actor, and operation hash;
 7. the Operations transaction atomically consumes that grant and independently reloads the configured recall, recomputes its predicate and lot classification, and revalidates target evidence plus action-specific lifecycle predicates.
 
-The execution-grant issuer is not exposed as an MCP tool. Supplying a caller-authored approval envelope is therefore insufficient: every write tool also requires the exact unconsumed grant created by the trusted workflow resume.
+The execution-grant issuer is not exposed by `OperationsService`, the direct gateway, or any MCP tool. A runtime-only broker owns a durable random checkpoint-store capability; it authenticates the active head plus the exact confirmed execution ID/request digest before issuance. Supplying a caller-authored approval envelope is therefore insufficient: every write tool also requires the exact unconsumed grant created by the trusted workflow resume, and consumption rechecks the same active-attempt bindings.
 
 There is no automatic write retry. If a response is lost after commit, the graph checkpoints `write_outcome_unknown` and asks a human whether to retry with the exact same persisted key. Exact replay returns the original receipt; a changed request under that key is an idempotency conflict.
 

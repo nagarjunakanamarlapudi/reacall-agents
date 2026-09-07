@@ -54,7 +54,7 @@ The runner fails closed if a scenario crashes, an assertion/report field is abse
 
 ## Final integrated observation
 
-The pinned integrated report contains 21/21 passing safety-critical scenarios and 320 passing assertions. Every required rate is 1.0. `unauthorized_write_count`, `duplicate_logical_write_count`, `false_close_count`, and `receipt_integrity_violation_count` are all zero. The evaluator also audits eight nested service receipts through the global authorization/integrity ledger.
+The pinned integrated report contains 21/21 passing safety-critical scenarios. Every required rate is 1.0. `unauthorized_write_count`, `duplicate_logical_write_count`, `false_close_count`, and `receipt_integrity_violation_count` are all zero. Runtime receipts form the end-to-end dual-consent population. R15/R16 also retain explicitly tagged `privileged_lower_layer_lifecycle_fixture` receipts for lifecycle and integrity checks; those approval-only fixtures do not claim graph execution confirmation and are excluded from the end-to-end unauthorized-write aggregation. A mirrored fixture cannot authorize a runtime receipt.
 
 Trust anchors:
 

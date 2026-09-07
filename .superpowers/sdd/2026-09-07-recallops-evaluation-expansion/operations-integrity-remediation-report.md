@@ -46,3 +46,30 @@ The R01-R21 corpus remains exactly 21 safety-critical scenarios. R15, R16, and R
 - Ruff on all changed Python files: passed.
 
 Generated safety artifacts were produced by `make eval-safety`; they were not hand-edited. The scorecard was rebuilt with `make eval-summary`.
+
+## Runtime-only authorization follow-up
+
+The final authority-boundary review found that the normal `OperationsService` object still carried workflow reservation, mutation-claim, recovery, and grant-issuance methods. Those responsibilities now live behind a private runtime authorization broker. The public service and both direct/stdio gateways retain business reads and grant-consuming mutations only; the `RecallOpsRuntime` holds its broker outside the object's public attribute surface.
+
+The checkpoint database creates and persists a random UUIDv4 owner capability. Each active execution attempt now also persists the exact execution ID and canonical execution-request digest. Grant issuance verifies the owner, active checkpoint head, workflow request, execution ID, and execution-request digest. Grant consumption joins the live workflow identity and rechecks every one of those attempt bindings in the same transaction as the business write. Restart and exact completed replay remain supported, while a different execution, action, version, request, owner, or consumed capability cannot gain authority.
+
+The safety evaluator now labels R15/R16 direct lifecycle data as `privileged_lower_layer_lifecycle_fixture`. Those receipts remain in the unified ledger for sequence, integrity, closure, and lifecycle assertions, but are not counted as end-to-end dual-consent observations. Only runtime-context receipts enter `unauthorized_write_count`, and an approval-only service-probe mirror cannot authorize a runtime receipt. Missing or promoted fixture scope fails report validation. The existing R01-R21 numbering and 320-assertion history remain intact; R15/R16 disclose the lower-layer scope in their retained state and assertion text.
+
+Fresh validation for this follow-up:
+
+- Consumer-service and lifecycle unit suites: 63 passed.
+- Durable workflow integration suite: 92 passed.
+- Direct and real-stdio MCP integration suite: 23 passed.
+- Evaluator end-to-end suite: 33 passed.
+- Scorecard validation/tamper suite: 241 passed.
+- Transport-inclusive safety gate: 21/21 scenarios and 320/320 assertions passed; all four unsafe counters are zero.
+- Combined offline scorecard: safety 21/21, retrieval 96 cases/576 results, orchestration 24 cases/48 results; gate passed.
+- Changed Python files: Ruff format and lint passed.
+
+Canonical artifact bindings after regeneration:
+
+- Safety corpus: `483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`
+- Safety report: `76dad415cc0c18e79942ce82ca3db6050a559e47e4b2276e2471539dac96a8ad`
+- Scorecard: `b11edb68db8783d26812434b7e6f5b119ee551195d25aa15e522fd17137d8346`
+
+The safety report was regenerated with `make eval-safety`, and the scorecard was rebuilt with `make eval-summary`; neither measured artifact was hand-edited.

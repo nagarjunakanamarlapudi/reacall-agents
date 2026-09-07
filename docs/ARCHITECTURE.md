@@ -15,7 +15,7 @@ RecallOps separates evidence gathering from operational authority:
 - the independent verifier checks deterministic invariants;
 - a human authorizes one exact action at one exact case version;
 - a second human confirmation permits the approved graph node to call Operations MCP once;
-- the active checkpoint resume mints a one-use execution grant bound to that action and actor;
+- a runtime-only authorization broker, held outside the public service/gateway surface, mints a one-use execution grant from the active checkpoint resume and binds it to that action and actor;
 - Operations SQLite atomically consumes the grant and revalidates recall scope, version, idempotency, evidence, lifecycle, and closure inside the transaction.
 
 No agent, retrieved document, UI callback, or MCP transport can skip those layers.
@@ -91,7 +91,7 @@ An inventory hold must exist before disposition or facility work. A positive qua
 
 `RecallOpsRuntime.open()` keeps `AsyncSqliteSaver` open for the runtime lifetime. The checkpoint SQLite database stores a randomly generated persistent owner UUID, graph checkpoints, and an exact mutation marker. Operations SQLite binds the same case/thread to that checkpoint-store owner and tracks the current checkpoint head.
 
-Every start/resume computes a SHA-256 request digest over case ID, thread ID, expected checkpoint head, interrupt kind, normalized human response, action/digest, execution ID, idempotency key, and initial payload where applicable. A mutation must claim the exact Operations head and matching checkpoint marker before the graph advances. Only that active resume can persist a one-time grant bound to the case, thread, head, case version, workflow request, execution request, action digest, actor, and operation request hash. Consumption occurs in the same transaction as the write. Wrong case/thread/version/action/key, a copied checkpoint store, a stale head, a changed request, reused authority, or a concurrent mutation fails without altering trusted state. An exact completed replay returns its original receipt; the grant cannot authorize another operation.
+Every start/resume computes a SHA-256 request digest over case ID, thread ID, expected checkpoint head, interrupt kind, normalized human response, action/digest, execution ID, idempotency key, and initial payload where applicable. A mutation must claim the exact Operations head and matching checkpoint marker before the graph advances. The public `OperationsService` and MCP gateway can consume a grant but expose no reserve, claim, recovery, or issuance capability. Only the runtime's private broker for the checkpoint store's durable random UUID can persist a one-time grant bound to the case, thread, head, case version, workflow request, exact confirmed execution ID/request digest, action digest, actor, and operation request hash. Consumption rechecks those active-attempt bindings in the same transaction as the write. Wrong case/thread/version/action/key, a copied checkpoint store, a stale head, a changed request, reused authority, or a concurrent mutation fails without altering trusted state. An exact completed replay returns its original receipt; the grant cannot authorize another operation.
 
 The public runtime returns an immutable `RuntimeResult` containing detached JSON case state, one pending interrupt if present, next nodes, and the persistent LangGraph checkpoint ID. Restarting over the same two database paths resumes at the pending interrupt without rerunning completed reasoning nodes.
 

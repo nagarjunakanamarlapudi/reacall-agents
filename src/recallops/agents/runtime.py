@@ -31,7 +31,12 @@ from recallops.agents.workflow import (
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.paths import DATA_DIR, PROJECT_ROOT
 from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
-from recallops.services.operations import INITIAL_CHECKPOINT_HEAD, OperationsService
+from recallops.services.operations import (
+    INITIAL_CHECKPOINT_HEAD,
+    OperationsService,
+    _workflow_authorization_broker,
+    _WorkflowAuthorizationBroker,
+)
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 
@@ -115,6 +120,9 @@ class RuntimeResult(BaseModel):
 
 
 _RUNTIME_WORKFLOWS: weakref.WeakKeyDictionary[Any, ReadOnlyWorkflow] = weakref.WeakKeyDictionary()
+_RUNTIME_AUTHORIZERS: weakref.WeakKeyDictionary[Any, _WorkflowAuthorizationBroker] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _checkpoint_store_owner(path: Path) -> str:
@@ -234,6 +242,22 @@ def _mutation_request_digest(
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _execution_attempt_binding(pending: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    if pending.get("kind") not in {"execution_confirmation", "write_outcome_recovery"}:
+        return None, None
+    execution_id = pending.get("execution_id")
+    if type(execution_id) is not str or not execution_id.strip():
+        raise ValueError("execution interrupt requires a nonblank execution_id")
+    encoded = json.dumps(
+        strict_json_value(pending),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode()
+    return execution_id, hashlib.sha256(encoded).hexdigest()
+
+
 def _prepare_checkpoint_attempt(
     path: Path,
     case_id: str,
@@ -322,15 +346,13 @@ class RecallOpsRuntime:
         failures: FailureController,
         checkpointer: AsyncSqliteSaver,
         checkpoint_key: str,
-        operations_service: OperationsService,
-        checkpoint_owner_token: str,
+        authorization_broker: _WorkflowAuthorizationBroker,
     ) -> None:
         _RUNTIME_WORKFLOWS[self] = workflow
+        _RUNTIME_AUTHORIZERS[self] = authorization_broker
         self._failures = failures
         self._checkpointer = checkpointer
         self._checkpoint_key = checkpoint_key
-        self._operations_service = operations_service
-        self._checkpoint_owner_token = checkpoint_owner_token
 
     @classmethod
     def _active_lock_count(cls) -> int:
@@ -379,6 +401,10 @@ class RecallOpsRuntime:
             storage_path=operations,
             traceability=traceability,
         )
+        authorization_broker = _workflow_authorization_broker(
+            operations_service,
+            checkpoint_owner_token,
+        )
         if transport == "direct":
             gateway = DirectGateway(
                 registry=RecallRegistryService(
@@ -423,6 +449,7 @@ class RecallOpsRuntime:
                 retriever=retriever,
                 failures=failures,
                 operations_service=operations_service,
+                authorization_broker=authorization_broker,
                 checkpointer=saver,
             )
             yield cls(
@@ -430,8 +457,7 @@ class RecallOpsRuntime:
                 failures=failures,
                 checkpointer=saver,
                 checkpoint_key=str(checkpoint),
-                operations_service=operations_service,
-                checkpoint_owner_token=checkpoint_owner_token,
+                authorization_broker=authorization_broker,
             )
 
     @staticmethod
@@ -551,10 +577,10 @@ class RecallOpsRuntime:
                         f"thread {generated_thread!r} already has a durable checkpoint"
                     )
                 await self._validate_checkpoint_identity(generated_case, generated_thread)
-                reserved = self._operations_service.reserve_workflow_identity(
+                authorization = _RUNTIME_AUTHORIZERS[self]
+                reserved = authorization.reserve_workflow_identity(
                     generated_case,
                     generated_thread,
-                    self._checkpoint_owner_token,
                 )
                 checkpoint_path = Path(self._checkpoint_key)
                 attempt_token = _prepare_checkpoint_attempt(
@@ -566,10 +592,9 @@ class RecallOpsRuntime:
                 )
                 claimed = False
                 try:
-                    self._operations_service.claim_workflow_mutation(
+                    authorization.claim_workflow_mutation(
                         generated_case,
                         generated_thread,
-                        self._checkpoint_owner_token,
                         INITIAL_CHECKPOINT_HEAD,
                         attempt_token,
                         request_digest,
@@ -580,10 +605,9 @@ class RecallOpsRuntime:
                     created_checkpoint_id = self._checkpoint_id(created)
                     if created_checkpoint_id is None:
                         raise RuntimeError("workflow start completed without a durable checkpoint")
-                    self._operations_service.advance_workflow_mutation(
+                    authorization.advance_workflow_mutation(
                         generated_case,
                         generated_thread,
-                        self._checkpoint_owner_token,
                         INITIAL_CHECKPOINT_HEAD,
                         created_checkpoint_id,
                         attempt_token,
@@ -601,19 +625,17 @@ class RecallOpsRuntime:
                     created_checkpoint_id = self._checkpoint_id(created)
                     if claimed:
                         if created_checkpoint_id is None:
-                            self._operations_service.release_workflow_mutation(
+                            authorization.release_workflow_mutation(
                                 generated_case,
                                 generated_thread,
-                                self._checkpoint_owner_token,
                                 INITIAL_CHECKPOINT_HEAD,
                                 attempt_token,
                                 request_digest,
                             )
                         else:
-                            self._operations_service.advance_workflow_mutation(
+                            authorization.advance_workflow_mutation(
                                 generated_case,
                                 generated_thread,
-                                self._checkpoint_owner_token,
                                 INITIAL_CHECKPOINT_HEAD,
                                 created_checkpoint_id,
                                 attempt_token,
@@ -627,10 +649,9 @@ class RecallOpsRuntime:
                             request_digest,
                         )
                     if reserved and created_checkpoint_id is None:
-                        self._operations_service.release_workflow_identity(
+                        authorization.release_workflow_identity(
                             generated_case,
                             generated_thread,
-                            self._checkpoint_owner_token,
                         )
                     raise
                 return self._result(created)
@@ -685,10 +706,10 @@ class RecallOpsRuntime:
                 raise ValueError(f"thread {thread_id!r} has no pending interrupt")
             checkpoint_case_id = before.values.get("case_id")
             checkpoint_thread_id = before.values.get("thread_id")
-            self._operations_service.validate_or_claim_workflow_identity(
+            authorization = _RUNTIME_AUTHORIZERS[self]
+            authorization.validate_or_claim_workflow_identity(
                 checkpoint_case_id,
                 thread_id,
-                self._checkpoint_owner_token,
                 legacy_owner_token=str(
                     uuid5(
                         NAMESPACE_URL,
@@ -719,10 +740,9 @@ class RecallOpsRuntime:
                 thread_id,
             )
             if marker is not None and marker[1] != before_checkpoint_id:
-                self._operations_service.recover_workflow_mutation(
+                authorization.recover_workflow_mutation(
                     checkpoint_case_id,
                     thread_id,
-                    self._checkpoint_owner_token,
                     marker[1],
                     before_checkpoint_id,
                     marker[0],
@@ -744,13 +764,15 @@ class RecallOpsRuntime:
             )
             claimed = False
             try:
-                self._operations_service.claim_workflow_mutation(
+                execution_id, execution_request_digest = _execution_attempt_binding(pending)
+                authorization.claim_workflow_mutation(
                     checkpoint_case_id,
                     thread_id,
-                    self._checkpoint_owner_token,
                     before_checkpoint_id,
                     attempt_token,
                     request_digest,
+                    execution_id=execution_id,
+                    execution_request_digest=execution_request_digest,
                 )
                 claimed = True
                 if self._failures.consume("stale_decision_version"):
@@ -765,10 +787,9 @@ class RecallOpsRuntime:
                 after_checkpoint_id = self._checkpoint_id(after)
                 if after_checkpoint_id is None:
                     raise RuntimeError("workflow resume completed without a durable checkpoint")
-                self._operations_service.advance_workflow_mutation(
+                authorization.advance_workflow_mutation(
                     checkpoint_case_id,
                     thread_id,
-                    self._checkpoint_owner_token,
                     before_checkpoint_id,
                     after_checkpoint_id,
                     attempt_token,
@@ -790,20 +811,18 @@ class RecallOpsRuntime:
                         after_checkpoint_id is not None
                         and after_checkpoint_id != before_checkpoint_id
                     ):
-                        self._operations_service.advance_workflow_mutation(
+                        authorization.advance_workflow_mutation(
                             checkpoint_case_id,
                             thread_id,
-                            self._checkpoint_owner_token,
                             before_checkpoint_id,
                             after_checkpoint_id,
                             attempt_token,
                             request_digest,
                         )
                     else:
-                        self._operations_service.release_workflow_mutation(
+                        authorization.release_workflow_mutation(
                             checkpoint_case_id,
                             thread_id,
-                            self._checkpoint_owner_token,
                             before_checkpoint_id,
                             attempt_token,
                             request_digest,
