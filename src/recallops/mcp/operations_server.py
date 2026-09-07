@@ -62,6 +62,7 @@ def create_case(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
     question: str = "",
     thread_id: str | None = None,
 ) -> AuditReceipt:
@@ -86,6 +87,7 @@ def create_case(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
         question=question,
         thread_id=thread_id,
     )
@@ -106,6 +108,7 @@ def apply_inventory_hold(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
 ) -> AuditReceipt:
     return service.apply_inventory_hold(
         case_id=case_id,
@@ -123,6 +126,7 @@ def apply_inventory_hold(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
     )
 
 
@@ -141,6 +145,7 @@ def create_facility_tasks(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
 ) -> AuditReceipt:
     return service.create_facility_tasks(
         case_id=case_id,
@@ -158,6 +163,7 @@ def create_facility_tasks(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
     )
 
 
@@ -176,6 +182,7 @@ def record_acknowledgment(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
 ) -> AuditReceipt:
     return service.record_acknowledgment(
         case_id=case_id,
@@ -193,6 +200,7 @@ def record_acknowledgment(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
     )
 
 
@@ -213,6 +221,7 @@ def record_disposition(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
 ) -> AuditReceipt:
     return service.record_disposition(
         case_id=case_id,
@@ -232,6 +241,7 @@ def record_disposition(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
     )
 
 
@@ -249,6 +259,7 @@ def close_case(
     action_bindings: list[ApprovalBinding],
     expected_case_version: CaseVersion,
     idempotency_key: str,
+    execution_grant: str,
 ) -> AuditReceipt:
     return service.close_case(
         case_id=case_id,
@@ -265,6 +276,7 @@ def close_case(
         ),
         expected_case_version=expected_case_version,
         idempotency_key=idempotency_key,
+        execution_grant=execution_grant,
     )
 
 

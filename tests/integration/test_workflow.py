@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -165,6 +166,34 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
         "action_review",
     ]
     assert json.loads(json.dumps(result.model_dump(mode="json")["case"])) == result.case
+    assert _operation_count(operations_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_independent_verifier_failure_ends_escalated_before_action_review(
+    tmp_path: Path,
+) -> None:
+    """Break caught: a failed independent verifier still reaches a write review interrupt."""
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    operations_path = tmp_path / "operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        runtime.inject_failure("independent_verifier_failure")
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Prove a verifier failure cannot open the action path.",
+            case_id="CASE-VERIFIER-FAIL",
+            thread_id="THREAD-VERIFIER-FAIL",
+            scope_lot_ids=["LOT-PROBABLE-160"],
+        )
+
+    assert result.case["status"] == "escalated"
+    assert result.case["verification"]["passed"] is False
+    assert result.pending_interrupt is None
+    assert "prepare_action_review" not in result.case["node_trace"]
     assert _operation_count(operations_path) == 0
     assert _case_count(operations_path) == 0
 
@@ -1547,7 +1576,35 @@ async def test_receipt_field_mismatch_enters_same_key_authoritative_recovery(
     from recallops.services.operations import OperationsService
 
     operations_path = tmp_path / f"{field}.sqlite3"
-    operations = OperationsService(storage_path=operations_path)
+
+    class DirectGraphOperations(OperationsService):
+        """Supply the runtime fence omitted only by this low-level graph harness."""
+
+        def issue_workflow_execution_grant(self, **kwargs):
+            case_id = kwargs["case_id"]
+            thread_id = kwargs["thread_id"]
+            owner = f"DIRECT-GRAPH-TEST:{case_id}"
+            if self.get_thread_for_case(case_id) is None:
+                self.reserve_workflow_identity(case_id, thread_id, owner)
+            with sqlite3.connect(self.storage_path) as connection:
+                row = connection.execute(
+                    "SELECT checkpoint_head, attempt_state FROM workflow_identities "
+                    "WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+            if row[1] != "active":
+                digest = hashlib.sha256(f"{case_id}:{thread_id}:{row[0]}".encode()).hexdigest()
+                self.claim_workflow_mutation(
+                    case_id,
+                    thread_id,
+                    owner,
+                    row[0],
+                    f"DIRECT-GRAPH-ATTEMPT:{case_id}",
+                    digest,
+                )
+            return super().issue_workflow_execution_grant(**kwargs)
+
+    operations = DirectGraphOperations(storage_path=operations_path)
 
     class CorruptingGateway(DirectGateway):
         corrupt_next = True
@@ -2597,9 +2654,10 @@ async def test_unaccounted_lot_disposition_is_reviewed_confirmed_and_restart_saf
                 response=_bound_response(pending, decision=decision),
             )
 
-    assert result.case["status"] == "open_closure_blocked"
+    assert result.case["status"] == "closed"
     assert result.pending_interrupt is None
-    assert "close_case" not in [receipt["action_type"] for receipt in result.case["write_receipts"]]
+    assert result.case["closure_outcome"] == {"eligible": True, "closed": True}
+    assert [receipt["action_type"] for receipt in result.case["write_receipts"]][-1] == "close_case"
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
+import json
 import weakref
 from collections import Counter
 from collections.abc import Mapping
@@ -196,6 +198,17 @@ def _node(name: str, **updates: Any) -> dict[str, Any]:
 
 def _ordered(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
+
+
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        strict_json_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _event_evidence_by_lot(state: RecallOpsGraphState) -> dict[str, list[str]]:
@@ -851,6 +864,8 @@ def build_workflow(
 
     async def verify(state: RecallOpsGraphState) -> dict[str, Any]:
         violations: list[str] = []
+        if failure_controller.consume("independent_verifier_failure"):
+            violations.append("independent verifier rejected the proposed evidence packet")
         if set(state["confirmed_lot_ids"]) & set(state["ambiguous_lot_ids"]):
             violations.append("ambiguous lots overlap the confirmed containment scope")
         if set(state["required_facilities"]) != set(state["evidence_by_facility"]):
@@ -877,6 +892,16 @@ def build_workflow(
         )
 
     async def prepare_action_review(state: RecallOpsGraphState) -> dict[str, Any]:
+        if state.get("verification", {}).get("passed") is not True:
+            return _node(
+                "prepare_action_review",
+                status="escalated",
+                action_queue=[],
+                closure_outcome={
+                    "eligible": False,
+                    "reason": "independent verification did not pass",
+                },
+            )
         action = _next_action(state)
         if action is None:
             return _node(
@@ -1090,6 +1115,8 @@ def build_workflow(
     async def execute_one_operation(state: RecallOpsGraphState) -> dict[str, Any]:
         action = ProposedAction.model_validate(state["current_action"])
         approval = ApprovalDecision.model_validate(state["approval"])
+        if state.get("verification", {}).get("passed") is not True:
+            raise ValueError("action execution requires an independent passing verification")
         ApprovalGuard().validate(
             approval,
             proposed_action=action,
@@ -1098,7 +1125,7 @@ def build_workflow(
         # One invocation receives exactly one write attempt; unknown outcomes are
         # checkpointed and require a new human-triggered invocation with the same key.
         CallBudget(1).consume()
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "case_id": state["case_id"],
             "proposed_action": action,
             "approval": approval,
@@ -1114,42 +1141,107 @@ def build_workflow(
                 reconciliations = [
                     item for item in state["reconciliations"] if item["lot_id"] in confirmed
                 ]
+                details = {
+                    "recall_number": state["recall_number"],
+                    "question": state["question"],
+                    "thread_id": state["thread_id"],
+                    "confirmed_lot_ids": state["confirmed_lot_ids"],
+                    "trace_event_ids": [event["event_id"] for event in trace_events],
+                    "required_facilities": state["required_facilities"],
+                    "reconciliation": reconciliations,
+                    "evidence_gaps": [
+                        f"{item['lot_id']}: {item['unaccounted']} unaccounted units"
+                        for item in reconciliations
+                        if item["unaccounted"]
+                    ],
+                }
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details=details,
+                    target_ids=list(action.target_ids),
+                    evidence_ids=details["trace_event_ids"],
+                )
                 receipt = await trusted_gateway.create_case(
                     **kwargs,
-                    recall_number=state["recall_number"],
-                    confirmed_lot_ids=state["confirmed_lot_ids"],
-                    trace_event_ids=[event["event_id"] for event in trace_events],
-                    required_facilities=state["required_facilities"],
-                    reconciliation=reconciliations,
-                    evidence_gaps=_ordered([*state["evidence_gaps"], *state["ambiguous_lot_ids"]]),
-                    question=state["question"],
-                    thread_id=state["thread_id"],
+                    execution_grant=grant,
+                    **details,
                 )
             elif action.action_type == "apply_inventory_hold":
+                details = {"lot_ids": list(action.target_ids)}
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details=details,
+                    target_ids=list(action.target_ids),
+                )
                 receipt = await trusted_gateway.apply_inventory_hold(
-                    **kwargs, lot_ids=list(action.target_ids)
+                    **kwargs, execution_grant=grant, **details
                 )
             elif action.action_type == "create_facility_tasks":
+                details = {"facility_ids": list(action.target_ids)}
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details=details,
+                    target_ids=list(action.target_ids),
+                )
                 receipt = await trusted_gateway.create_facility_tasks(
-                    **kwargs, facility_ids=list(action.target_ids)
+                    **kwargs, execution_grant=grant, **details
                 )
             elif action.action_type == "record_acknowledgment":
+                details = {"facility_id": action.target_ids[0]}
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details=details,
+                    target_ids=list(action.target_ids),
+                )
                 receipt = await trusted_gateway.record_acknowledgment(
-                    **kwargs, facility_id=action.target_ids[0]
+                    **kwargs, execution_grant=grant, **details
                 )
             elif action.action_type == "record_disposition":
                 planned = _planned_disposition(state, action.target_ids[0])
                 if planned is None:
                     raise ValueError("record_disposition lacks authoritative disposition evidence")
                 disposition, evidence_id = planned
+                details = {
+                    "lot_id": action.target_ids[0],
+                    "disposition": disposition,
+                    "evidence_id": evidence_id,
+                }
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details=details,
+                    target_ids=list(action.target_ids),
+                    evidence_ids=[evidence_id],
+                )
                 receipt = await trusted_gateway.record_disposition(
                     **kwargs,
-                    lot_id=action.target_ids[0],
-                    disposition=disposition,
-                    evidence_id=evidence_id,
+                    execution_grant=grant,
+                    **details,
                 )
             elif action.action_type == "close_case":
-                receipt = await trusted_gateway.close_case(**kwargs)
+                grant = trusted_operations.issue_workflow_execution_grant(
+                    **kwargs,
+                    thread_id=state["thread_id"],
+                    execution_id=state["execution_id"],
+                    execution_request_digest=_canonical_digest(state["execution_request"]),
+                    details={},
+                    target_ids=[],
+                )
+                receipt = await trusted_gateway.close_case(**kwargs, execution_grant=grant)
             else:
                 raise ValueError(f"unsupported runtime action {action.action_type}")
             typed_receipt = AuditReceipt.model_validate(receipt)
@@ -1423,7 +1515,11 @@ def build_workflow(
         {"continue": "containment_draft", "end": END},
     )
     graph.add_edge("containment_draft", "verify")
-    graph.add_edge("verify", "prepare_action_review")
+    graph.add_conditional_edges(
+        "verify",
+        lambda state: "review" if state.get("verification", {}).get("passed") is True else "end",
+        {"review": "prepare_action_review", "end": END},
+    )
     graph.add_conditional_edges(
         "prepare_action_review",
         lambda state: "end" if state["status"] == "open_closure_blocked" else "review",

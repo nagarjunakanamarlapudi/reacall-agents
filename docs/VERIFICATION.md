@@ -380,3 +380,35 @@ contract finished `40 passed in 23.81s`; and patch whitespace was clean. The
 pre-commit status listed only this verification record and its synchronized
 submission checklist. After the final evidence commit, a separate status check
 confirmed a clean `main` worktree.
+
+## 2026-09-07 Operations authority and lifecycle hardening
+
+The final integrity audit added trusted recall/predicate/lot recomputation,
+target-bound evidence checks, hold-first lifecycle enforcement, append-only
+disposition events, fail-closed independent verification, and persisted
+single-use workflow execution grants. The R01-R21 corpus stayed at exactly 21
+scenarios; R15, R16, and R20 were revised in place to exercise the strengthened
+lifecycle and execution fence.
+
+Commands and observed outcomes:
+
+```bash
+uv run pytest tests/unit -q --tb=short
+uv run pytest tests/integration/test_workflow.py -q --tb=short
+uv run pytest tests/integration/test_mcp_servers.py -q --tb=short
+uv run pytest tests/integration/test_retrieval_mcp.py -q --tb=short
+uv run pytest tests/docs/test_documentation.py tests/unit/test_evaluation_ranking.py tests/unit/test_evaluation_scorecard.py tests/ui/test_evaluation_reports.py -q --tb=short
+make eval-safety
+make eval-summary
+uv run ruff format --check src/recallops tests/unit/test_gateway.py tests/unit/test_services.py tests/unit/test_operations_sqlite.py tests/integration/test_mcp_servers.py tests/integration/test_workflow.py
+uv run ruff check src/recallops tests/unit/test_gateway.py tests/unit/test_services.py tests/unit/test_operations_sqlite.py tests/integration/test_mcp_servers.py tests/integration/test_workflow.py
+git diff --check
+```
+
+Observed: `812 passed` for unit tests, `92 passed` for the durable workflow,
+`23 passed` for direct and real-stdio MCP behavior, `9 passed` for retrieval MCP,
+and `351 passed` for documentation/evaluation projection. The transport-inclusive
+safety gate reported 21/21 safety-critical scenarios passed; the combined
+scorecard reported safety 21/21, retrieval 96 cases/576 results, orchestration 24
+cases/48 results, and `Offline evaluation gate: PASSED`. Ruff format/lint and
+patch-whitespace checks exited zero.

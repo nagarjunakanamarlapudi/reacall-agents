@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import ValidationError
 
+from recallops.agents.specialists import investigate_recall
 from recallops.config import get_settings
+from recallops.data.loaders import load_recall_snapshot
 from recallops.models import (
     ApprovalDecision,
     AuditReceipt,
     Disposition,
+    DispositionEvent,
     ProposedAction,
     RecallCaseState,
     Reconciliation,
@@ -102,6 +107,22 @@ class OperationsService:
                     CREATE TABLE IF NOT EXISTS tasks (
                       case_id TEXT NOT NULL REFERENCES cases(case_id), facility_id TEXT NOT NULL,
                       status TEXT NOT NULL, PRIMARY KEY(case_id, facility_id));
+                    CREATE TABLE IF NOT EXISTS inventory_holds (
+                      case_id TEXT NOT NULL REFERENCES cases(case_id), lot_id TEXT NOT NULL,
+                      receipt_id TEXT NOT NULL, held_at TEXT NOT NULL,
+                      PRIMARY KEY(case_id, lot_id));
+                    CREATE TABLE IF NOT EXISTS disposition_events (
+                      event_id TEXT PRIMARY KEY, case_id TEXT NOT NULL REFERENCES cases(case_id),
+                      lot_id TEXT NOT NULL, event_json TEXT NOT NULL);
+                    CREATE TABLE IF NOT EXISTS execution_grants (
+                      grant_token TEXT PRIMARY KEY, case_id TEXT NOT NULL, thread_id TEXT NOT NULL,
+                      checkpoint_head TEXT NOT NULL, case_version INTEGER NOT NULL,
+                      workflow_request_digest TEXT NOT NULL, execution_id TEXT NOT NULL,
+                      execution_request_digest TEXT NOT NULL, action_type TEXT NOT NULL,
+                      action_digest TEXT NOT NULL, actor TEXT NOT NULL,
+                      idempotency_key TEXT NOT NULL, operation_request_hash TEXT NOT NULL,
+                      consumed_at REAL, receipt_id TEXT,
+                      UNIQUE(case_id, idempotency_key, operation_request_hash));
                 """)
                 self._migrate_case_threads(connection)
         except (OSError, sqlite3.Error) as error:
@@ -272,16 +293,36 @@ class OperationsService:
     def _validate_authoritative_evidence(
         self,
         *,
+        recall_number: str,
         confirmed_lot_ids: list[str],
         trace_event_ids: list[str],
         required_facilities: list[str],
         reconciliation: list[Reconciliation],
-    ) -> None:
+    ) -> tuple[Any, Any, list[dict[str, Any]]]:
+        try:
+            recall = load_recall_snapshot(recall_number, data_dir=self.traceability.data_dir)
+        except (OSError, KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"authoritative recall {recall_number!r} does not exist") from error
+        if recall.recall_number != recall_number:
+            raise ValueError("authoritative recall identifier mismatch")
+        intelligence = investigate_recall(recall)
+        lot_matches = {
+            item["lot_id"]: item for item in self.traceability.match_lots(intelligence.predicate)
+        }
         known_lot_ids = {item["lot_id"] for item in self.traceability.dataset["lots"]}
         unknown_lot_ids = set(confirmed_lot_ids) - known_lot_ids
         if unknown_lot_ids:
             raise ValueError(
                 f"authoritative evidence has no such lot(s): {sorted(unknown_lot_ids)}"
+            )
+        ineligible = {
+            lot_id: lot_matches[lot_id]["classification"]
+            for lot_id in confirmed_lot_ids
+            if lot_matches[lot_id]["classification"] not in {"exact", "probable"}
+        }
+        if ineligible:
+            raise ValueError(
+                f"recall predicate classification rejects the requested case lot(s): {ineligible}"
             )
 
         authoritative_event_ids: set[str] = set()
@@ -319,6 +360,85 @@ class OperationsService:
                     "authoritative reconciliation mismatch for "
                     f"{lot_id}: quantities and component evidence must match the dataset"
                 )
+        return recall, intelligence.predicate, [lot_matches[lot_id] for lot_id in confirmed_lot_ids]
+
+    def _lot_evidence_ids(self, lot_id: str) -> set[str]:
+        return {event["event_id"] for event in self.traceability.trace_forward(lot_id)} | {
+            position["position_id"] for position in self.traceability.get_inventory(lot_id)
+        }
+
+    def _facility_evidence_ids(self, state: RecallCaseState, facility_id: str) -> set[str]:
+        evidence: set[str] = set()
+        for lot_id in state.confirmed_lot_ids:
+            events = self.traceability.trace_forward(lot_id)
+            positions = self.traceability.get_inventory(lot_id)
+            if any(
+                facility_id in {event.get("from_facility"), event.get("to_facility")}
+                for event in events
+            ) or any(position["facility_id"] == facility_id for position in positions):
+                evidence.update(self._lot_evidence_ids(lot_id))
+        return evidence
+
+    def _reconciliation_with_dispositions(
+        self,
+        lot_id: str,
+        events: list[DispositionEvent],
+    ) -> Reconciliation:
+        base = self.traceability.reconcile_units(lot_id)
+        quantities = base.model_dump(mode="python")
+        component_evidence = {
+            component: list(identifiers)
+            for component, identifiers in base.component_evidence.items()
+        }
+        remaining = base.unaccounted
+        component_by_disposition = {
+            "dispose_unaccounted": "disposed",
+            "quarantined": "quarantined",
+            "returned": "returned",
+        }
+        for event in events:
+            if event.lot_id != lot_id or event.quantity > remaining:
+                raise ClosureBlockedError("disposition event exceeds the authoritative residual")
+            component = component_by_disposition[event.disposition]
+            quantities[component] += event.quantity
+            remaining -= event.quantity
+            component_evidence[component] = [
+                *component_evidence[component],
+                event.event_id,
+            ]
+        quantities["unaccounted"] = remaining
+        evidence_ids = list(
+            dict.fromkeys(
+                identifier
+                for identifiers in component_evidence.values()
+                for identifier in identifiers
+            )
+        )
+        return Reconciliation.model_validate(
+            {
+                **quantities,
+                "evidence_ids": evidence_ids,
+                "component_evidence": component_evidence,
+                "verified": True,
+            }
+        )
+
+    @staticmethod
+    def _require_related_target_evidence(
+        proposed_action: ProposedAction,
+        expected: dict[str, set[str]],
+    ) -> None:
+        supplied = {
+            target: set(identifiers)
+            for target, identifiers in proposed_action.evidence_by_target.items()
+        }
+        if set(supplied) != set(expected) or any(
+            not supplied[target] or not supplied[target].issubset(expected[target])
+            for target in expected
+        ):
+            raise ClosureBlockedError(
+                "action evidence must be complete, authoritative, and related to each target"
+            )
 
     def _request_hash(
         self,
@@ -519,6 +639,193 @@ class OperationsService:
             or any(character not in "0123456789abcdef" for character in request_digest)
         ):
             raise ValueError("request_digest must be a canonical SHA-256 hex digest")
+
+    def issue_workflow_execution_grant(
+        self,
+        *,
+        case_id: str,
+        thread_id: str,
+        proposed_action: ProposedAction,
+        approval: ApprovalDecision,
+        expected_case_version: int,
+        idempotency_key: str,
+        execution_id: str,
+        execution_request_digest: str,
+        details: dict[str, Any],
+        target_ids: list[str],
+        evidence_ids: list[str] | None = None,
+    ) -> str:
+        """Mint a one-use capability only while an owned workflow resume is active.
+
+        This method is intentionally absent from every MCP surface. The LangGraph executor
+        calls it after both review and execution-confirmation interrupts have completed.
+        """
+
+        for name, value in (
+            ("case_id", case_id),
+            ("thread_id", thread_id),
+            ("execution_id", execution_id),
+            ("idempotency_key", idempotency_key),
+        ):
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{name} must be a nonblank exact string")
+        self._validate_request_digest(execution_request_digest)
+        self._approval(
+            approval,
+            expected_case_version,
+            case_id=case_id,
+            action_type=proposed_action.action_type,
+            proposed_action=proposed_action,
+            target_ids=target_ids,
+            evidence_ids=evidence_ids,
+        )
+        operation_request_hash = self._request_hash(
+            case_id,
+            proposed_action.action_type,
+            expected_case_version,
+            details,
+            approval,
+            proposed_action,
+        )
+        action_digest = proposed_action_digest(proposed_action)
+        try:
+            with self._transaction() as conn:
+                identity = conn.execute(
+                    "SELECT thread_id, owner_token, checkpoint_head, attempt_expected_head, "
+                    "attempt_request_digest, attempt_state, attempt_expires_at "
+                    "FROM workflow_identities WHERE case_id=?",
+                    (case_id,),
+                ).fetchone()
+                if (
+                    identity is None
+                    or identity["thread_id"] != thread_id
+                    or not identity["owner_token"]
+                    or not identity["checkpoint_head"]
+                    or identity["attempt_expected_head"] != identity["checkpoint_head"]
+                    or not identity["attempt_request_digest"]
+                    or identity["attempt_state"] != "active"
+                    or (identity["attempt_expires_at"] or 0) <= time.time()
+                ):
+                    raise ApprovalRequiredError(
+                        "execution grant requires an active trusted workflow checkpoint resume"
+                    )
+                completed = conn.execute(
+                    "SELECT request_hash FROM receipts WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if completed is not None:
+                    if completed["request_hash"] != operation_request_hash:
+                        raise IdempotencyConflictError(
+                            "idempotency key is bound to a different request"
+                        )
+                    completed_grant = conn.execute(
+                        "SELECT grant_token FROM execution_grants "
+                        "WHERE case_id=? AND idempotency_key=? AND operation_request_hash=?",
+                        (case_id, idempotency_key, operation_request_hash),
+                    ).fetchone()
+                    if completed_grant is None:
+                        raise OperationStoreError(
+                            "completed workflow write is missing its execution-grant audit record"
+                        )
+                    return str(completed_grant["grant_token"])
+                existing = conn.execute(
+                    "SELECT * FROM execution_grants WHERE case_id=? AND idempotency_key=?",
+                    (case_id, idempotency_key),
+                ).fetchone()
+                bindings = {
+                    "case_id": case_id,
+                    "thread_id": thread_id,
+                    "checkpoint_head": identity["checkpoint_head"],
+                    "case_version": expected_case_version,
+                    "workflow_request_digest": identity["attempt_request_digest"],
+                    "execution_id": execution_id,
+                    "execution_request_digest": execution_request_digest,
+                    "action_type": proposed_action.action_type,
+                    "action_digest": action_digest,
+                    "actor": approval.actor,
+                    "idempotency_key": idempotency_key,
+                    "operation_request_hash": operation_request_hash,
+                }
+                if existing is not None:
+                    if any(existing[name] != value for name, value in bindings.items()):
+                        raise IdempotencyConflictError(
+                            "execution grant is bound to a different workflow request"
+                        )
+                    return str(existing["grant_token"])
+                token = secrets.token_urlsafe(32)
+                conn.execute(
+                    "INSERT INTO execution_grants "
+                    "(grant_token, case_id, thread_id, checkpoint_head, case_version, "
+                    "workflow_request_digest, execution_id, execution_request_digest, "
+                    "action_type, action_digest, actor, idempotency_key, "
+                    "operation_request_hash, consumed_at, receipt_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)",
+                    (token, *bindings.values()),
+                )
+                return token
+        except (ApprovalRequiredError, IdempotencyConflictError):
+            raise
+        except (OSError, sqlite3.Error) as error:
+            raise OperationStoreError(f"unable to issue execution grant: {error}") from error
+
+    @staticmethod
+    def _consume_execution_grant(
+        conn: sqlite3.Connection,
+        *,
+        token: str | None,
+        case_id: str,
+        thread_id: str,
+        action: str,
+        expected: int,
+        key: str,
+        request_hash: str,
+        proposed_action: ProposedAction,
+        actor: str,
+    ) -> None:
+        if type(token) is not str or not token.strip():
+            raise ApprovalRequiredError("write requires a one-time workflow execution grant")
+        row = conn.execute(
+            "SELECT grant.*, identity.checkpoint_head AS active_checkpoint_head, "
+            "identity.attempt_expected_head AS active_attempt_head, "
+            "identity.attempt_request_digest AS active_request_digest, "
+            "identity.attempt_state AS active_attempt_state, "
+            "identity.attempt_expires_at AS active_attempt_expires_at "
+            "FROM execution_grants AS grant "
+            "JOIN workflow_identities AS identity "
+            "ON identity.case_id=grant.case_id AND identity.thread_id=grant.thread_id "
+            "WHERE grant.grant_token=?",
+            (token,),
+        ).fetchone()
+        expected_bindings = {
+            "case_id": case_id,
+            "thread_id": thread_id,
+            "case_version": expected,
+            "action_type": action,
+            "action_digest": proposed_action_digest(proposed_action),
+            "actor": actor,
+            "idempotency_key": key,
+            "operation_request_hash": request_hash,
+        }
+        if row is None or any(row[name] != value for name, value in expected_bindings.items()):
+            raise ApprovalRequiredError("execution grant does not match the exact reviewed write")
+        if (
+            row["active_checkpoint_head"] != row["checkpoint_head"]
+            or row["active_attempt_head"] != row["checkpoint_head"]
+            or row["active_request_digest"] != row["workflow_request_digest"]
+            or row["active_attempt_state"] != "active"
+            or (row["active_attempt_expires_at"] or 0) <= time.time()
+        ):
+            raise ApprovalRequiredError(
+                "execution grant is no longer attached to its active workflow resume"
+            )
+        if row["consumed_at"] is not None:
+            raise ApprovalRequiredError("execution grant has already been consumed")
+        updated = conn.execute(
+            "UPDATE execution_grants SET consumed_at=? WHERE grant_token=? AND consumed_at IS NULL",
+            (time.time(), token),
+        )
+        if updated.rowcount != 1:
+            raise ApprovalRequiredError("execution grant has already been consumed")
 
     def claim_workflow_mutation(
         self,
@@ -873,6 +1180,7 @@ class OperationsService:
         proposed_action: ProposedAction,
         expected: int,
         key: str,
+        execution_grant: str | None,
         details: dict[str, Any],
         target_ids: list[str],
         evidence_ids: list[str] | None = None,
@@ -910,12 +1218,29 @@ class OperationsService:
                 state = RecallCaseState.model_validate_json(row["state_json"])
                 if state.status == "closed":
                     raise ClosureBlockedError("operation blocked: case is already closed")
+                self._consume_execution_grant(
+                    conn,
+                    token=execution_grant,
+                    case_id=case_id,
+                    thread_id=state.thread_id,
+                    action=action,
+                    expected=expected,
+                    key=key,
+                    request_hash=request_hash,
+                    proposed_action=proposed_action,
+                    actor=approval.actor,
+                )
                 if validator:
                     validator(conn, state)
                 if self._before_cas_hook:
                     self._before_cas_hook(action)
                 if transform:
                     state = transform(state)
+                receipt_details = dict(details)
+                if action == "record_disposition":
+                    receipt_details["disposition_event"] = state.disposition_events[-1].model_dump(
+                        mode="json"
+                    )
                 receipt = AuditReceipt(
                     receipt_id=str(uuid5(NAMESPACE_URL, f"{case_id}:{action}:{key}")),
                     case_id=case_id,
@@ -926,7 +1251,7 @@ class OperationsService:
                     case_version=expected + 1,
                     status="simulated",
                     details={
-                        **details,
+                        **receipt_details,
                         "reviewed_action": proposed_action.model_dump(mode="json"),
                     },
                 )
@@ -954,6 +1279,10 @@ class OperationsService:
                         receipt.model_dump_json(),
                     ),
                 )
+                conn.execute(
+                    "UPDATE execution_grants SET receipt_id=? WHERE grant_token=?",
+                    (receipt.receipt_id, execution_grant),
+                )
                 self._inject_failure("after_receipt_insert")
                 if action == "create_facility_tasks":
                     for facility_id in details["facility_ids"]:
@@ -973,6 +1302,18 @@ class OperationsService:
                     conn.execute(
                         "UPDATE tasks SET status='acknowledged' WHERE case_id=? AND facility_id=?",
                         (case_id, details["facility_id"]),
+                    )
+                if action == "apply_inventory_hold":
+                    for lot_id in details["lot_ids"]:
+                        conn.execute(
+                            "INSERT INTO inventory_holds VALUES (?, ?, ?, ?)",
+                            (case_id, lot_id, receipt.receipt_id, receipt.created_at.isoformat()),
+                        )
+                if action == "record_disposition":
+                    event = state.disposition_events[-1]
+                    conn.execute(
+                        "INSERT INTO disposition_events VALUES (?, ?, ?, ?)",
+                        (event.event_id, case_id, event.lot_id, event.model_dump_json()),
                     )
                 return receipt
         except (
@@ -1000,6 +1341,7 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
         question: str = "",
         thread_id: str | None = None,
     ) -> AuditReceipt:
@@ -1090,20 +1432,57 @@ class OperationsService:
                     target_ids=confirmed_lot_ids,
                     evidence_ids=trace_event_ids,
                 )
+                self._consume_execution_grant(
+                    conn,
+                    token=execution_grant,
+                    case_id=case_id,
+                    thread_id=durable_thread_id,
+                    action="create_case",
+                    expected=expected_case_version,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    proposed_action=proposed_action,
+                    actor=approval.actor,
+                )
                 if expected_case_version != 0:
                     raise StaleCaseVersionError("new cases require expected version 0")
-                self._validate_authoritative_evidence(
+                recall, predicate, candidate_lots = self._validate_authoritative_evidence(
+                    recall_number=recall_number,
                     confirmed_lot_ids=confirmed_lot_ids,
                     trace_event_ids=trace_event_ids,
                     required_facilities=required_facilities,
                     reconciliation=reconciliations,
                 )
+                exact_case_evidence = {
+                    lot_id: {event["event_id"] for event in self.traceability.trace_forward(lot_id)}
+                    for lot_id in confirmed_lot_ids
+                }
+                supplied_case_evidence = {
+                    target: set(identifiers)
+                    for target, identifiers in proposed_action.evidence_by_target.items()
+                }
+                if supplied_case_evidence != exact_case_evidence:
+                    raise ValueError(
+                        "authoritative case action evidence must cover exact lot trace events"
+                    )
+                authoritative_gaps = [
+                    f"{item.lot_id}: {item.unaccounted} unaccounted units"
+                    for item in reconciliations
+                    if item.unaccounted
+                ]
+                if evidence_gaps != authoritative_gaps:
+                    raise ValueError(
+                        "authoritative evidence gaps must be complete, exact, and caller-independent"
+                    )
                 state = RecallCaseState(
                     case_id=case_id,
                     thread_id=durable_thread_id,
                     recall_number=recall_number,
                     question=question,
                     source_mode=self.source_mode,
+                    recall=recall,
+                    recall_predicate=predicate,
+                    candidate_lots=candidate_lots,
                     confirmed_lot_ids=confirmed_lot_ids,
                     trace_event_ids=trace_event_ids,
                     required_facilities=required_facilities,
@@ -1146,6 +1525,10 @@ class OperationsService:
                         receipt.model_dump_json(),
                     ),
                 )
+                conn.execute(
+                    "UPDATE execution_grants SET receipt_id=? WHERE grant_token=?",
+                    (receipt.receipt_id, execution_grant),
+                )
                 self._inject_failure("after_receipt_insert")
                 return receipt
         except (
@@ -1169,7 +1552,34 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
     ) -> AuditReceipt:
+        if not lot_ids or any(type(item) is not str or not item.strip() for item in lot_ids):
+            raise ValueError("lot_ids must be nonempty exact strings")
+        if len(lot_ids) != len(set(lot_ids)):
+            raise ValueError("lot_ids must be unique")
+
+        def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
+            unrelated = set(lot_ids) - set(state.confirmed_lot_ids)
+            if unrelated:
+                raise ClosureBlockedError(
+                    f"inventory hold lots are outside the eligible case scope: {sorted(unrelated)}"
+                )
+            already_held = {
+                row["lot_id"]
+                for row in conn.execute(
+                    "SELECT lot_id FROM inventory_holds WHERE case_id=?", (case_id,)
+                ).fetchall()
+            } & set(lot_ids)
+            if already_held:
+                raise ClosureBlockedError(
+                    f"inventory hold already exists for case lot(s): {sorted(already_held)}"
+                )
+            self._require_related_target_evidence(
+                proposed_action,
+                {lot_id: self._lot_evidence_ids(lot_id) for lot_id in lot_ids},
+            )
+
         return self._mutate(
             case_id=case_id,
             action="apply_inventory_hold",
@@ -1177,8 +1587,10 @@ class OperationsService:
             proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
+            execution_grant=execution_grant,
             details={"lot_ids": lot_ids},
             target_ids=lot_ids,
+            validator=validator,
         )
 
     def create_facility_tasks(
@@ -1190,6 +1602,7 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
     ) -> AuditReceipt:
         if not facility_ids or any(not item.strip() for item in facility_ids):
             raise ValueError("facility_ids must be nonempty and nonblank")
@@ -1206,13 +1619,36 @@ class OperationsService:
                 }
             )
 
-        def validator(_: sqlite3.Connection, state: RecallCaseState) -> None:
+        def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
+            if conn.execute("SELECT 1 FROM tasks WHERE case_id=? LIMIT 1", (case_id,)).fetchone():
+                raise ClosureBlockedError("facility tasks already exist for this case")
             unrelated = set(facility_ids) - set(state.required_facilities)
             if unrelated:
                 raise ClosureBlockedError(
                     "facility tasks must target authoritative required facilities: "
                     f"{sorted(unrelated)}"
                 )
+            if set(facility_ids) != set(state.required_facilities):
+                raise ClosureBlockedError(
+                    "facility tasks must cover every authoritative required facility"
+                )
+            held = {
+                row["lot_id"]
+                for row in conn.execute(
+                    "SELECT lot_id FROM inventory_holds WHERE case_id=?", (case_id,)
+                ).fetchall()
+            }
+            if held != set(state.confirmed_lot_ids):
+                raise ClosureBlockedError(
+                    "facility tasks require prior inventory holds for every case lot"
+                )
+            self._require_related_target_evidence(
+                proposed_action,
+                {
+                    facility_id: self._facility_evidence_ids(state, facility_id)
+                    for facility_id in facility_ids
+                },
+            )
 
         return self._mutate(
             case_id=case_id,
@@ -1221,6 +1657,7 @@ class OperationsService:
             proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
+            execution_grant=execution_grant,
             details={"facility_ids": facility_ids},
             target_ids=facility_ids,
             transform=transform,
@@ -1236,12 +1673,17 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
     ) -> AuditReceipt:
-        def validator(conn: sqlite3.Connection, _: RecallCaseState) -> None:
+        def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
             if not conn.execute(
                 "SELECT 1 FROM tasks WHERE case_id=? AND facility_id=?", (case_id, facility_id)
             ).fetchone():
                 raise ClosureBlockedError("acknowledgment requires an existing facility task")
+            self._require_related_target_evidence(
+                proposed_action,
+                {facility_id: self._facility_evidence_ids(state, facility_id)},
+            )
 
         return self._mutate(
             case_id=case_id,
@@ -1250,6 +1692,7 @@ class OperationsService:
             proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
+            execution_grant=execution_grant,
             details={"facility_id": facility_id},
             target_ids=[facility_id],
             transform=lambda s: s.model_copy(
@@ -1269,46 +1712,72 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
     ) -> AuditReceipt:
         if disposition not in {"dispose_unaccounted", "quarantined", "returned"}:
             raise ValueError("invalid disposition")
         if not evidence_id.strip():
             raise ValueError("evidence_id must be nonblank")
 
-        def transform(state: RecallCaseState) -> RecallCaseState:
-            reconciliations = []
-            for item in state.reconciliation:
-                if item.lot_id == lot_id and disposition == "dispose_unaccounted":
-                    component_evidence = {
-                        **item.component_evidence,
-                        "disposed": [
-                            *item.component_evidence.get("disposed", []),
-                            evidence_id,
-                        ],
-                    }
-                    evidence_ids = list(dict.fromkeys([*item.evidence_ids, evidence_id]))
-                    component_evidence["unaccounted"] = evidence_ids
-                    reconciliations.append(
-                        Reconciliation.model_validate(
-                            {
-                                **item.model_dump(),
-                                "disposed": item.disposed + item.unaccounted,
-                                "unaccounted": 0,
-                                "evidence_ids": evidence_ids,
-                                "component_evidence": component_evidence,
-                                "verified": True,
-                            }
-                        )
+        event_holder: dict[str, DispositionEvent] = {}
+
+        def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
+            if lot_id not in state.confirmed_lot_ids:
+                raise ClosureBlockedError("disposition lot is outside the eligible case scope")
+            if not conn.execute(
+                "SELECT 1 FROM inventory_holds WHERE case_id=? AND lot_id=?",
+                (case_id, lot_id),
+            ).fetchone():
+                raise ClosureBlockedError("disposition requires a prior valid inventory hold")
+            existing = [event for event in state.disposition_events if event.lot_id == lot_id]
+            current = self._reconciliation_with_dispositions(lot_id, existing)
+            persisted = next((item for item in state.reconciliation if item.lot_id == lot_id), None)
+            if persisted != current:
+                raise ClosureBlockedError(
+                    "persisted reconciliation conflicts with append-only disposition authority"
+                )
+            if current.unaccounted <= 0:
+                raise ClosureBlockedError("disposition requires a positive unaccounted residual")
+            if evidence_id not in current.component_evidence["unaccounted"]:
+                raise ClosureBlockedError(
+                    "disposition source evidence is not authoritative for this lot residual"
+                )
+            self._require_related_target_evidence(proposed_action, {lot_id: {evidence_id}})
+            event_holder["event"] = DispositionEvent(
+                event_id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"{case_id}:disposition-event:{lot_id}:{idempotency_key}",
                     )
-                else:
-                    reconciliations.append(item)
-            if not any(item.lot_id == lot_id for item in state.reconciliation):
-                raise ClosureBlockedError(f"unknown reconciled lot {lot_id}")
+                ),
+                lot_id=lot_id,
+                disposition=disposition,
+                quantity=current.unaccounted,
+                occurred_at=datetime.now(UTC),
+                provenance="WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION",
+                source_evidence_ids=(evidence_id,),
+            )
+
+        def transform(state: RecallCaseState) -> RecallCaseState:
+            event = event_holder["event"]
+            disposition_events = [*state.disposition_events, event]
+            reconciliations = [
+                self._reconciliation_with_dispositions(
+                    item.lot_id,
+                    [entry for entry in disposition_events if entry.lot_id == item.lot_id],
+                )
+                for item in state.reconciliation
+            ]
+            gaps = [
+                f"{item.lot_id}: {item.unaccounted} unaccounted units"
+                for item in reconciliations
+                if item.unaccounted
+            ]
             return state.model_copy(
                 update={
                     "reconciliation": reconciliations,
-                    "trace_event_ids": list(dict.fromkeys([*state.trace_event_ids, evidence_id])),
-                    "evidence_gaps": [gap for gap in state.evidence_gaps if lot_id not in gap],
+                    "disposition_events": disposition_events,
+                    "evidence_gaps": gaps,
                 }
             )
 
@@ -1319,10 +1788,12 @@ class OperationsService:
             proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
+            execution_grant=execution_grant,
             details={"lot_id": lot_id, "disposition": disposition, "evidence_id": evidence_id},
             target_ids=[lot_id],
             evidence_ids=[evidence_id],
             transform=transform,
+            validator=validator,
         )
 
     def close_case(
@@ -1333,23 +1804,68 @@ class OperationsService:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str | None = None,
     ) -> AuditReceipt:
         def validator(conn: sqlite3.Connection, state: RecallCaseState) -> None:
             if not state.confirmed_lot_ids or not state.trace_event_ids or not state.reconciliation:
                 raise ClosureBlockedError("closure blocked: nonempty evidence is required")
+            held_lots = {
+                row["lot_id"]
+                for row in conn.execute(
+                    "SELECT lot_id FROM inventory_holds WHERE case_id=?", (case_id,)
+                ).fetchall()
+            }
+            if held_lots != set(state.confirmed_lot_ids):
+                raise ClosureBlockedError(
+                    "closure blocked: prior inventory hold is required for every case lot"
+                )
             if {item.lot_id for item in state.reconciliation} != set(state.confirmed_lot_ids):
                 raise ClosureBlockedError(
                     "closure blocked: reconciliation does not cover confirmed lots"
                 )
             try:
-                self._validate_authoritative_evidence(
+                base_reconciliations = [
+                    self.traceability.reconcile_units(lot_id) for lot_id in state.confirmed_lot_ids
+                ]
+                recall, predicate, candidate_lots = self._validate_authoritative_evidence(
+                    recall_number=state.recall_number,
                     confirmed_lot_ids=state.confirmed_lot_ids,
                     trace_event_ids=state.trace_event_ids,
                     required_facilities=state.required_facilities,
-                    reconciliation=state.reconciliation,
+                    reconciliation=base_reconciliations,
                 )
             except ValueError as error:
                 raise ClosureBlockedError(f"closure blocked: {error}") from error
+            if (
+                state.recall != recall
+                or state.recall_predicate != predicate
+                or state.candidate_lots != candidate_lots
+            ):
+                raise ClosureBlockedError(
+                    "closure blocked: persisted recall predicate or lot authority changed"
+                )
+            disposition_rows = conn.execute(
+                "SELECT event_json FROM disposition_events WHERE case_id=? ORDER BY rowid",
+                (case_id,),
+            ).fetchall()
+            stored_dispositions = [
+                DispositionEvent.model_validate_json(row["event_json"]) for row in disposition_rows
+            ]
+            if stored_dispositions != state.disposition_events:
+                raise ClosureBlockedError(
+                    "closure blocked: disposition event ledger disagrees with case state"
+                )
+            expected_reconciliations = [
+                self._reconciliation_with_dispositions(
+                    lot_id,
+                    [event for event in stored_dispositions if event.lot_id == lot_id],
+                )
+                for lot_id in state.confirmed_lot_ids
+            ]
+            if state.reconciliation != expected_reconciliations:
+                raise ClosureBlockedError(
+                    "closure blocked: reconciliation disagrees with base and disposition events"
+                )
             if any(item.unaccounted != 0 for item in state.reconciliation):
                 remaining = sum(item.unaccounted for item in state.reconciliation)
                 raise ClosureBlockedError(
@@ -1360,7 +1876,9 @@ class OperationsService:
                 for item in state.reconciliation
             ):
                 raise ClosureBlockedError("closure blocked: reconciliation is not verified")
-            trace_event_ids = set(state.trace_event_ids)
+            trace_event_ids = set(state.trace_event_ids) | {
+                event.event_id for event in stored_dispositions
+            }
             event_components = {"received", "quarantined", "sold", "returned", "disposed"}
             if any(
                 not {
@@ -1388,10 +1906,16 @@ class OperationsService:
                 (case_id,),
             ).fetchall()
             task_facilities = {row["facility_id"] for row in tasks}
-            if not set(state.required_facilities).issubset(task_facilities) or any(
+            if task_facilities != set(state.required_facilities) or any(
                 not row["acknowledged"] or row["status"] != "acknowledged" for row in tasks
             ):
                 raise ClosureBlockedError("closure blocked: facility acknowledgement remains")
+            if state.acknowledgements != {
+                row["facility_id"]: bool(row["acknowledged"]) for row in tasks
+            }:
+                raise ClosureBlockedError(
+                    "closure blocked: authoritative acknowledgements disagree with case state"
+                )
 
         return self._mutate(
             case_id=case_id,
@@ -1400,6 +1924,7 @@ class OperationsService:
             proposed_action=proposed_action,
             expected=expected_case_version,
             key=idempotency_key,
+            execution_grant=execution_grant,
             details={},
             target_ids=[],
             transform=lambda s: s.model_copy(update={"status": "closed"}),

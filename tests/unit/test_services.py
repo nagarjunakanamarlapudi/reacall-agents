@@ -1,5 +1,8 @@
+import hashlib
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,11 +16,13 @@ from recallops.models import (
 from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
-    OperationsService,
     StaleCaseVersionError,
 )
+from recallops.services.operations import OperationsService as RawOperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
+
+TRACEABILITY = TraceabilityService()
 
 
 def _predicate() -> RecallPredicate:
@@ -49,7 +54,11 @@ def _case_input(*, unaccounted: int = 0) -> dict:
             }
         ),
         "reconciliation": [traceability.reconcile_units(lot_id)],
-        "evidence_gaps": [],
+        "evidence_gaps": (
+            [f"{lot_id}: {reconciliation.unaccounted} unaccounted units"]
+            if (reconciliation := traceability.reconcile_units(lot_id)).unaccounted
+            else []
+        ),
     }
 
 
@@ -96,7 +105,38 @@ def _review(
     evidence_ids: list[str] | None = None,
     decision: str = "approve",
 ) -> dict:
-    action_evidence = evidence_ids or [f"EVIDENCE-{target_id}" for target_id in target_ids]
+    if evidence_ids is not None:
+        action_evidence = evidence_ids
+    else:
+        lot_by_facility = {
+            "DC-SOUTH": "LOT-PROBABLE-160",
+            "STORE-03": "LOT-PROBABLE-160",
+            "DC-NORTH": "LOT-EXACT-170",
+            "STORE-01": "LOT-EXACT-170",
+            "STORE-02": "LOT-EXACT-170",
+        }
+        action_evidence = sorted(
+            {
+                identifier
+                for target_id in target_ids
+                for identifier in (
+                    {event["event_id"] for event in TRACEABILITY.trace_forward(target_id)}
+                    | {
+                        position["position_id"]
+                        for position in TRACEABILITY.get_inventory(target_id)
+                    }
+                    if target_id.startswith("LOT-")
+                    else {
+                        event["event_id"]
+                        for event in TRACEABILITY.trace_forward(lot_by_facility[target_id])
+                    }
+                    | {
+                        position["position_id"]
+                        for position in TRACEABILITY.get_inventory(lot_by_facility[target_id])
+                    }
+                )
+            }
+        )
     action = ProposedAction(
         action_id=f"{case_id}-{action_type}-{version}",
         action_type=action_type,
@@ -108,6 +148,124 @@ def _review(
         expected_case_version=version,
     )
     return {"proposed_action": action, "approval": _bound_approval(action, decision=decision)}
+
+
+def _trusted_execute(
+    service: RawOperationsService,
+    method_name: str,
+    /,
+    **kwargs: Any,
+):
+    operation = getattr(RawOperationsService, method_name).__get__(service, RawOperationsService)
+    case_id = kwargs["case_id"]
+    expected = kwargs["expected_case_version"]
+    key = kwargs["idempotency_key"]
+    if service.get_receipt(key) is not None:
+        return operation(**kwargs)
+    state = service.get_case(case_id)
+    thread_id = kwargs.get("thread_id") or (state.thread_id if state else case_id)
+    owner = f"SERVICE-TEST-OWNER:{case_id}"
+    if service.get_thread_for_case(case_id) is None:
+        service.reserve_workflow_identity(case_id, thread_id, owner)
+    with sqlite3.connect(service.storage_path) as connection:
+        head = connection.execute(
+            "SELECT checkpoint_head FROM workflow_identities WHERE case_id=?", (case_id,)
+        ).fetchone()[0]
+    request_digest = hashlib.sha256(
+        f"{case_id}:{thread_id}:{head}:{method_name}:{expected}:{key}".encode()
+    ).hexdigest()
+    attempt = f"SERVICE-TEST-ATTEMPT:{method_name}:{expected}:{key}"
+    service.claim_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+    fields = {
+        "create_case": (
+            "recall_number",
+            "question",
+            "thread_id",
+            "confirmed_lot_ids",
+            "trace_event_ids",
+            "required_facilities",
+            "reconciliation",
+            "evidence_gaps",
+        ),
+        "apply_inventory_hold": ("lot_ids",),
+        "create_facility_tasks": ("facility_ids",),
+        "record_acknowledgment": ("facility_id",),
+        "record_disposition": ("lot_id", "disposition", "evidence_id"),
+        "close_case": (),
+    }[method_name]
+    details: dict[str, Any] = {}
+    for field in fields:
+        if field == "question":
+            details[field] = kwargs.get(field, "")
+        elif field == "thread_id":
+            details[field] = thread_id
+        elif field == "reconciliation":
+            details[field] = [item.model_dump(mode="json") for item in kwargs[field]]
+        else:
+            details[field] = kwargs[field]
+    action = kwargs["proposed_action"]
+    approval = kwargs["approval"]
+    try:
+        grant = service.issue_workflow_execution_grant(
+            case_id=case_id,
+            thread_id=thread_id,
+            proposed_action=action,
+            approval=approval,
+            expected_case_version=expected,
+            idempotency_key=key,
+            execution_id=f"SERVICE-TEST-EXECUTION:{method_name}:{expected}:{key}",
+            execution_request_digest=hashlib.sha256(
+                f"service-test:{case_id}:{method_name}:{expected}:{key}".encode()
+            ).hexdigest(),
+            details=details,
+            target_ids=list(action.target_ids),
+            evidence_ids=(
+                list(kwargs["trace_event_ids"])
+                if method_name == "create_case"
+                else [kwargs["evidence_id"]]
+                if method_name == "record_disposition"
+                else None
+            ),
+        )
+        receipt = operation(**kwargs, execution_grant=grant)
+    except BaseException:
+        service.release_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+        raise
+    service.advance_workflow_mutation(
+        case_id,
+        thread_id,
+        owner,
+        head,
+        f"SERVICE-TEST-CHECKPOINT:{case_id}:{receipt.case_version}:{receipt.receipt_id}",
+        attempt,
+        request_digest,
+    )
+    return receipt
+
+
+class OperationsService(RawOperationsService):
+    """Drive service contract tests through the production workflow-grant boundary."""
+
+    def _write(self, method_name: str, kwargs: dict[str, Any]):
+        return _trusted_execute(self, method_name, **kwargs)
+
+    def create_case(self, **kwargs: Any):
+        return self._write("create_case", kwargs)
+
+    def apply_inventory_hold(self, **kwargs: Any):
+        return self._write("apply_inventory_hold", kwargs)
+
+    def create_facility_tasks(self, **kwargs: Any):
+        return self._write("create_facility_tasks", kwargs)
+
+    def record_acknowledgment(self, **kwargs: Any):
+        return self._write("record_acknowledgment", kwargs)
+
+    def record_disposition(self, **kwargs: Any):
+        return self._write("record_disposition", kwargs)
+
+    def close_case(self, **kwargs: Any):
+        return self._write("close_case", kwargs)
 
 
 @pytest.mark.parametrize(
@@ -443,11 +601,23 @@ def test_operations_blocks_closure_when_quantities_or_acknowledgements_are_unres
         expected_case_version=0,
         idempotency_key="create-close",
     )
+    operations.apply_inventory_hold(
+        case_id="CASE-CLOSE",
+        lot_ids=case_input["confirmed_lot_ids"],
+        **_review(
+            "apply_inventory_hold",
+            "CASE-CLOSE",
+            1,
+            case_input["confirmed_lot_ids"],
+        ),
+        expected_case_version=1,
+        idempotency_key="hold-close",
+    )
     with pytest.raises(ClosureBlockedError, match="unaccounted"):
         operations.close_case(
             case_id="CASE-CLOSE",
-            **_review("close_case", "CASE-CLOSE", 1, []),
-            expected_case_version=1,
+            **_review("close_case", "CASE-CLOSE", 2, []),
+            expected_case_version=2,
             idempotency_key="close-blocked",
         )
 
@@ -470,14 +640,26 @@ def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
         expected_case_version=0,
         idempotency_key="safe-create",
     )
+    operations.apply_inventory_hold(
+        case_id="CASE-SAFE",
+        lot_ids=case_input["confirmed_lot_ids"],
+        **_review(
+            "apply_inventory_hold",
+            "CASE-SAFE",
+            1,
+            case_input["confirmed_lot_ids"],
+        ),
+        expected_case_version=1,
+        idempotency_key="safe-hold",
+    )
     operations.create_facility_tasks(
         case_id="CASE-SAFE",
         facility_ids=["DC-SOUTH", "STORE-03"],
-        **_review("create_facility_tasks", "CASE-SAFE", 1, ["DC-SOUTH", "STORE-03"]),
-        expected_case_version=1,
+        **_review("create_facility_tasks", "CASE-SAFE", 2, ["DC-SOUTH", "STORE-03"]),
+        expected_case_version=2,
         idempotency_key="safe-tasks",
     )
-    for version, facility_id in enumerate(("DC-SOUTH", "STORE-03"), start=2):
+    for version, facility_id in enumerate(("DC-SOUTH", "STORE-03"), start=3):
         operations.record_acknowledgment(
             case_id="CASE-SAFE",
             facility_id=facility_id,
@@ -487,8 +669,8 @@ def test_operations_closes_authoritative_zero_gap_after_all_acknowledgements(
         )
     receipt = operations.close_case(
         case_id="CASE-SAFE",
-        **_review("close_case", "CASE-SAFE", 4, []),
-        expected_case_version=4,
+        **_review("close_case", "CASE-SAFE", 5, []),
+        expected_case_version=5,
         idempotency_key="safe-close",
     )
     assert receipt.status == "simulated"

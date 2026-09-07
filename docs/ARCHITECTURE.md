@@ -15,7 +15,8 @@ RecallOps separates evidence gathering from operational authority:
 - the independent verifier checks deterministic invariants;
 - a human authorizes one exact action at one exact case version;
 - a second human confirmation permits the approved graph node to call Operations MCP once;
-- Operations SQLite revalidates approval, version, idempotency, evidence, and closure inside the transaction.
+- the active checkpoint resume mints a one-use execution grant bound to that action and actor;
+- Operations SQLite atomically consumes the grant and revalidates recall scope, version, idempotency, evidence, lifecycle, and closure inside the transaction.
 
 No agent, retrieved document, UI callback, or MCP transport can skip those layers.
 
@@ -28,7 +29,7 @@ No agent, retrieved document, UI callback, or MCP transport can skip those layer
 | Reasoning | Deterministic planner, four specialists, optional Deep Agents factory, independent verifier | Produces typed facts, assessments, and proposals |
 | Control | LangGraph `StateGraph`, conditional edges, JSON-only state, `interrupt()`, `Command(resume=...)` | Owns lifecycle, side-effect order, and human pauses |
 | Tool | Three FastMCP servers; direct and stdio gateways | Exposes narrow typed reads and simulated writes |
-| Durable state | LangGraph checkpoint SQLite plus Operations SQLite | Persists graph state, case versions, approvals, tasks, acknowledgements, receipts, and fences |
+| Durable state | LangGraph checkpoint SQLite plus Operations SQLite | Persists graph state, case versions, approvals, holds, dispositions, tasks, acknowledgements, receipts, grants, and fences |
 | Product | Streamlit five-view command center and CLI | Presents state and invokes only the runtime adapter |
 | Assurance | 21-case safety suite, 96-case six-configuration retrieval ablation, 24-case two-profile orchestration comparison, digest-bound scorecard | Read-only measurement; stale/missing/invalid reports never claim success and never influence Operations |
 
@@ -54,7 +55,7 @@ The credential-free runtime calls a deterministic bounded planner, then the four
 3. Traceability/Reconciliation follows forward/backward lineage, inventory, and unit evidence.
 4. Containment drafts a scoped proposal without executing it.
 
-The independent verifier sits outside the specialist context and checks overlap, facility coverage, and authoritative-control ownership. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
+The independent verifier sits outside the specialist context and checks overlap, facility coverage, and authoritative-control ownership. A failed verifier routes directly to an escalated terminal state, and action preparation/execution independently require `verification.passed == true`. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
 
 ![Orchestration and action loop](images/03_orchestration.svg)
 
@@ -84,13 +85,13 @@ The first two flagship cycles are fixed by evidence and case state:
 - `create_case` v0→v1;
 - `apply_inventory_hold` v1→v2.
 
-If ambiguity or an unresolved gap remains, planning stops `open_closure_blocked`. A closeable scope may continue through `record_disposition`, `create_facility_tasks`, one `record_acknowledgment` per facility, `closure_review`, execution confirmation, and `close_case`. `edit` may change rationale only and re-enters verification; `reject` leaves the case open; `escalate` ends safely.
+An inventory hold must exist before disposition or facility work. A positive quantity residual is resolved only by a new append-only disposition event with lot, quantity, timestamp, type, provenance, and source evidence; raw trace evidence is never rewritten. A closeable scope may then continue through `create_facility_tasks`, one `record_acknowledgment` per facility, `closure_review`, execution confirmation, and `close_case`. Unresolved ambiguity or gaps stop closure. `edit` may change rationale only and re-enters verification; `reject` leaves the case open; `escalate` ends safely.
 
 ## Two durable stores and mutation fencing
 
 `RecallOpsRuntime.open()` keeps `AsyncSqliteSaver` open for the runtime lifetime. The checkpoint SQLite database stores a randomly generated persistent owner UUID, graph checkpoints, and an exact mutation marker. Operations SQLite binds the same case/thread to that checkpoint-store owner and tracks the current checkpoint head.
 
-Every start/resume computes a SHA-256 request digest over case ID, thread ID, expected checkpoint head, interrupt kind, normalized human response, action/digest, execution ID, idempotency key, and initial payload where applicable. A mutation must claim the exact Operations head and matching checkpoint marker before the graph advances. Wrong case/thread/version/action/key, a copied checkpoint store, a stale head, a changed request, or a concurrent mutation fails without altering trusted state. Recovery reconciles a prepared marker only when both stores prove the same request and head transition.
+Every start/resume computes a SHA-256 request digest over case ID, thread ID, expected checkpoint head, interrupt kind, normalized human response, action/digest, execution ID, idempotency key, and initial payload where applicable. A mutation must claim the exact Operations head and matching checkpoint marker before the graph advances. Only that active resume can persist a one-time grant bound to the case, thread, head, case version, workflow request, execution request, action digest, actor, and operation request hash. Consumption occurs in the same transaction as the write. Wrong case/thread/version/action/key, a copied checkpoint store, a stale head, a changed request, reused authority, or a concurrent mutation fails without altering trusted state. An exact completed replay returns its original receipt; the grant cannot authorize another operation.
 
 The public runtime returns an immutable `RuntimeResult` containing detached JSON case state, one pending interrupt if present, next nodes, and the persistent LangGraph checkpoint ID. Restarting over the same two database paths resumes at the pending interrupt without rerunning completed reasoning nodes.
 

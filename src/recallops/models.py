@@ -415,6 +415,34 @@ class AuditReceipt(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class DispositionEvent(BaseModel):
+    """Append-only, workflow-approved quantity evidence created by Operations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    event_id: str = Field(min_length=1)
+    lot_id: str = Field(min_length=1)
+    disposition: Disposition
+    quantity: int = Field(gt=0)
+    occurred_at: datetime
+    provenance: Literal["WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION"]
+    source_evidence_ids: tuple[str, ...] = Field(min_length=1)
+
+    @field_validator("event_id", "lot_id")
+    @classmethod
+    def nonblank_disposition_identifier(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("disposition identifiers must be nonblank")
+        return value
+
+    @field_validator("source_evidence_ids")
+    @classmethod
+    def unique_source_evidence(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() for item in value) or len(value) != len(set(value)):
+            raise ValueError("source evidence identifiers must be unique and nonblank")
+        return value
+
+
 class RecallCaseState(BaseModel):
     case_id: str
     thread_id: str
@@ -433,6 +461,7 @@ class RecallCaseState(BaseModel):
     trace_event_ids: list[str] = Field(default_factory=list)
     required_facilities: list[str] = Field(default_factory=list)
     reconciliation: list[Reconciliation] = Field(default_factory=list)
+    disposition_events: list[DispositionEvent] = Field(default_factory=list)
     proposed_actions: list[ProposedAction] = Field(default_factory=list)
     human_decision: ApprovalDecision | None = None
     write_receipts: list[AuditReceipt] = Field(default_factory=list)

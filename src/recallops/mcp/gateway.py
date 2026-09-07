@@ -59,6 +59,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
         question: str = "",
         thread_id: str | None = None,
     ) -> dict[str, Any]: ...
@@ -71,6 +72,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ) -> dict[str, Any]: ...
     async def create_facility_tasks(
         self,
@@ -81,6 +83,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ) -> dict[str, Any]: ...
     async def record_acknowledgment(
         self,
@@ -91,6 +94,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ) -> dict[str, Any]: ...
     async def record_disposition(
         self,
@@ -103,6 +107,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ) -> dict[str, Any]: ...
     async def close_case(
         self,
@@ -112,6 +117,7 @@ class Gateway(Protocol):
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ) -> dict[str, Any]: ...
 
 
@@ -217,6 +223,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
         question: str = "",
         thread_id: str | None = None,
     ):
@@ -233,6 +240,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
                 question=question,
                 thread_id=thread_id,
             )
@@ -247,6 +255,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return _json(
             self.operations.apply_inventory_hold(
@@ -256,6 +265,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
             )
         )
 
@@ -268,6 +278,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return _json(
             self.operations.create_facility_tasks(
@@ -277,6 +288,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
             )
         )
 
@@ -289,6 +301,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return _json(
             self.operations.record_acknowledgment(
@@ -298,6 +311,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
             )
         )
 
@@ -312,6 +326,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return _json(
             self.operations.record_disposition(
@@ -323,6 +338,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
             )
         )
 
@@ -334,6 +350,7 @@ class DirectGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return _json(
             self.operations.close_case(
@@ -342,6 +359,7 @@ class DirectGateway:
                 approval=approval,
                 expected_case_version=expected_case_version,
                 idempotency_key=idempotency_key,
+                execution_grant=execution_grant,
             )
         )
 
@@ -450,6 +468,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
         question: str = "",
         thread_id: str | None = None,
     ):
@@ -467,6 +486,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
                 "question": question,
                 "thread_id": thread_id,
             },
@@ -481,6 +501,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return await self._write(
             "apply_inventory_hold",
@@ -491,6 +512,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
             },
         )
 
@@ -503,6 +525,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return await self._write(
             "create_facility_tasks",
@@ -513,6 +536,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
             },
         )
 
@@ -525,6 +549,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return await self._write(
             "record_acknowledgment",
@@ -535,6 +560,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
             },
         )
 
@@ -549,6 +575,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return await self._write(
             "record_disposition",
@@ -561,6 +588,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
             },
         )
 
@@ -572,6 +600,7 @@ class StdioMCPGateway:
         approval: ApprovalDecision,
         expected_case_version: int,
         idempotency_key: str,
+        execution_grant: str,
     ):
         return await self._write(
             "close_case",
@@ -581,6 +610,7 @@ class StdioMCPGateway:
                 "proposed_action": proposed_action,
                 "expected_case_version": expected_case_version,
                 "idempotency_key": idempotency_key,
+                "execution_grant": execution_grant,
             },
         )
 

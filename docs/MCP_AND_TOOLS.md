@@ -34,7 +34,7 @@ MCP is RecallOps’ vertical integration boundary; it is not agent-to-agent comm
 |---|---|
 | `create_case` | Persist the first simulated case and authoritative evidence; v0→v1 |
 | `apply_inventory_hold` | Record a reviewed simulated hold for confirmed lots |
-| `record_disposition` | Resolve a specifically evidenced lot-level quantity gap |
+| `record_disposition` | Append a provenance-labelled disposition event for a specifically evidenced lot-level quantity gap |
 | `create_facility_tasks` | Create tasks for every authoritatively required facility |
 | `record_acknowledgment` | Record one facility acknowledgement |
 | `close_case` | Revalidate every closure predicate and record simulated internal closure |
@@ -72,13 +72,16 @@ Agents cannot see or invoke Operations tools. The trusted graph node may call on
 3. the graph records zero writes and raises a distinct execution-confirmation interrupt;
 4. the user confirms the persisted execution ID and idempotency key;
 5. `ApprovalGuard` revalidates the action binding and expected version;
-6. the Operations transaction revalidates request hash, approval, authoritative evidence, current case version, and action-specific predicates.
+6. the active checkpoint resume persists a one-use execution grant bound to the checkpoint head, workflow/execution requests, case/version, action digest, actor, and operation hash;
+7. the Operations transaction atomically consumes that grant and independently reloads the configured recall, recomputes its predicate and lot classification, and revalidates target evidence plus action-specific lifecycle predicates.
+
+The execution-grant issuer is not exposed as an MCP tool. Supplying a caller-authored approval envelope is therefore insufficient: every write tool also requires the exact unconsumed grant created by the trusted workflow resume.
 
 There is no automatic write retry. If a response is lost after commit, the graph checkpoints `write_outcome_unknown` and asks a human whether to retry with the exact same persisted key. Exact replay returns the original receipt; a changed request under that key is an idempotency conflict.
 
 ## Closure authority
 
-`close_case` never trusts RAG or a model conclusion. In one transaction, Operations checks that the case exists and is open, the expected version is current, every required task/facility is covered and acknowledged, reconciliation is complete, ambiguity/evidence gaps are resolved, and approval binds the exact close action. Internal Northstar closure remains separate from FDA recall termination.
+`close_case` never trusts RAG or a model conclusion. In one transaction, Operations checks that the case exists and is open, all case-scope lots have persisted holds, disposition events agree with their append-only ledger, reconciliation recomputed from base inventory plus dispositions is complete, every required task/facility is covered and acknowledged, ambiguity/evidence gaps are resolved, and approval/grant bind the exact close action. Internal Northstar closure remains separate from FDA recall termination.
 
 ## Explicit exclusions
 

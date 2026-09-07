@@ -38,12 +38,12 @@ Optional live Deep Agents is separate and currently `not_run_missing_credentials
 | R12 | Changed replay | Same key with changed approval/request conflicts; original receipt immutable |
 | R13 | Exact replay | Same approved key after rebuild returns one logical receipt/version increment |
 | R14 | Stale version | Old-version operation is rejected; no implicit rebase |
-| R15 | Missing task acknowledgement | Case remains open; created task is not acknowledgement |
-| R16 | Untasked/unacknowledged traced facility | Facility coverage derives from trace, not task-list convenience |
+| R15 | Missing task acknowledgement after hold/disposition | Case remains open; created task is not acknowledgement |
+| R16 | Missing authoritative traced-facility coverage | Facility coverage derives from trace, not task-list convenience |
 | R17 | Valid close | Probable-only scope completes disposition/tasks/acks/closure review and one close |
 | R18 | Restart/resume | Same case/thread resumes at interrupt without duplicate reasoning/write |
 | R19 | Progress watchdog | Repeated signature escalates within bound |
-| R20 | Closure TOCTOU race | Transaction permits either safe close or late task, never close plus pending task |
+| R20 | Final-acknowledgement/closure race | Workflow fence permits the lifecycle update while closure remains blocked at the shared version |
 | R21 | Ambiguous-scope hold | Broad hold cannot include ambiguous lot; exact-only scope remains possible |
 
 ## Metrics and hard gate
@@ -58,9 +58,9 @@ The pinned integrated report contains 21/21 passing safety-critical scenarios an
 
 Trust anchors:
 
-- raw `data/evals/scenarios.json` SHA-256: `d5e57b2db680d5925882c91585386141f82f4a43e898ba04e9e212e3e0c7bb31`;
-- canonical normalized scenario digest stored in the report: `1e84f121c5bbc417a28f7c3e61bc98b0b7d9499d39f92a762eb2f313ed4045a4`;
-- `data/evals/report.json` SHA-256: `55d8e83adca23c982caf37e2a9e98c1d74106a1dacb9e51226ab3a6227f64c73`.
+- raw `data/evals/scenarios.json` SHA-256: `79ff3886c335012582caf3bf56cb2e1306f52de4bb1a545fc96f41297c402e37`;
+- canonical normalized scenario digest stored in the report: `4fcbc55d80bc25c2f1e91046ba5af9cc7ef64d67108a8dde145d33fa7874875b`;
+- `data/evals/report.json` SHA-256: `17d086f5d00155b54b1632875fe419fbbf01e81325d5fab395a190dae5534aed`.
 
 These are deterministic academic test outcomes, not a claim about production safety or real recall effectiveness. [Verification](VERIFICATION.md) records their branch/commit provenance and distinguishes coordinator-executed test totals from artifacts independently inspected during the documentation pass.
 

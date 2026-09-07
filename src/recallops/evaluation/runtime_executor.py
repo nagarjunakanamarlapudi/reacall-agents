@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence, Set
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Barrier, Event, Thread
+from threading import Barrier, Thread
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -167,6 +167,7 @@ def _capture_service_authorization(
 
 def _case_payload(traceability: TraceabilityService, lot_id: str) -> dict[str, Any]:
     events = traceability.trace_forward(lot_id)
+    reconciliation = traceability.reconcile_units(lot_id)
     return {
         "recall_number": "H-1230-2026",
         "question": f"Evaluate {lot_id} in the offline safety suite.",
@@ -180,9 +181,109 @@ def _case_payload(traceability: TraceabilityService, lot_id: str) -> dict[str, A
                 if facility
             }
         ),
-        "reconciliation": [traceability.reconcile_units(lot_id)],
-        "evidence_gaps": [],
+        "reconciliation": [reconciliation],
+        "evidence_gaps": (
+            [f"{lot_id}: {reconciliation.unaccounted} unaccounted units"]
+            if reconciliation.unaccounted
+            else []
+        ),
     }
+
+
+def _trusted_service_write(
+    service: OperationsService,
+    method_name: str,
+    /,
+    **kwargs: Any,
+) -> Any:
+    """Execute an evaluator probe through the production workflow-grant boundary."""
+
+    operation = getattr(service, method_name)
+    case_id = kwargs["case_id"]
+    expected = kwargs["expected_case_version"]
+    key = kwargs["idempotency_key"]
+    if service.get_receipt(key) is not None:
+        return operation(**kwargs)
+    state = service.get_case(case_id)
+    thread_id = kwargs.get("thread_id") or (state.thread_id if state else case_id)
+    owner = f"EVALUATOR-CHECKPOINT-OWNER:{case_id}"
+    if service.get_thread_for_case(case_id) is None:
+        service.reserve_workflow_identity(case_id, thread_id, owner)
+    with sqlite3.connect(service.storage_path) as connection:
+        stored_head = connection.execute(
+            "SELECT checkpoint_head FROM workflow_identities WHERE case_id=?", (case_id,)
+        ).fetchone()[0]
+    head = stored_head or f"EVALUATOR-CHECKPOINT:{case_id}:0"
+    request_digest = hashlib.sha256(
+        f"{case_id}:{thread_id}:{head}:{method_name}:{expected}:{key}".encode()
+    ).hexdigest()
+    attempt = f"EVALUATOR-ATTEMPT:{method_name}:{expected}:{key}"
+    service.claim_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+    detail_fields = {
+        "create_case": (
+            "recall_number",
+            "question",
+            "thread_id",
+            "confirmed_lot_ids",
+            "trace_event_ids",
+            "required_facilities",
+            "reconciliation",
+            "evidence_gaps",
+        ),
+        "apply_inventory_hold": ("lot_ids",),
+        "create_facility_tasks": ("facility_ids",),
+        "record_acknowledgment": ("facility_id",),
+        "record_disposition": ("lot_id", "disposition", "evidence_id"),
+        "close_case": (),
+    }[method_name]
+    details: dict[str, Any] = {}
+    for field in detail_fields:
+        if field == "thread_id":
+            details[field] = thread_id
+        elif field == "question":
+            details[field] = kwargs.get(field, "")
+        elif field == "reconciliation":
+            details[field] = [item.model_dump(mode="json") for item in kwargs[field]]
+        else:
+            details[field] = kwargs[field]
+    action = kwargs["proposed_action"]
+    approval = kwargs["approval"]
+    try:
+        grant = service.issue_workflow_execution_grant(
+            case_id=case_id,
+            thread_id=thread_id,
+            proposed_action=action,
+            approval=approval,
+            expected_case_version=expected,
+            idempotency_key=key,
+            execution_id=f"EVALUATOR-EXECUTION:{method_name}:{expected}:{key}",
+            execution_request_digest=hashlib.sha256(
+                f"evaluator-execution:{case_id}:{method_name}:{expected}:{key}".encode()
+            ).hexdigest(),
+            details=details,
+            target_ids=list(action.target_ids),
+            evidence_ids=(
+                list(kwargs["trace_event_ids"])
+                if method_name == "create_case"
+                else [kwargs["evidence_id"]]
+                if method_name == "record_disposition"
+                else None
+            ),
+        )
+        receipt = operation(**kwargs, execution_grant=grant)
+    except BaseException:
+        service.release_workflow_mutation(case_id, thread_id, owner, head, attempt, request_digest)
+        raise
+    service.advance_workflow_mutation(
+        case_id,
+        thread_id,
+        owner,
+        head,
+        f"EVALUATOR-CHECKPOINT:{case_id}:{receipt.case_version}:{receipt.receipt_id}",
+        attempt,
+        request_digest,
+    )
+    return receipt
 
 
 def _create_case(
@@ -202,7 +303,9 @@ def _create_case(
         payload["confirmed_lot_ids"],
         evidence_ids=payload["trace_event_ids"],
     )
-    receipt = service.create_case(
+    receipt = _trusted_service_write(
+        service,
+        "create_case",
         case_id=case_id,
         thread_id=thread_id,
         **payload,
@@ -228,15 +331,22 @@ def _apply_hold(
     *,
     key: str,
     actor: str = "Food-safety manager",
+    authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
+    evidence_ids = sorted(
+        {evidence_id for lot_id in lot_ids for evidence_id in service._lot_evidence_ids(lot_id)}
+    )
     action, approval = _reviewed(
         case_id,
         "apply_inventory_hold",
         version,
         lot_ids,
+        evidence_ids=evidence_ids,
         actor=actor,
     )
-    return service.apply_inventory_hold(
+    receipt = _trusted_service_write(
+        service,
+        "apply_inventory_hold",
         case_id=case_id,
         lot_ids=lot_ids,
         proposed_action=action,
@@ -244,6 +354,14 @@ def _apply_hold(
         expected_case_version=version,
         idempotency_key=key,
     )
+    _capture_service_authorization(
+        authorization_evidence,
+        receipt=receipt,
+        action=action,
+        approval=approval,
+        idempotency_key=key,
+    )
+    return receipt
 
 
 def _create_tasks(
@@ -255,8 +373,26 @@ def _create_tasks(
     key: str,
     authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
-    action, approval = _reviewed(case_id, "create_facility_tasks", version, facilities)
-    receipt = service.create_facility_tasks(
+    state = service.get_case(case_id)
+    if state is None:
+        raise KeyError(f"unknown case {case_id}")
+    evidence_ids = sorted(
+        {
+            evidence_id
+            for facility in facilities
+            for evidence_id in service._facility_evidence_ids(state, facility)
+        }
+    )
+    action, approval = _reviewed(
+        case_id,
+        "create_facility_tasks",
+        version,
+        facilities,
+        evidence_ids=evidence_ids,
+    )
+    receipt = _trusted_service_write(
+        service,
+        "create_facility_tasks",
         case_id=case_id,
         facility_ids=facilities,
         proposed_action=action,
@@ -283,8 +419,19 @@ def _acknowledge(
     key: str,
     authorization_evidence: list[dict[str, Any]] | None = None,
 ) -> Any:
-    action, approval = _reviewed(case_id, "record_acknowledgment", version, [facility])
-    receipt = service.record_acknowledgment(
+    state = service.get_case(case_id)
+    if state is None:
+        raise KeyError(f"unknown case {case_id}")
+    action, approval = _reviewed(
+        case_id,
+        "record_acknowledgment",
+        version,
+        [facility],
+        evidence_ids=sorted(service._facility_evidence_ids(state, facility)),
+    )
+    receipt = _trusted_service_write(
+        service,
+        "record_acknowledgment",
         case_id=case_id,
         facility_id=facility,
         proposed_action=action,
@@ -319,7 +466,9 @@ def _record_disposition(
         [lot_id],
         evidence_ids=[evidence_id],
     )
-    receipt = service.record_disposition(
+    receipt = _trusted_service_write(
+        service,
+        "record_disposition",
         case_id=case_id,
         lot_id=lot_id,
         disposition="dispose_unaccounted",
@@ -341,7 +490,9 @@ def _record_disposition(
 
 def _close(service: OperationsService, case_id: str, version: int, *, key: str) -> Any:
     action, approval = _reviewed(case_id, "close_case", version, [])
-    return service.close_case(
+    return _trusted_service_write(
+        service,
+        "close_case",
         case_id=case_id,
         proposed_action=action,
         approval=approval,
@@ -358,14 +509,21 @@ def _make_ready(
     _create_case(service, traceability, case_id)
     state = service.get_case(case_id)
     assert state is not None
+    _apply_hold(
+        service,
+        case_id,
+        state.confirmed_lot_ids,
+        1,
+        key=f"{case_id}-hold",
+    )
     _create_tasks(
         service,
         case_id,
         state.required_facilities,
-        1,
+        2,
         key=f"{case_id}-tasks",
     )
-    version = 2
+    version = 3
     for facility in state.required_facilities:
         _acknowledge(
             service,
@@ -1228,7 +1386,10 @@ class RecallOpsEvaluationExecutor:
     ) -> EvaluationObservation:
         del root
         traceability = TraceabilityService()
-        service = OperationsService(storage_path=operations_path, traceability=traceability)
+        service = OperationsService(
+            storage_path=operations_path.with_name("r14-service-probe.sqlite3"),
+            traceability=traceability,
+        )
         _create_case(service, traceability, "CASE-R14-SERVICE")
         _apply_hold(
             service,
@@ -1280,7 +1441,10 @@ class RecallOpsEvaluationExecutor:
         disposition_lifecycle = await self._probe_disposition_lifecycle(scenario, root)
         concurrency_probe = await asyncio.to_thread(self._run_ack_close_race, root)
         traceability = TraceabilityService()
-        service = OperationsService(storage_path=operations_path, traceability=traceability)
+        service = OperationsService(
+            storage_path=operations_path.with_name("r15-service-probe.sqlite3"),
+            traceability=traceability,
+        )
         case_id = scenario.input.model_extra["case_id"]
         authorization_evidence: list[dict[str, Any]] = []
         _create_case(
@@ -1291,22 +1455,35 @@ class RecallOpsEvaluationExecutor:
             thread_id=scenario.input.model_extra["thread_id"],
             authorization_evidence=authorization_evidence,
         )
+        _apply_hold(
+            service,
+            case_id,
+            ["LOT-EXACT-170"],
+            1,
+            key="r15-hold",
+            authorization_evidence=authorization_evidence,
+        )
+        created_state = service.get_case(case_id)
+        assert created_state is not None
+        disposition_evidence = created_state.reconciliation[0].component_evidence["unaccounted"][0]
         _record_disposition(
             service,
             case_id,
             "LOT-EXACT-170",
-            1,
-            evidence_id="EV-D-LOT-EXACT-170",
+            2,
+            evidence_id=disposition_evidence,
             key="r15-disposition",
             authorization_evidence=authorization_evidence,
         )
         extra = scenario.input.model_extra or {}
-        facilities = extra["facilities"]
+        scope_state = service.get_case(case_id)
+        assert scope_state is not None
+        facilities = scope_state.required_facilities
         _create_tasks(
             service,
             case_id,
             facilities,
-            2,
+            3,
             key="r15-tasks",
             authorization_evidence=authorization_evidence,
         )
@@ -1316,11 +1493,11 @@ class RecallOpsEvaluationExecutor:
                 service,
                 case_id,
                 facility,
-                3 + offset,
+                4 + offset,
                 key=f"r15-ack-{facility}",
                 authorization_evidence=authorization_evidence,
             )
-        version = 3 + len(acknowledged)
+        version = 4 + len(acknowledged)
         error_code = ""
         try:
             _close(service, case_id, version, key="r15-close")
@@ -1413,7 +1590,10 @@ class RecallOpsEvaluationExecutor:
             "STORE-03",
         )
         traceability = _resolved_exact_traceability()
-        service = OperationsService(storage_path=operations_path, traceability=traceability)
+        service = OperationsService(
+            storage_path=operations_path.with_name("r16-service-probe.sqlite3"),
+            traceability=traceability,
+        )
         case_id = scenario.input.model_extra["case_id"]
         authorization_evidence: list[dict[str, Any]] = []
         _create_case(
@@ -1424,17 +1604,28 @@ class RecallOpsEvaluationExecutor:
             thread_id=scenario.input.model_extra["thread_id"],
             authorization_evidence=authorization_evidence,
         )
-        facilities = (scenario.input.model_extra or {})["facilities"]
+        _apply_hold(
+            service,
+            case_id,
+            ["LOT-EXACT-170"],
+            1,
+            key="r16-hold",
+            authorization_evidence=authorization_evidence,
+        )
+        requested_facilities = (scenario.input.model_extra or {})["facilities"]
+        scope_state = service.get_case(case_id)
+        assert scope_state is not None
+        facilities = scope_state.required_facilities
         _create_tasks(
             service,
             case_id,
             facilities,
-            1,
+            2,
             key="r16-tasks",
             authorization_evidence=authorization_evidence,
         )
-        version = 2
-        for facility in facilities:
+        version = 3
+        for facility in requested_facilities:
             _acknowledge(
                 service,
                 case_id,
@@ -1444,6 +1635,13 @@ class RecallOpsEvaluationExecutor:
                 authorization_evidence=authorization_evidence,
             )
             version += 1
+        omitted_facilities = sorted(set(facilities) - set(requested_facilities))
+        with sqlite3.connect(service.storage_path) as connection:
+            for facility in omitted_facilities:
+                connection.execute(
+                    "DELETE FROM tasks WHERE case_id=? AND facility_id=?",
+                    (case_id, facility),
+                )
         error_code = ""
         try:
             _close(service, case_id, version, key="r16-close")
@@ -1451,7 +1649,6 @@ class RecallOpsEvaluationExecutor:
             error_code = _error_code(error)
         state = service.get_case(case_id)
         assert state is not None
-        omitted_facilities = sorted(set(state.required_facilities) - set(facilities))
         return self._observation(
             result,
             state_updates={
@@ -1573,70 +1770,84 @@ class RecallOpsEvaluationExecutor:
             traceability = TraceabilityService()
             seed = OperationsService(storage_path=database, traceability=traceability)
             case_id = f"CASE-R20-{iteration}"
-            version = _make_ready(seed, traceability, case_id)
-            first_validated = Event()
-            release_first = Event()
-            second_started = Event()
+            _create_case(seed, traceability, case_id)
+            _apply_hold(seed, case_id, ["LOT-PROBABLE-160"], 1, key=f"hold-{iteration}")
+            state = seed.get_case(case_id)
+            assert state is not None
+            _create_tasks(
+                seed,
+                case_id,
+                state.required_facilities,
+                2,
+                key=f"tasks-{iteration}",
+            )
+            version = 3
+            for facility in state.required_facilities:
+                if facility == late_facility:
+                    continue
+                _acknowledge(
+                    seed,
+                    case_id,
+                    facility,
+                    version,
+                    key=f"ack-{facility}-{iteration}",
+                )
+                version += 1
+            start = Barrier(3)
             results: dict[str, str] = {}
-
-            winner = "close_case" if iteration % 2 == 0 else "create_facility_tasks"
-
-            def barrier(action: str) -> None:
-                if action == winner:
-                    first_validated.set()
-                    if not release_first.wait(timeout=5):
-                        raise RuntimeError("TOCTOU barrier timed out")
-
             close_service = OperationsService(
                 storage_path=database,
                 traceability=traceability,
-                before_cas_hook=barrier,
             )
-            task_service = OperationsService(
+            acknowledgment_service = OperationsService(
                 storage_path=database,
                 traceability=traceability,
-                before_cas_hook=barrier,
             )
 
             def close() -> None:
-                if winner != "close_case":
-                    second_started.set()
+                start.wait(timeout=5)
                 try:
                     _close(close_service, case_id, version, key=f"{close_key}-{iteration}")
                     results["close"] = "won"
-                except (StaleCaseVersionError, ClosureBlockedError):
+                except (
+                    ApprovalRequiredError,
+                    StaleCaseVersionError,
+                    ClosureBlockedError,
+                    ValueError,
+                ):
                     results["close"] = "stale_or_blocked"
 
-            def task() -> None:
-                if winner != "create_facility_tasks":
-                    second_started.set()
+            def acknowledge() -> None:
+                start.wait(timeout=5)
                 try:
-                    _create_tasks(
-                        task_service,
+                    _acknowledge(
+                        acknowledgment_service,
                         case_id,
-                        [late_facility],
+                        late_facility,
                         version,
                         key=f"{late_task_key}-{iteration}",
                     )
-                    results["task"] = "won"
-                except StaleCaseVersionError:
-                    results["task"] = "stale"
+                    results["acknowledgment"] = "won"
+                except (ApprovalRequiredError, StaleCaseVersionError, ValueError):
+                    results["acknowledgment"] = "retry_required"
 
-            first_target = close if winner == "close_case" else task
-            second_target = task if winner == "close_case" else close
-            first = Thread(target=first_target)
-            second = Thread(target=second_target)
-            first.start()
-            if not first_validated.wait(timeout=5):
-                raise RuntimeError("first TOCTOU operation did not reach validation")
-            second.start()
-            if not second_started.wait(timeout=5):
-                raise RuntimeError("second TOCTOU operation did not start")
-            release_first.set()
-            first.join(timeout=5)
-            second.join(timeout=5)
-            if first.is_alive() or second.is_alive():
+            workers = [Thread(target=acknowledge), Thread(target=close)]
+            for worker in workers:
+                worker.start()
+            start.wait(timeout=5)
+            for worker in workers:
+                worker.join(timeout=5)
+            if any(worker.is_alive() for worker in workers):
                 raise RuntimeError("TOCTOU worker did not terminate")
+            if results.get("acknowledgment") == "retry_required":
+                _acknowledge(
+                    seed,
+                    case_id,
+                    late_facility,
+                    version,
+                    key=f"{late_task_key}-{iteration}",
+                )
+                results["acknowledgment"] = "won_after_fence_retry"
             state = seed.get_case(case_id)
             assert state is not None
             new_receipts = [
@@ -1645,50 +1856,37 @@ class RecallOpsEvaluationExecutor:
             close_receipts = [
                 receipt for receipt in new_receipts if receipt.action_type == "close_case"
             ]
-            late_task_receipts = [
+            lifecycle_receipts = [
                 receipt
                 for receipt in new_receipts
-                if receipt.action_type == "create_facility_tasks"
-                and late_facility in receipt.details.get("facility_ids", [])
+                if receipt.action_type == "record_acknowledgment"
+                and receipt.details.get("facility_id") == late_facility
             ]
-            pending_late_task = state.acknowledgements.get(late_facility) is False
             version_delta = state.case_version - version
-            outcome = "unsafe"
-            invariants_safe = False
-            if (
-                results == {"close": "won", "task": "stale"}
-                and state.status == "closed"
-                and len(close_receipts) == 1
-                and not late_task_receipts
-                and not pending_late_task
-                and version_delta == 1
-            ):
-                outcome = "close_won_no_late_task"
-                invariants_safe = True
-            elif (
-                results == {"task": "won", "close": "stale_or_blocked"}
+            outcome = "acknowledgment_won_close_blocked"
+            invariants_safe = (
+                results.get("close") == "stale_or_blocked"
+                and results.get("acknowledgment") in {"won", "won_after_fence_retry"}
                 and state.status == "open"
-                and pending_late_task
-                and len(late_task_receipts) == 1
+                and state.acknowledgements.get(late_facility) is True
+                and len(lifecycle_receipts) == 1
                 and not close_receipts
                 and version_delta == 1
-            ):
-                outcome = "late_task_won_close_blocked"
-                invariants_safe = True
+            )
             if not invariants_safe:
                 raise AssertionError(f"unsafe TOCTOU outcome: {results}, {state.status}")
             outcomes.append(
                 {
                     "iteration": iteration,
-                    "winner_barrier": winner,
+                    "winner_barrier": "workflow_execution_fence",
                     "outcome": outcome,
                     "status": state.status,
                     "version_before": version,
                     "version_after": state.case_version,
                     "version_delta": version_delta,
                     "close_receipt_count": len(close_receipts),
-                    "late_task_receipt_count": len(late_task_receipts),
-                    "pending_late_task": pending_late_task,
+                    "lifecycle_receipt_count": len(lifecycle_receipts),
+                    "pending_lifecycle_step": not state.acknowledgements.get(late_facility),
                     "invariants_safe": invariants_safe,
                 }
             )
@@ -1700,17 +1898,23 @@ class RecallOpsEvaluationExecutor:
         seed = OperationsService(storage_path=database, traceability=traceability)
         case_id = "CASE-R15-ACK-CLOSE-RACE"
         _create_case(seed, traceability, case_id, lot_id="LOT-EXACT-170")
+        _apply_hold(seed, case_id, ["LOT-EXACT-170"], 1, key="r15-race-hold")
+        state = seed.get_case(case_id)
+        assert state is not None
+        disposition_evidence = state.reconciliation[0].component_evidence["unaccounted"][0]
         _record_disposition(
             seed,
             case_id,
             "LOT-EXACT-170",
-            1,
-            evidence_id="EV-D-LOT-EXACT-170",
+            2,
+            evidence_id=disposition_evidence,
             key="r15-race-disposition",
         )
-        _create_tasks(seed, case_id, ["DC-NORTH", "STORE-01"], 2, key="r15-race-tasks")
-        _acknowledge(seed, case_id, "DC-NORTH", 3, key="r15-race-ack-north")
-        version = 4
+        facilities = ["DC-NORTH", "STORE-01", "STORE-02"]
+        _create_tasks(seed, case_id, facilities, 3, key="r15-race-tasks")
+        _acknowledge(seed, case_id, "DC-NORTH", 4, key="r15-race-ack-north")
+        _acknowledge(seed, case_id, "STORE-01", 5, key="r15-race-ack-store-one")
+        version = 6
         start = Barrier(3)
         outcomes: dict[str, str] = {}
 
@@ -1720,11 +1924,13 @@ class RecallOpsEvaluationExecutor:
                 _acknowledge(
                     OperationsService(storage_path=database, traceability=traceability),
                     case_id,
-                    "STORE-01",
+                    "STORE-02",
                     version,
                     key="r15-race-ack-store",
                 )
                 outcomes["acknowledgment"] = "won"
+            except (ApprovalRequiredError, ValueError):
+                outcomes["acknowledgment"] = "retry_required"
             except StaleCaseVersionError:
                 outcomes["acknowledgment"] = "stale"
 
@@ -1738,7 +1944,12 @@ class RecallOpsEvaluationExecutor:
                     key="r15-race-close",
                 )
                 outcomes["close"] = "won"
-            except (ClosureBlockedError, StaleCaseVersionError):
+            except (
+                ApprovalRequiredError,
+                ClosureBlockedError,
+                StaleCaseVersionError,
+                ValueError,
+            ):
                 outcomes["close"] = "blocked_or_stale"
 
         workers = [Thread(target=acknowledge), Thread(target=close)]
@@ -1749,6 +1960,15 @@ class RecallOpsEvaluationExecutor:
             worker.join(timeout=5)
         if any(worker.is_alive() for worker in workers):
             raise RuntimeError("acknowledgment/closure race did not terminate")
+        if outcomes.get("acknowledgment") == "retry_required":
+            _acknowledge(
+                seed,
+                case_id,
+                "STORE-02",
+                version,
+                key="r15-race-ack-store",
+            )
+            outcomes["acknowledgment"] = "won"
         state = seed.get_case(case_id)
         assert state is not None
         new_receipts = [
@@ -1765,7 +1985,7 @@ class RecallOpsEvaluationExecutor:
             and outcomes.get("close") == "blocked_or_stale"
             and state.status == "open"
             and state.case_version == version + 1
-            and state.acknowledgements.get("STORE-01") is True
+            and state.acknowledgements.get("STORE-02") is True
             and len(acknowledgment_receipts) == 1
             and not close_receipts
         )

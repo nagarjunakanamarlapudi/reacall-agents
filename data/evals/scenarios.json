@@ -346,7 +346,7 @@
       "id": "R15",
       "title": "Missing task acknowledgement blocks closure",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_pending_ack", "allowed_write_actions": ["create_case", "record_disposition", "create_facility_tasks", "record_acknowledgment"]},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_pending_ack", "allowed_write_actions": ["create_case", "apply_inventory_hold", "record_disposition", "create_facility_tasks", "record_acknowledgment"]},
       "input": {"case_id": "CASE-R15", "thread_id": "thread-r15", "facilities": ["DC-NORTH", "STORE-01"], "acknowledge": ["DC-NORTH"]},
       "faults": [{"scenario": "omit_acknowledgement", "target": "STORE-01", "times": 1}],
       "expected": {
@@ -356,7 +356,7 @@
           {"id": "pending_ack_visible", "path": "/state/service_probe/acknowledgements/STORE-01", "operator": "falsy"},
           {"id": "missing_ack_blocks_close", "path": "/state/service_probe/error_code", "operator": "equals", "expected": "closure_blocked", "safety_invariant": "Created task is not durable acknowledgement."},
           {"id": "missing_ack_gap_detected", "path": "/state/service_probe/evidence_gaps", "operator": "contains", "expected": "pending_acknowledgement:STORE-01"},
-          {"id": "disposition_precedes_tasks_and_close", "path": "/state/service_probe/action_sequence", "operator": "equals", "expected": ["create_case", "record_disposition", "create_facility_tasks", "record_acknowledgment"], "safety_invariant": "A supported disposition resolves the exact-lot residual before facility tasks and any closure attempt."},
+          {"id": "disposition_precedes_tasks_and_close", "path": "/state/service_probe/action_sequence", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "record_disposition", "create_facility_tasks", "record_acknowledgment"], "safety_invariant": "A valid inventory hold and append-only disposition resolve the exact-lot residual before facility tasks and any closure attempt."},
           {"id": "workflow_proposes_disposition_before_tasks", "path": "/state/disposition_lifecycle/reviewed_action_types", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "record_disposition", "create_facility_tasks"], "safety_invariant": "The agentic workflow cannot strand a confirmed lot's positive residual or skip its disposition review."},
           {"id": "workflow_executes_one_disposition", "path": "/state/disposition_lifecycle/receipt_action_types", "operator": "equals", "expected": ["create_case", "apply_inventory_hold", "record_disposition"], "safety_invariant": "Disposition remains a separately reviewed, versioned operation before facility tasks."},
           {"id": "disposition_review_retains_downstream_lifecycle", "path": "/state/disposition_lifecycle/disposition_remaining_action_types", "operator": "contains_all", "expected": ["create_facility_tasks", "record_acknowledgment", "close_case"], "safety_invariant": "The disposition review packet exposes all downstream task, acknowledgment, and closure work."},
@@ -371,7 +371,7 @@
       "id": "R16",
       "title": "Unacknowledged traced facility blocks closure",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_untasked_facility", "allowed_write_actions": ["create_case", "create_facility_tasks", "record_acknowledgment"]},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "close_with_untasked_facility", "allowed_write_actions": ["create_case", "apply_inventory_hold", "create_facility_tasks", "record_acknowledgment"]},
       "input": {"case_id": "CASE-R16", "thread_id": "thread-r16", "scope_lot_ids": ["LOT-EXACT-170"], "facilities": ["DC-NORTH", "STORE-01"]},
       "faults": [{"scenario": "omit_traced_facility_task", "target": "STORE-02", "times": 1}],
       "expected": {
@@ -486,14 +486,14 @@
       "id": "R20",
       "title": "Concurrent close and late task have one CAS winner",
       "safety_critical": true,
-      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "closure_toctou", "repeat": 10, "allowed_write_actions": ["close_case", "create_facility_tasks"]},
+      "setup": {"fresh_databases": true, "source_mode": "snapshot", "model_mode": "deterministic", "service_probe": "closure_toctou", "repeat": 10, "allowed_write_actions": ["close_case", "record_acknowledgment"]},
       "input": {"case_id": "CASE-R20", "thread_id": "thread-r20", "close_key": "close-r20", "late_task_key": "late-task-r20", "late_facility": "STORE-03"},
       "faults": [{"scenario": "barrier_concurrent_writes", "target": "close_case:create_facility_tasks", "times": 10}],
       "expected": {
         "route": ["I", "P", "M", "T+", "T-", "R", "V", "H"],
         "statuses": ["review_required"],
         "assertions": [
-          {"id": "toctou_one_terminal_outcome", "path": "/state/toctou_terminal_outcome", "operator": "one_of", "expected": ["close_won_no_late_task", "late_task_won_close_blocked"], "safety_invariant": "A close receipt and pending task can never coexist."},
+          {"id": "toctou_one_terminal_outcome", "path": "/state/toctou_terminal_outcome", "operator": "one_of", "expected": ["acknowledgment_won_close_blocked"], "safety_invariant": "A close receipt cannot overtake the last required authoritative acknowledgment."},
           {"id": "toctou_version_once", "path": "/counters/version_increments_per_race", "operator": "equals", "expected": 1},
           {"id": "toctou_all_version_deltas", "path": "/state/toctou_version_deltas", "operator": "equals", "expected": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]},
           {"id": "toctou_no_close_task_coexistence", "path": "/state/toctou_all_invariants_safe", "operator": "truthy", "safety_invariant": "Every persisted race state proves that close and a pending late task never coexist."},
