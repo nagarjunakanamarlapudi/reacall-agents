@@ -2,6 +2,35 @@
 
 All default product paths are credential-free and offline. Commands below are run from the repository root.
 
+## Make command interface
+
+Run `make help` for the complete command list. The primary workflows are:
+
+```bash
+make setup
+make data-validate
+make demo
+make ui
+make ui-stdio
+make mcp-smoke
+make eval
+make notebooks
+make diagrams
+make test
+make lint
+make security
+make verify
+```
+
+`make ui` and `make ui-stdio` accept `PORT` and `RUNTIME_DIR`; `make demo` accepts `RECALL_NUMBER`. For example:
+
+```bash
+make ui PORT=8765 RUNTIME_DIR=.recording-runtime
+make demo RECALL_NUMBER=H-1230-2026
+```
+
+`make security` is the production gate: Python dependency audit, Bandit medium/high-severity scan, and production-only npm audit. `make security-full` additionally reports all low-severity Bandit findings and development-only npm advisories; it returns nonzero while recorded findings remain. `make verify` composes the complete submission gate. The underlying commands are retained below for auditability and direct troubleshooting.
+
 ## Install
 
 ```bash

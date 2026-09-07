@@ -180,3 +180,27 @@ git diff --check
 ```
 
 Observed: dependency sync resolved 180 packages and checked 172; Ruff reported 88 files already formatted and no lint findings; the lock was current; all 172 installed packages were compatible; pytest collected exactly 752 tests; the post-evidence documentation contract finished `21 passed`; and patch whitespace was clean. A final repository search found no unresolved placeholder or stale integration-status markers in submission-facing documents. Git status was clean after committing this record.
+
+## Make command interface verification — 7 September 2026
+
+The project-level Make interface was added after the integrated submission baseline. Four RED→GREEN contract tests execute `make help` and dry-run the configurable UI, stdio UI, and composed verification workflows. The RED phase produced four missing-target failures; after implementation, `tests/e2e/test_makefile.py` finished `4 passed`.
+
+Observed target results:
+
+| Target | Observation |
+|---|---|
+| `make setup` | Exit 0; locked Python environment checked and 258 pinned Node packages installed. |
+| `make data-validate` | Exit 0; official/synthetic labels and 48-product/144-lot/577-event counts printed. |
+| `make demo` | Exit 0; flagship reached one receipt and correctly remained open with blockers. |
+| `make ui PORT=8767 RUNTIME_DIR=/tmp/recallops-make-ui-smoke` | Streamlit/Uvicorn started and the application root returned HTTP 200 with an 11,141-byte HTML page; the interactive process was then stopped. |
+| `make eval-summary` | Exit 0; 21 scenarios, 21/21 safety-critical passed, gate passed. |
+| `make lint` | Exit 0; 89 files formatted, Ruff clean, lock current, 172 packages compatible. |
+| `make security` | Exit 0; no known Python dependency vulnerabilities, no medium/high Bandit findings, and zero production npm vulnerabilities. |
+| `make notebooks` | Exit 0; six deterministic notebooks rebuilt and `6 passed`; no generated diff remained. |
+| `make diagrams` | Exit 0 when run after setup; nine stable double-renders matched committed SVGs. |
+| `make mcp-smoke` | Exit 0; `16 passed` across direct and stdio MCP behavior. |
+| `make security-full` | Intentionally nonzero; it reported the already-recorded 31 low Bandit findings and five development-only Mermaid/Puppeteer npm advisories after running every scanner. |
+
+An initial verification attempt ran `make setup` and `make diagrams` concurrently; `npm ci` replaced `node_modules` while Mermaid was importing Puppeteer, so that render attempt failed. After setup completed, the documented serial `make diagrams` invocation passed with full parity. The composed `make verify` target does not include setup and therefore cannot create that race.
+
+`make -s -n verify` expanded to all 14 expected underlying commands: data validation; Ruff format/lint; lock and package checks; complete pytest; notebook rebuild/execution; diagram parity; MCP smoke; evaluator summary; Python dependency audit; medium/high Bandit gate; and production npm audit.

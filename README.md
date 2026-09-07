@@ -33,17 +33,18 @@ Every operational record is labelled **SYNTHETIC — ACADEMIC DEMO**. The public
 Prerequisites: Python 3.12, `uv`, Node 24.15.0, and npm 11.12.1.
 
 ```bash
-uv sync --locked --all-groups
-npm ci
-uv run recallops data-validate
-uv run recallops demo --recall-number H-1230-2026
-uv run streamlit run src/recallops/ui/app.py
+make setup
+make data-validate
+make demo
+make ui
 ```
 
-The Streamlit app defaults to the durable SQLite-backed runtime and direct MCP gateway. To demonstrate actual stdio MCP subprocesses:
+Run `make help` to list the complete project interface. The Streamlit app defaults to the durable SQLite-backed runtime and direct MCP gateway. `RECALL_NUMBER`, `PORT`, and `RUNTIME_DIR` are configurable, for example `make ui PORT=8765 RUNTIME_DIR=.recording-runtime`.
+
+To demonstrate actual stdio MCP subprocesses:
 
 ```bash
-RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py
+make ui-stdio
 ```
 
 Optional live public lookup is deliberately narrow:
