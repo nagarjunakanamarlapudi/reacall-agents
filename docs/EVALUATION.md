@@ -60,7 +60,7 @@ Trust anchors:
 
 - raw `data/evals/scenarios.json` SHA-256: `483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`;
 - canonical normalized scenario digest stored in the report: `a4be4b3c5bfbdf1d6fbbc5a18d871b9a77d8c181cf1271a391bc609e23beab88`;
-- `data/evals/report.json` SHA-256: `7aa8d732d5dde7c302af497318542367aec354a43ac68e038a2a2189c88125f4`.
+- `data/evals/report.json` SHA-256: `d64ce3eeb9f72ab44b07d49fbeba4708946163ba70a3e8e42ce770d6cdeaff3f`.
 
 These are deterministic academic test outcomes, not a claim about production safety or real recall effectiveness. [Verification](VERIFICATION.md) records their branch/commit provenance and distinguishes coordinator-executed test totals from artifacts independently inspected during the documentation pass.
 

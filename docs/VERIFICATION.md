@@ -615,3 +615,32 @@ checkout credentials, locked installs, the production-export preflight, `make ci
 development-only npm report. The openFDA report-date-sorted URL is now explicitly documented as the
 rolling, mutable endpoint used for a historical frozen capture; it is not presented as a URL that
 will reproduce those five rows later.
+
+## 2026-09-07 final publication verification
+
+The complete `make verify` submission gate ran from the final publication tree after the FastMCP,
+CI, visual, Make-interface, and documentation remediations. It exited 0. The test tree finished
+`1347 passed in 858.51s`; all seven notebooks rebuilt and their contracts finished `10 passed`;
+all ten Mermaid diagrams passed stable double-render and committed-SVG parity; and the real direct
+plus stdio MCP smoke finished `23 passed in 254.17s`. The final production security stage found no
+known Python vulnerabilities, no Bandit medium/high finding, and zero production npm
+vulnerabilities.
+
+The same run regenerated and validated the three read-only offline evaluation suites: 21/21 safety
+scenarios, 96 retrieval cases with 576 results, and 24 orchestration cases with 48 results. The
+combined scorecard passed; optional live Deep Agents remained `not_run_missing_credentials` and
+excluded from the offline gate. The publication artifacts are bound by these raw file SHA-256
+values:
+
+```text
+d64ce3eeb9f72ab44b07d49fbeba4708946163ba70a3e8e42ce770d6cdeaff3f  data/evals/report.json
+cc9c1017f1807b595489508eb87a74b2b52dd6d95b00160db9e4a99ea477598e  data/evals/retrieval_report.json
+b8940d9e53b0bf7ee5533207169c14ea052a8ca58660dc7c5a358617f7b6a0a8  data/evals/orchestration_report.json
+a82fcda2a54b8e2340412cf75c8c8e7936c08f1e9dd532eaf7bc39601c04edcd  data/evals/scorecard.json
+```
+
+The scorecard's canonical self-digest is
+`bf4c95b702033913d2989a42de99932e923d577e8d7cca5a73693378a2ba4e76`. Measured latency fields
+and timestamps are observations from this final run; the safety rates, unsafe counters, retrieval
+quality deltas, orchestration quality/tool-call deltas, provenance boundaries, and pass/fail gates
+remain the asserted submission claims.

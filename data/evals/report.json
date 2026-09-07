@@ -147,180 +147,180 @@
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.3567079547792673,
+              "duration_ms": 0.3593331202864647,
               "event_id": "trace-000001",
               "operation": "get_recall",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.115274Z"
+              "timestamp": "2026-09-07T23:53:15.721630Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 1.4388328418135643,
+              "duration_ms": 1.4263750053942204,
               "event_id": "trace-000001",
               "operation": "find_candidate_products",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.119749Z"
+              "timestamp": "2026-09-07T23:53:15.726876Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 1.670875120908022,
+              "duration_ms": 1.7872920725494623,
               "event_id": "trace-000002",
               "operation": "match_lots",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.121466Z"
+              "timestamp": "2026-09-07T23:53:15.728747Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.05695805884897709,
+              "duration_ms": 0.11945818550884724,
               "event_id": "trace-000001",
               "operation": "trace_forward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126559Z"
+              "timestamp": "2026-09-07T23:53:15.735109Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.028166919946670532,
+              "duration_ms": 0.038082944229245186,
               "event_id": "trace-000002",
               "operation": "trace_backward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126624Z"
+              "timestamp": "2026-09-07T23:53:15.735209Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.00995909795165062,
+              "duration_ms": 0.01937500201165676,
               "event_id": "trace-000003",
               "operation": "get_inventory",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126663Z"
+              "timestamp": "2026-09-07T23:53:15.735263Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.040250131860375404,
+              "duration_ms": 0.052084214985370636,
               "event_id": "trace-000004",
               "operation": "reconcile_units",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126724Z"
+              "timestamp": "2026-09-07T23:53:15.735343Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.021875137463212013,
+              "duration_ms": 0.027416972443461418,
               "event_id": "trace-000005",
               "operation": "trace_forward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126769Z"
+              "timestamp": "2026-09-07T23:53:15.735399Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.02154102548956871,
+              "duration_ms": 0.026833033189177513,
               "event_id": "trace-000006",
               "operation": "trace_backward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126809Z"
+              "timestamp": "2026-09-07T23:53:15.735454Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.005791895091533661,
+              "duration_ms": 0.014707911759614944,
               "event_id": "trace-000007",
               "operation": "get_inventory",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126833Z"
+              "timestamp": "2026-09-07T23:53:15.735495Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.02833292819559574,
+              "duration_ms": 0.06074993871152401,
               "event_id": "trace-000008",
               "operation": "reconcile_units",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126879Z"
+              "timestamp": "2026-09-07T23:53:15.735654Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.015707919374108315,
+              "duration_ms": 0.02683396451175213,
               "event_id": "trace-000009",
               "operation": "trace_forward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126914Z"
+              "timestamp": "2026-09-07T23:53:15.735728Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.015458092093467712,
+              "duration_ms": 0.02187490463256836,
               "event_id": "trace-000010",
               "operation": "trace_backward",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126948Z"
+              "timestamp": "2026-09-07T23:53:15.735780Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.005458015948534012,
+              "duration_ms": 0.008249888196587563,
               "event_id": "trace-000011",
               "operation": "get_inventory",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.126970Z"
+              "timestamp": "2026-09-07T23:53:15.735813Z"
             },
             {
               "attempt": 1,
               "attributes": {},
               "boundary": "tool",
               "case_id": "CASE-R01",
-              "duration_ms": 0.023833010345697403,
+              "duration_ms": 0.03258301876485348,
               "event_id": "trace-000012",
               "operation": "reconcile_units",
               "status": "success",
               "thread_id": "thread-r01",
-              "timestamp": "2026-09-07T22:07:43.127011Z"
+              "timestamp": "2026-09-07T23:53:15.735870Z"
             }
           ],
           "detail": "",
@@ -420,7 +420,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 62902,
+          "actual": 71884,
           "detail": "",
           "expected": 300000,
           "id": "latency_budget",
@@ -429,7 +429,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 62902,
+      "duration_ms": 71884,
       "error": null,
       "failure_injection": [],
       "id": "R01",
@@ -2953,180 +2953,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.3567079547792673,
+          "duration_ms": 0.3593331202864647,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.115274Z"
+          "timestamp": "2026-09-07T23:53:15.721630Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 1.4388328418135643,
+          "duration_ms": 1.4263750053942204,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.119749Z"
+          "timestamp": "2026-09-07T23:53:15.726876Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 1.670875120908022,
+          "duration_ms": 1.7872920725494623,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.121466Z"
+          "timestamp": "2026-09-07T23:53:15.728747Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.05695805884897709,
+          "duration_ms": 0.11945818550884724,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126559Z"
+          "timestamp": "2026-09-07T23:53:15.735109Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.028166919946670532,
+          "duration_ms": 0.038082944229245186,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126624Z"
+          "timestamp": "2026-09-07T23:53:15.735209Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.00995909795165062,
+          "duration_ms": 0.01937500201165676,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126663Z"
+          "timestamp": "2026-09-07T23:53:15.735263Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.040250131860375404,
+          "duration_ms": 0.052084214985370636,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126724Z"
+          "timestamp": "2026-09-07T23:53:15.735343Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.021875137463212013,
+          "duration_ms": 0.027416972443461418,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126769Z"
+          "timestamp": "2026-09-07T23:53:15.735399Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.02154102548956871,
+          "duration_ms": 0.026833033189177513,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126809Z"
+          "timestamp": "2026-09-07T23:53:15.735454Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.005791895091533661,
+          "duration_ms": 0.014707911759614944,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126833Z"
+          "timestamp": "2026-09-07T23:53:15.735495Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.02833292819559574,
+          "duration_ms": 0.06074993871152401,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126879Z"
+          "timestamp": "2026-09-07T23:53:15.735654Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.015707919374108315,
+          "duration_ms": 0.02683396451175213,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126914Z"
+          "timestamp": "2026-09-07T23:53:15.735728Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.015458092093467712,
+          "duration_ms": 0.02187490463256836,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126948Z"
+          "timestamp": "2026-09-07T23:53:15.735780Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.005458015948534012,
+          "duration_ms": 0.008249888196587563,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.126970Z"
+          "timestamp": "2026-09-07T23:53:15.735813Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R01",
-          "duration_ms": 0.023833010345697403,
+          "duration_ms": 0.03258301876485348,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r01",
-          "timestamp": "2026-09-07T22:07:43.127011Z"
+          "timestamp": "2026-09-07T23:53:15.735870Z"
         }
       ]
     },
@@ -3273,7 +3273,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 118,
+          "actual": 145,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -3282,7 +3282,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 118,
+      "duration_ms": 145,
       "error": null,
       "failure_injection": [
         {
@@ -5819,12 +5819,12 @@
           },
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.005791895091533661,
+          "duration_ms": 0.0077909789979457855,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "retry",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.880389Z"
+          "timestamp": "2026-09-07T23:54:27.454164Z"
         },
         {
           "attempt": 2,
@@ -5833,180 +5833,180 @@
           },
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.003250082954764366,
+          "duration_ms": 0.003959052264690399,
           "event_id": "trace-000002",
           "operation": "get_recall",
           "status": "error",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.880448Z"
+          "timestamp": "2026-09-07T23:54:27.454237Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 1.3227500021457672,
+          "duration_ms": 1.4184999745339155,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.884608Z"
+          "timestamp": "2026-09-07T23:54:27.459218Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 1.6608750447630882,
+          "duration_ms": 1.667916076257825,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.886311Z"
+          "timestamp": "2026-09-07T23:54:27.460954Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.06787478923797607,
+          "duration_ms": 0.0925001222640276,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891431Z"
+          "timestamp": "2026-09-07T23:54:27.469603Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.03558304160833359,
+          "duration_ms": 0.040499959141016006,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891503Z"
+          "timestamp": "2026-09-07T23:54:27.469701Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.017875107005238533,
+          "duration_ms": 0.02033403143286705,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891544Z"
+          "timestamp": "2026-09-07T23:54:27.469751Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.0389590859413147,
+          "duration_ms": 0.04912517033517361,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891602Z"
+          "timestamp": "2026-09-07T23:54:27.469824Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.022750115022063255,
+          "duration_ms": 0.026916153728961945,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891648Z"
+          "timestamp": "2026-09-07T23:54:27.469876Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.021791085600852966,
+          "duration_ms": 0.02591707743704319,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891689Z"
+          "timestamp": "2026-09-07T23:54:27.469922Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.006292015314102173,
+          "duration_ms": 0.0073749106377363205,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891713Z"
+          "timestamp": "2026-09-07T23:54:27.469950Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.027041882276535034,
+          "duration_ms": 0.03291596658527851,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891757Z"
+          "timestamp": "2026-09-07T23:54:27.470004Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.016875099390745163,
+          "duration_ms": 0.0200001522898674,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891792Z"
+          "timestamp": "2026-09-07T23:54:27.470046Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.016416888684034348,
+          "duration_ms": 0.019625062122941017,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891825Z"
+          "timestamp": "2026-09-07T23:54:27.470085Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.006083864718675613,
+          "duration_ms": 0.007417052984237671,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891848Z"
+          "timestamp": "2026-09-07T23:54:27.470112Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R02",
-          "duration_ms": 0.024333130568265915,
+          "duration_ms": 0.03045797348022461,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r02",
-          "timestamp": "2026-09-07T22:08:45.891889Z"
+          "timestamp": "2026-09-07T23:54:27.470161Z"
         }
       ]
     },
@@ -6291,7 +6291,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 115,
+          "actual": 136,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -6300,7 +6300,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 115,
+      "duration_ms": 136,
       "error": null,
       "failure_injection": [],
       "id": "R03",
@@ -8821,180 +8821,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.32108393497765064,
+          "duration_ms": 0.36983308382332325,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:45.994706Z"
+          "timestamp": "2026-09-07T23:54:27.588130Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 1.3572080060839653,
+          "duration_ms": 1.4706659130752087,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:45.998446Z"
+          "timestamp": "2026-09-07T23:54:27.593037Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 1.6624999698251486,
+          "duration_ms": 1.7257500439882278,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.000148Z"
+          "timestamp": "2026-09-07T23:54:27.594830Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.07345899939537048,
+          "duration_ms": 0.08345907554030418,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005213Z"
+          "timestamp": "2026-09-07T23:54:27.601240Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.028790906071662903,
+          "duration_ms": 0.03483402542769909,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005285Z"
+          "timestamp": "2026-09-07T23:54:27.601331Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.016208039596676826,
+          "duration_ms": 0.01800013706088066,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005326Z"
+          "timestamp": "2026-09-07T23:54:27.601378Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.03791693598031998,
+          "duration_ms": 0.045459019020199776,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005384Z"
+          "timestamp": "2026-09-07T23:54:27.601447Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.023083994165062904,
+          "duration_ms": 0.026999972760677338,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005430Z"
+          "timestamp": "2026-09-07T23:54:27.601497Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.022124964743852615,
+          "duration_ms": 0.026417197659611702,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005471Z"
+          "timestamp": "2026-09-07T23:54:27.601546Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.006457790732383728,
+          "duration_ms": 0.0073749106377363205,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005496Z"
+          "timestamp": "2026-09-07T23:54:27.601574Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.027791829779744148,
+          "duration_ms": 0.05850009620189667,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005541Z"
+          "timestamp": "2026-09-07T23:54:27.601656Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.017666956409811974,
+          "duration_ms": 0.028209062293171883,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005579Z"
+          "timestamp": "2026-09-07T23:54:27.601735Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.016832957044243813,
+          "duration_ms": 0.024791108444333076,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005615Z"
+          "timestamp": "2026-09-07T23:54:27.601794Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.0062908511608839035,
+          "duration_ms": 0.009167008101940155,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005639Z"
+          "timestamp": "2026-09-07T23:54:27.601833Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R03",
-          "duration_ms": 0.02583395689725876,
+          "duration_ms": 0.03429199568927288,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r03",
-          "timestamp": "2026-09-07T22:08:46.005681Z"
+          "timestamp": "2026-09-07T23:54:27.601891Z"
         }
       ]
     },
@@ -9120,7 +9120,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 107,
+          "actual": 115,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -9129,7 +9129,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 107,
+      "duration_ms": 115,
       "error": null,
       "failure_injection": [],
       "id": "R04",
@@ -9274,84 +9274,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 0.28929184190928936,
+          "duration_ms": 0.3913328982889652,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.114219Z"
+          "timestamp": "2026-09-07T23:54:27.724279Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 1.4073329512029886,
+          "duration_ms": 1.430833013728261,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.118330Z"
+          "timestamp": "2026-09-07T23:54:27.728934Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 1.7206249758601189,
+          "duration_ms": 1.6812500543892384,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.120094Z"
+          "timestamp": "2026-09-07T23:54:27.730679Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 0.0643748790025711,
+          "duration_ms": 0.07741712033748627,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.123805Z"
+          "timestamp": "2026-09-07T23:54:27.734984Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 0.03045797348022461,
+          "duration_ms": 0.035082921385765076,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.123870Z"
+          "timestamp": "2026-09-07T23:54:27.735068Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 0.018541933968663216,
+          "duration_ms": 0.02237502485513687,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.123914Z"
+          "timestamp": "2026-09-07T23:54:27.735120Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R04",
-          "duration_ms": 0.04349998198449612,
+          "duration_ms": 0.04616705700755119,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r04",
-          "timestamp": "2026-09-07T22:08:46.123985Z"
+          "timestamp": "2026-09-07T23:54:27.735190Z"
         }
       ]
     },
@@ -9486,7 +9486,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 112,
+          "actual": 132,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -9495,7 +9495,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 112,
+      "duration_ms": 132,
       "error": null,
       "failure_injection": [
         {
@@ -9649,84 +9649,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 0.30587497167289257,
+          "duration_ms": 0.3517500590533018,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.219601Z"
+          "timestamp": "2026-09-07T23:54:27.842383Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 1.3358748983591795,
+          "duration_ms": 1.417458988726139,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.223317Z"
+          "timestamp": "2026-09-07T23:54:27.850194Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 1.6859169118106365,
+          "duration_ms": 1.7381671350449324,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.225045Z"
+          "timestamp": "2026-09-07T23:54:27.851998Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 0.07237493991851807,
+          "duration_ms": 0.0952498521655798,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.228496Z"
+          "timestamp": "2026-09-07T23:54:27.856472Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 0.03158394247293472,
+          "duration_ms": 0.03454205580055714,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.228566Z"
+          "timestamp": "2026-09-07T23:54:27.856562Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 0.01695915125310421,
+          "duration_ms": 0.016625039279460907,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.228607Z"
+          "timestamp": "2026-09-07T23:54:27.856609Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R05",
-          "duration_ms": 0.038084108382463455,
+          "duration_ms": 0.04724995233118534,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r05",
-          "timestamp": "2026-09-07T22:08:46.228667Z"
+          "timestamp": "2026-09-07T23:54:27.856680Z"
         }
       ]
     },
@@ -9970,7 +9970,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 102,
+          "actual": 118,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -9979,7 +9979,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 102,
+      "duration_ms": 118,
       "error": null,
       "failure_injection": [],
       "id": "R06",
@@ -10124,84 +10124,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 0.30112499371171,
+          "duration_ms": 0.3341659903526306,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.328930Z"
+          "timestamp": "2026-09-07T23:54:27.973057Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 1.3976660557091236,
+          "duration_ms": 1.4488750603049994,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.332660Z"
+          "timestamp": "2026-09-07T23:54:27.977369Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 1.659083180129528,
+          "duration_ms": 1.7684998456388712,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.334355Z"
+          "timestamp": "2026-09-07T23:54:27.979205Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 0.0677499920129776,
+          "duration_ms": 0.07750000804662704,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.337776Z"
+          "timestamp": "2026-09-07T23:54:27.983475Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 0.030667055398225784,
+          "duration_ms": 0.03358395770192146,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.337837Z"
+          "timestamp": "2026-09-07T23:54:27.983564Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 0.0189170241355896,
+          "duration_ms": 0.02037500962615013,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.337881Z"
+          "timestamp": "2026-09-07T23:54:27.983612Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R06",
-          "duration_ms": 0.041207997128367424,
+          "duration_ms": 0.04712515510618687,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r06",
-          "timestamp": "2026-09-07T22:08:46.337944Z"
+          "timestamp": "2026-09-07T23:54:27.983682Z"
         }
       ]
     },
@@ -10335,7 +10335,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 1408,
+          "actual": 1642,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -10344,7 +10344,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 1408,
+      "duration_ms": 1642,
       "error": null,
       "failure_injection": [
         {
@@ -12893,180 +12893,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.26233308017253876,
+          "duration_ms": 0.3918751608580351,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.489425Z"
+          "timestamp": "2026-09-07T23:54:28.174163Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 1.381375128403306,
+          "duration_ms": 1.3831248506903648,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.493318Z"
+          "timestamp": "2026-09-07T23:54:28.178525Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 1.6922089271247387,
+          "duration_ms": 1.7120419070124626,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.495052Z"
+          "timestamp": "2026-09-07T23:54:28.180287Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.07095886394381523,
+          "duration_ms": 0.07591699250042439,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.499961Z"
+          "timestamp": "2026-09-07T23:54:28.186315Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.031999778002500534,
+          "duration_ms": 0.03358395770192146,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500033Z"
+          "timestamp": "2026-09-07T23:54:28.186394Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.022583873942494392,
+          "duration_ms": 0.018832972273230553,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500083Z"
+          "timestamp": "2026-09-07T23:54:28.186441Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.04237517714500427,
+          "duration_ms": 0.04495796747505665,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500149Z"
+          "timestamp": "2026-09-07T23:54:28.186509Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.026333145797252655,
+          "duration_ms": 0.026792054995894432,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500198Z"
+          "timestamp": "2026-09-07T23:54:28.186558Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.026292167603969574,
+          "duration_ms": 0.026332912966609,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500246Z"
+          "timestamp": "2026-09-07T23:54:28.186605Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.007458962500095367,
+          "duration_ms": 0.0071660615503787994,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500274Z"
+          "timestamp": "2026-09-07T23:54:28.186631Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.03245798870921135,
+          "duration_ms": 0.03329198807477951,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500325Z"
+          "timestamp": "2026-09-07T23:54:28.186684Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.01945788972079754,
+          "duration_ms": 0.019750092178583145,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500366Z"
+          "timestamp": "2026-09-07T23:54:28.186725Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.01958315260708332,
+          "duration_ms": 0.019458122551441193,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500407Z"
+          "timestamp": "2026-09-07T23:54:28.186766Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.007209135219454765,
+          "duration_ms": 0.009499955922365189,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500433Z"
+          "timestamp": "2026-09-07T23:54:28.186796Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R07",
-          "duration_ms": 0.030125025659799576,
+          "duration_ms": 0.03095809370279312,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r07",
-          "timestamp": "2026-09-07T22:08:46.500482Z"
+          "timestamp": "2026-09-07T23:54:28.186847Z"
         }
       ]
     },
@@ -13198,7 +13198,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 115,
+          "actual": 131,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -13207,7 +13207,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 115,
+      "duration_ms": 131,
       "error": null,
       "failure_injection": [
         {
@@ -15744,180 +15744,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.2964169252663851,
+          "duration_ms": 0.34320796839892864,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.839296Z"
+          "timestamp": "2026-09-07T23:54:29.730486Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 1.2753750197589397,
+          "duration_ms": 1.4139579143375158,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.843104Z"
+          "timestamp": "2026-09-07T23:54:29.735071Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 1.6590000595897436,
+          "duration_ms": 1.7657079733908176,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.844811Z"
+          "timestamp": "2026-09-07T23:54:29.736896Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.07491698488593102,
+          "duration_ms": 0.09295810014009476,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.849762Z"
+          "timestamp": "2026-09-07T23:54:29.743117Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.033624935895204544,
+          "duration_ms": 0.03691692836582661,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.849840Z"
+          "timestamp": "2026-09-07T23:54:29.743212Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.017458107322454453,
+          "duration_ms": 0.019833911210298538,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.849886Z"
+          "timestamp": "2026-09-07T23:54:29.743263Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.043084146454930305,
+          "duration_ms": 0.048042042180895805,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.849953Z"
+          "timestamp": "2026-09-07T23:54:29.743335Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.023584114387631416,
+          "duration_ms": 0.028916867449879646,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.849998Z"
+          "timestamp": "2026-09-07T23:54:29.743391Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.0227498821914196,
+          "duration_ms": 0.027582980692386627,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850041Z"
+          "timestamp": "2026-09-07T23:54:29.743441Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.006291083991527557,
+          "duration_ms": 0.00758306123316288,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850065Z"
+          "timestamp": "2026-09-07T23:54:29.743470Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.028749927878379822,
+          "duration_ms": 0.035082921385765076,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850112Z"
+          "timestamp": "2026-09-07T23:54:29.743526Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.01800013706088066,
+          "duration_ms": 0.020999927073717117,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850150Z"
+          "timestamp": "2026-09-07T23:54:29.743570Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.017750076949596405,
+          "duration_ms": 0.020499806851148605,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850186Z"
+          "timestamp": "2026-09-07T23:54:29.743612Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.006667105481028557,
+          "duration_ms": 0.0076249707490205765,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850211Z"
+          "timestamp": "2026-09-07T23:54:29.743640Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R08",
-          "duration_ms": 0.02604094333946705,
+          "duration_ms": 0.030375085771083832,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r08",
-          "timestamp": "2026-09-07T22:08:47.850254Z"
+          "timestamp": "2026-09-07T23:54:29.743690Z"
         }
       ]
     },
@@ -16062,7 +16062,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 118,
+          "actual": 135,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -16071,7 +16071,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 118,
+      "duration_ms": 135,
       "error": null,
       "failure_injection": [
         {
@@ -18610,180 +18610,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.30854204669594765,
+          "duration_ms": 0.3902080934494734,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.956555Z"
+          "timestamp": "2026-09-07T23:54:29.860658Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 1.3686660677194595,
+          "duration_ms": 1.4753330033272505,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.960449Z"
+          "timestamp": "2026-09-07T23:54:29.865105Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 1.6852091066539288,
+          "duration_ms": 1.7087499145418406,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.962175Z"
+          "timestamp": "2026-09-07T23:54:29.866882Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.09674998000264168,
+          "duration_ms": 0.0891250092536211,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967523Z"
+          "timestamp": "2026-09-07T23:54:29.872910Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.035125063732266426,
+          "duration_ms": 0.04583294503390789,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967607Z"
+          "timestamp": "2026-09-07T23:54:29.873031Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.021790852770209312,
+          "duration_ms": 0.02287491224706173,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967658Z"
+          "timestamp": "2026-09-07T23:54:29.873092Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.0463749747723341,
+          "duration_ms": 0.051625072956085205,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967731Z"
+          "timestamp": "2026-09-07T23:54:29.873170Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.027082860469818115,
+          "duration_ms": 0.030250055715441704,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967782Z"
+          "timestamp": "2026-09-07T23:54:29.873226Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.026374822482466698,
+          "duration_ms": 0.02870894968509674,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967829Z"
+          "timestamp": "2026-09-07T23:54:29.873278Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.007707858458161354,
+          "duration_ms": 0.007791910320520401,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967858Z"
+          "timestamp": "2026-09-07T23:54:29.873307Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.03316602669656277,
+          "duration_ms": 0.0352498609572649,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967910Z"
+          "timestamp": "2026-09-07T23:54:29.873363Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.020582927390933037,
+          "duration_ms": 0.021582935005426407,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967953Z"
+          "timestamp": "2026-09-07T23:54:29.873407Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.02087489701807499,
+          "duration_ms": 0.020833918824791908,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.967997Z"
+          "timestamp": "2026-09-07T23:54:29.873449Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.007832888513803482,
+          "duration_ms": 0.0077500008046627045,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.968025Z"
+          "timestamp": "2026-09-07T23:54:29.873477Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R09",
-          "duration_ms": 0.03033410757780075,
+          "duration_ms": 0.03133295103907585,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r09",
-          "timestamp": "2026-09-07T22:08:47.968074Z"
+          "timestamp": "2026-09-07T23:54:29.873528Z"
         }
       ]
     },
@@ -18974,7 +18974,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 176,
+          "actual": 205,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -18983,7 +18983,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 176,
+      "duration_ms": 205,
       "error": null,
       "failure_injection": [
         {
@@ -21524,180 +21524,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.25404198095202446,
+          "duration_ms": 0.40091690607368946,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.132517Z"
+          "timestamp": "2026-09-07T23:54:30.001110Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 1.415459206327796,
+          "duration_ms": 1.4715830329805613,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.136637Z"
+          "timestamp": "2026-09-07T23:54:30.005611Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 1.7554168589413166,
+          "duration_ms": 1.7504158895462751,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.138442Z"
+          "timestamp": "2026-09-07T23:54:30.007425Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.07216585800051689,
+          "duration_ms": 0.10262499563395977,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143643Z"
+          "timestamp": "2026-09-07T23:54:30.013392Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.032207928597927094,
+          "duration_ms": 0.04433398135006428,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143712Z"
+          "timestamp": "2026-09-07T23:54:30.013510Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.01991703175008297,
+          "duration_ms": 0.024042092263698578,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143758Z"
+          "timestamp": "2026-09-07T23:54:30.013571Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.04395795986056328,
+          "duration_ms": 0.08816691115498543,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143824Z"
+          "timestamp": "2026-09-07T23:54:30.013688Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.027208123356103897,
+          "duration_ms": 0.04916684702038765,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143873Z"
+          "timestamp": "2026-09-07T23:54:30.013791Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.02683396451175213,
+          "duration_ms": 0.029082875698804855,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143922Z"
+          "timestamp": "2026-09-07T23:54:30.013848Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.007333001121878624,
+          "duration_ms": 0.01354096457362175,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.143950Z"
+          "timestamp": "2026-09-07T23:54:30.013884Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.03287498839199543,
+          "duration_ms": 0.03954092971980572,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.144002Z"
+          "timestamp": "2026-09-07T23:54:30.013944Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.02037500962615013,
+          "duration_ms": 0.020999927073717117,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.144043Z"
+          "timestamp": "2026-09-07T23:54:30.013988Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.020625069737434387,
+          "duration_ms": 0.020833918824791908,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.144085Z"
+          "timestamp": "2026-09-07T23:54:30.014029Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.0069998204708099365,
+          "duration_ms": 0.007457798346877098,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.144111Z"
+          "timestamp": "2026-09-07T23:54:30.014057Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R10",
-          "duration_ms": 0.030250055715441704,
+          "duration_ms": 0.030708033591508865,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r10",
-          "timestamp": "2026-09-07T22:08:48.144163Z"
+          "timestamp": "2026-09-07T23:54:30.014106Z"
         }
       ]
     },
@@ -21809,7 +21809,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 246,
+          "actual": 284,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -21818,7 +21818,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 246,
+      "duration_ms": 284,
       "error": null,
       "failure_injection": [],
       "id": "R11",
@@ -24176,7 +24176,7 @@
           "case_version": 0,
           "decision": "reject",
           "kind": "action_review",
-          "recorded_at": "2026-09-07T22:08:48.390256+00:00",
+          "recorded_at": "2026-09-07T23:54:30.370749+00:00",
           "thread_id": "thread-r11-reject"
         },
         "identity_conflict_probe_codes": null,
@@ -24344,180 +24344,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.2774579916149378,
+          "duration_ms": 0.33933320082724094,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.358217Z"
+          "timestamp": "2026-09-07T23:54:30.330449Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 1.3130002189427614,
+          "duration_ms": 1.4408749993890524,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.361846Z"
+          "timestamp": "2026-09-07T23:54:30.335088Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 1.6997919883579016,
+          "duration_ms": 1.7614581156522036,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.363587Z"
+          "timestamp": "2026-09-07T23:54:30.336915Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.07408298552036285,
+          "duration_ms": 0.10787486098706722,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368593Z"
+          "timestamp": "2026-09-07T23:54:30.344686Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.03162515349686146,
+          "duration_ms": 0.05249981768429279,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368660Z"
+          "timestamp": "2026-09-07T23:54:30.344799Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.019875122234225273,
+          "duration_ms": 0.020916108042001724,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368705Z"
+          "timestamp": "2026-09-07T23:54:30.344851Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.040457816794514656,
+          "duration_ms": 0.04787510260939598,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368768Z"
+          "timestamp": "2026-09-07T23:54:30.344927Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.023916829377412796,
+          "duration_ms": 0.02945796586573124,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368812Z"
+          "timestamp": "2026-09-07T23:54:30.344984Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.023082830011844635,
+          "duration_ms": 0.02829195000231266,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368855Z"
+          "timestamp": "2026-09-07T23:54:30.345036Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.006542075425386429,
+          "duration_ms": 0.007792143151164055,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368880Z"
+          "timestamp": "2026-09-07T23:54:30.345068Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.02837507054209709,
+          "duration_ms": 0.03466615453362465,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368925Z"
+          "timestamp": "2026-09-07T23:54:30.345124Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.018249964341521263,
+          "duration_ms": 0.021333107724785805,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.368964Z"
+          "timestamp": "2026-09-07T23:54:30.345169Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.017999904230237007,
+          "duration_ms": 0.019582919776439667,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.369002Z"
+          "timestamp": "2026-09-07T23:54:30.345210Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.006667105481028557,
+          "duration_ms": 0.007541151717305183,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.369028Z"
+          "timestamp": "2026-09-07T23:54:30.345238Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R11-REJECT",
-          "duration_ms": 0.02720882184803486,
+          "duration_ms": 0.030291033908724785,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r11-reject",
-          "timestamp": "2026-09-07T22:08:48.369072Z"
+          "timestamp": "2026-09-07T23:54:30.345287Z"
         }
       ]
     },
@@ -24846,7 +24846,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 1669,
+          "actual": 1869,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -24855,7 +24855,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 1669,
+      "duration_ms": 1869,
       "error": null,
       "failure_injection": [
         {
@@ -27240,7 +27240,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R12",
             "case_version": 0,
-            "checkpoint_id": "1f1ab08b-44ff-621c-8012-e3747a66c58f",
+            "checkpoint_id": "1f1ab177-889b-683a-8012-a742f323d426",
             "confirmed": true,
             "execution_id": "b0d943c0-410e-5078-bf42-623fb36fba85",
             "idempotency_key": "recallops:b0d943c0-410e-5078-bf42-623fb36fba85",
@@ -27252,7 +27252,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R12",
             "case_version": 1,
-            "checkpoint_id": "1f1ab08b-4600-6c74-8017-9e4c2f181a88",
+            "checkpoint_id": "1f1ab177-8920-6076-8017-236c1d9e6b5b",
             "confirmed": true,
             "execution_id": "235227f1-1c4f-547b-9919-f2fb11a76d3b",
             "idempotency_key": "recallops:235227f1-1c4f-547b-9919-f2fb11a76d3b",
@@ -27268,7 +27268,7 @@
           "decision": "approve",
           "justification": "Reviewed against cited evidence and authoritative reconciliation.",
           "kind": "action_review",
-          "recorded_at": "2026-09-07T22:08:49.928329+00:00",
+          "recorded_at": "2026-09-07T23:54:32.033859+00:00",
           "thread_id": "thread-r12"
         },
         "identity_conflict_probe_codes": [
@@ -27295,7 +27295,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R12",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:49.848864Z",
+              "created_at": "2026-09-07T23:54:32.013706Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170",
@@ -27491,7 +27491,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R12",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:49.950797Z",
+              "created_at": "2026-09-07T23:54:32.066885Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170",
@@ -27714,7 +27714,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R12",
             "case_version": 1,
-            "created_at": "2026-09-07T22:08:49.848864Z",
+            "created_at": "2026-09-07T23:54:32.013706Z",
             "details": {
               "confirmed_lot_ids": [
                 "LOT-EXACT-170",
@@ -27900,7 +27900,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R12",
             "case_version": 2,
-            "created_at": "2026-09-07T22:08:49.950797Z",
+            "created_at": "2026-09-07T23:54:32.066885Z",
             "details": {
               "lot_ids": [
                 "LOT-EXACT-170",
@@ -27969,180 +27969,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.2615000121295452,
+          "duration_ms": 0.29166601598262787,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.774044Z"
+          "timestamp": "2026-09-07T23:54:31.926655Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 1.4549579937011003,
+          "duration_ms": 1.5706669073551893,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.778078Z"
+          "timestamp": "2026-09-07T23:54:31.931076Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 1.7506249714642763,
+          "duration_ms": 1.7617910634726286,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.779891Z"
+          "timestamp": "2026-09-07T23:54:31.932963Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.09116693399846554,
+          "duration_ms": 0.09008403867483139,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786121Z"
+          "timestamp": "2026-09-07T23:54:31.939273Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.03395788371562958,
+          "duration_ms": 0.07095793262124062,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786202Z"
+          "timestamp": "2026-09-07T23:54:31.939431Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.022209016606211662,
+          "duration_ms": 0.029374845325946808,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786250Z"
+          "timestamp": "2026-09-07T23:54:31.939549Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.04520895890891552,
+          "duration_ms": 0.06333296187222004,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786318Z"
+          "timestamp": "2026-09-07T23:54:31.939641Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.028125010430812836,
+          "duration_ms": 0.0300002284348011,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786371Z"
+          "timestamp": "2026-09-07T23:54:31.939695Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.026458175852894783,
+          "duration_ms": 0.029207905754446983,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786419Z"
+          "timestamp": "2026-09-07T23:54:31.939746Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.0071248505264520645,
+          "duration_ms": 0.007709022611379623,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786448Z"
+          "timestamp": "2026-09-07T23:54:31.939774Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.03308313898742199,
+          "duration_ms": 0.03479188308119774,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786500Z"
+          "timestamp": "2026-09-07T23:54:31.939828Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.024499837309122086,
+          "duration_ms": 0.020541949197649956,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786547Z"
+          "timestamp": "2026-09-07T23:54:31.939872Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.02108304761350155,
+          "duration_ms": 0.020208070054650307,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786589Z"
+          "timestamp": "2026-09-07T23:54:31.939913Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.007583992555737495,
+          "duration_ms": 0.0072498805820941925,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786617Z"
+          "timestamp": "2026-09-07T23:54:31.939941Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R12",
-          "duration_ms": 0.031166942790150642,
+          "duration_ms": 0.030624913051724434,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r12",
-          "timestamp": "2026-09-07T22:08:49.786666Z"
+          "timestamp": "2026-09-07T23:54:31.939990Z"
         }
       ]
     },
@@ -28271,7 +28271,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 314,
+          "actual": 349,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -28280,7 +28280,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 314,
+      "duration_ms": 349,
       "error": null,
       "failure_injection": [
         {
@@ -28353,7 +28353,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R13",
             "case_version": 0,
-            "checkpoint_id": "1f1ab08b-48fc-6630-8012-efaa330ea57a",
+            "checkpoint_id": "1f1ab177-8c5c-6f5a-8012-5f026171a083",
             "confirmed": true,
             "execution_id": "9c9077bb-67b4-53a7-b1de-5ac4910b1dcc",
             "idempotency_key": "recallops:9c9077bb-67b4-53a7-b1de-5ac4910b1dcc",
@@ -28365,7 +28365,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R13",
             "case_version": 1,
-            "checkpoint_id": "1f1ab08b-493c-6758-8017-4eda008edbaa",
+            "checkpoint_id": "1f1ab177-8ca7-6be0-8017-eb7b26ac5a4b",
             "confirmed": true,
             "execution_id": "d3050eab-69e7-5ed6-9d6b-a0be54379e90",
             "idempotency_key": "recallops:d3050eab-69e7-5ed6-9d6b-a0be54379e90",
@@ -28381,7 +28381,7 @@
           "decision": "approve",
           "justification": "Reviewed against cited evidence and authoritative reconciliation.",
           "kind": "action_review",
-          "recorded_at": "2026-09-07T22:08:50.277027+00:00",
+          "recorded_at": "2026-09-07T23:54:32.420856+00:00",
           "thread_id": "thread-r13"
         },
         "identity_conflict_probe_codes": null,
@@ -28405,7 +28405,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R13",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:50.265103Z",
+              "created_at": "2026-09-07T23:54:32.407338Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -28530,7 +28530,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R13",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:50.289136Z",
+              "created_at": "2026-09-07T23:54:32.437025Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -28649,7 +28649,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R13",
             "case_version": 1,
-            "created_at": "2026-09-07T22:08:50.265103Z",
+            "created_at": "2026-09-07T23:54:32.407338Z",
             "details": {
               "confirmed_lot_ids": [
                 "LOT-EXACT-170"
@@ -28764,7 +28764,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R13",
             "case_version": 2,
-            "created_at": "2026-09-07T22:08:50.289136Z",
+            "created_at": "2026-09-07T23:54:32.437025Z",
             "details": {
               "lot_ids": [
                 "LOT-EXACT-170"
@@ -28815,84 +28815,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 0.347458990290761,
+          "duration_ms": 0.4077500198036432,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.225559Z"
+          "timestamp": "2026-09-07T23:54:32.357199Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 1.4405830297619104,
+          "duration_ms": 1.444708090275526,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.229659Z"
+          "timestamp": "2026-09-07T23:54:32.361662Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 1.7617500852793455,
+          "duration_ms": 1.6517499461770058,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.231467Z"
+          "timestamp": "2026-09-07T23:54:32.363376Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 0.08908286690711975,
+          "duration_ms": 0.08658389560878277,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.235248Z"
+          "timestamp": "2026-09-07T23:54:32.367792Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 0.03454205580055714,
+          "duration_ms": 0.03774999640882015,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.235329Z"
+          "timestamp": "2026-09-07T23:54:32.367885Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 0.020290957763791084,
+          "duration_ms": 0.02245791256427765,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.235379Z"
+          "timestamp": "2026-09-07T23:54:32.367937Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R13",
-          "duration_ms": 0.046209199354052544,
+          "duration_ms": 0.04837499000132084,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r13",
-          "timestamp": "2026-09-07T22:08:50.235450Z"
+          "timestamp": "2026-09-07T23:54:32.368009Z"
         }
       ]
     },
@@ -29026,7 +29026,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 142,
+          "actual": 170,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -29035,7 +29035,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 142,
+      "duration_ms": 170,
       "error": null,
       "failure_injection": [
         {
@@ -31571,180 +31571,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.31745899468660355,
+          "duration_ms": 0.4218749236315489,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.482119Z"
+          "timestamp": "2026-09-07T23:54:32.710480Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 1.4470000751316547,
+          "duration_ms": 1.5398338437080383,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.486201Z"
+          "timestamp": "2026-09-07T23:54:32.715097Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 1.8453339580446482,
+          "duration_ms": 1.707624876871705,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.488098Z"
+          "timestamp": "2026-09-07T23:54:32.716882Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.07545808330178261,
+          "duration_ms": 0.11066696606576443,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493527Z"
+          "timestamp": "2026-09-07T23:54:32.723255Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.03254110924899578,
+          "duration_ms": 0.06025005131959915,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493602Z"
+          "timestamp": "2026-09-07T23:54:32.723413Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.018083956092596054,
+          "duration_ms": 0.022249994799494743,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493646Z"
+          "timestamp": "2026-09-07T23:54:32.723463Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.046250177547335625,
+          "duration_ms": 0.04933308809995651,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493717Z"
+          "timestamp": "2026-09-07T23:54:32.723535Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.030833063647150993,
+          "duration_ms": 0.029125018045306206,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493774Z"
+          "timestamp": "2026-09-07T23:54:32.723589Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.028291018679738045,
+          "duration_ms": 0.027667032554745674,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493825Z"
+          "timestamp": "2026-09-07T23:54:32.723638Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.007833121344447136,
+          "duration_ms": 0.007709022611379623,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493856Z"
+          "timestamp": "2026-09-07T23:54:32.723670Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.035833101719617844,
+          "duration_ms": 0.033542048186063766,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493912Z"
+          "timestamp": "2026-09-07T23:54:32.723724Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.022292137145996094,
+          "duration_ms": 0.024165958166122437,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.493959Z"
+          "timestamp": "2026-09-07T23:54:32.723770Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.020458828657865524,
+          "duration_ms": 0.020832987502217293,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.494000Z"
+          "timestamp": "2026-09-07T23:54:32.723810Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.008999835699796677,
+          "duration_ms": 0.0073339324444532394,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.494029Z"
+          "timestamp": "2026-09-07T23:54:32.723837Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R14",
-          "duration_ms": 0.030833063647150993,
+          "duration_ms": 0.03145914524793625,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r14",
-          "timestamp": "2026-09-07T22:08:50.494080Z"
+          "timestamp": "2026-09-07T23:54:32.723888Z"
         }
       ]
     },
@@ -31920,7 +31920,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:50.923680Z",
+              "created_at": "2026-09-07T23:54:33.214628Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -32035,7 +32035,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:50.926044Z",
+              "created_at": "2026-09-07T23:54:33.217700Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -32083,14 +32083,14 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:50.928411Z",
+              "created_at": "2026-09-07T23:54:33.220553Z",
               "details": {
                 "disposition": "dispose_unaccounted",
                 "disposition_event": {
                   "disposition": "dispose_unaccounted",
                   "event_id": "7c3c77ab-949e-5dcd-97e8-b87555968835",
                   "lot_id": "LOT-EXACT-170",
-                  "occurred_at": "2026-09-07T22:08:50.928347Z",
+                  "occurred_at": "2026-09-07T23:54:33.220486Z",
                   "provenance": "WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION",
                   "quantity": 50,
                   "source_evidence_ids": [
@@ -32128,7 +32128,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:50.931311Z",
+              "created_at": "2026-09-07T23:54:33.224323Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -32200,7 +32200,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:50.934104Z",
+              "created_at": "2026-09-07T23:54:33.227126Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -32309,7 +32309,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 407,
+          "actual": 452,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -32318,7 +32318,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 407,
+      "duration_ms": 452,
       "error": null,
       "failure_injection": [
         {
@@ -34735,7 +34735,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:50.923680Z",
+              "created_at": "2026-09-07T23:54:33.214628Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -34860,7 +34860,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:50.926044Z",
+              "created_at": "2026-09-07T23:54:33.217700Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -34918,14 +34918,14 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:50.928411Z",
+              "created_at": "2026-09-07T23:54:33.220553Z",
               "details": {
                 "disposition": "dispose_unaccounted",
                 "disposition_event": {
                   "disposition": "dispose_unaccounted",
                   "event_id": "7c3c77ab-949e-5dcd-97e8-b87555968835",
                   "lot_id": "LOT-EXACT-170",
-                  "occurred_at": "2026-09-07T22:08:50.928347Z",
+                  "occurred_at": "2026-09-07T23:54:33.220486Z",
                   "provenance": "WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION",
                   "quantity": 50,
                   "source_evidence_ids": [
@@ -34973,7 +34973,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:50.931311Z",
+              "created_at": "2026-09-07T23:54:33.224323Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -35055,7 +35055,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:50.934104Z",
+              "created_at": "2026-09-07T23:54:33.227126Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -35343,13 +35343,13 @@
           "confirmed_lot_ids": [
             "LOT-EXACT-170"
           ],
-          "created_at": "2026-09-07T22:08:50.923650Z",
+          "created_at": "2026-09-07T23:54:33.214592Z",
           "disposition_events": [
             {
               "disposition": "dispose_unaccounted",
               "event_id": "7c3c77ab-949e-5dcd-97e8-b87555968835",
               "lot_id": "LOT-EXACT-170",
-              "occurred_at": "2026-09-07T22:08:50.928347Z",
+              "occurred_at": "2026-09-07T23:54:33.220486Z",
               "provenance": "WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION",
               "quantity": 50,
               "source_evidence_ids": [
@@ -35556,7 +35556,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:50.923680Z",
+              "created_at": "2026-09-07T23:54:33.214628Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -35671,7 +35671,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:50.926044Z",
+              "created_at": "2026-09-07T23:54:33.217700Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -35719,14 +35719,14 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:50.928411Z",
+              "created_at": "2026-09-07T23:54:33.220553Z",
               "details": {
                 "disposition": "dispose_unaccounted",
                 "disposition_event": {
                   "disposition": "dispose_unaccounted",
                   "event_id": "7c3c77ab-949e-5dcd-97e8-b87555968835",
                   "lot_id": "LOT-EXACT-170",
-                  "occurred_at": "2026-09-07T22:08:50.928347Z",
+                  "occurred_at": "2026-09-07T23:54:33.220486Z",
                   "provenance": "WORKFLOW_APPROVED_SYNTHETIC_DISPOSITION",
                   "quantity": 50,
                   "source_evidence_ids": [
@@ -35764,7 +35764,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:50.931311Z",
+              "created_at": "2026-09-07T23:54:33.224323Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -35836,7 +35836,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R15",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:50.934104Z",
+              "created_at": "2026-09-07T23:54:33.227126Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -35899,180 +35899,180 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.3699581138789654,
+          "duration_ms": 0.33716694451868534,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.623912Z"
+          "timestamp": "2026-09-07T23:54:32.876262Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 1.4594169333577156,
+          "duration_ms": 1.405125018209219,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.628360Z"
+          "timestamp": "2026-09-07T23:54:32.880405Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 1.8058749847114086,
+          "duration_ms": 1.8060840666294098,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.630239Z"
+          "timestamp": "2026-09-07T23:54:32.882269Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.09429198689758778,
+          "duration_ms": 0.10258401744067669,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636032Z"
+          "timestamp": "2026-09-07T23:54:32.887872Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.03591715358197689,
+          "duration_ms": 0.038041966035962105,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636115Z"
+          "timestamp": "2026-09-07T23:54:32.887963Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.018625054508447647,
+          "duration_ms": 0.019333092495799065,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636161Z"
+          "timestamp": "2026-09-07T23:54:32.888012Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.0474581029266119,
+          "duration_ms": 0.049625057727098465,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636231Z"
+          "timestamp": "2026-09-07T23:54:32.888085Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.02870778553187847,
+          "duration_ms": 0.031000003218650818,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636287Z"
+          "timestamp": "2026-09-07T23:54:32.888140Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.02887495793402195,
+          "duration_ms": 0.028708018362522125,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636339Z"
+          "timestamp": "2026-09-07T23:54:32.888191Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.007917173206806183,
+          "duration_ms": 0.007292022928595543,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636370Z"
+          "timestamp": "2026-09-07T23:54:32.888220Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.035250093787908554,
+          "duration_ms": 0.035667093470692635,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636426Z"
+          "timestamp": "2026-09-07T23:54:32.888275Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.021832995116710663,
+          "duration_ms": 0.02170889638364315,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636471Z"
+          "timestamp": "2026-09-07T23:54:32.888320Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.021209008991718292,
+          "duration_ms": 0.021041138097643852,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636513Z"
+          "timestamp": "2026-09-07T23:54:32.888363Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.007708091288805008,
+          "duration_ms": 0.007458031177520752,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636542Z"
+          "timestamp": "2026-09-07T23:54:32.888392Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R15",
-          "duration_ms": 0.0327499583363533,
+          "duration_ms": 0.032292213290929794,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r15",
-          "timestamp": "2026-09-07T22:08:50.636594Z"
+          "timestamp": "2026-09-07T23:54:32.888444Z"
         }
       ]
     },
@@ -36162,7 +36162,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:51.191517Z",
+              "created_at": "2026-09-07T23:54:33.447560Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -36275,7 +36275,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:51.194138Z",
+              "created_at": "2026-09-07T23:54:33.450701Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -36323,7 +36323,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:51.197012Z",
+              "created_at": "2026-09-07T23:54:33.454404Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -36395,7 +36395,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:51.199568Z",
+              "created_at": "2026-09-07T23:54:33.458310Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -36441,7 +36441,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:51.202198Z",
+              "created_at": "2026-09-07T23:54:33.461836Z",
               "details": {
                 "facility_id": "STORE-01",
                 "reviewed_action": {
@@ -36550,7 +36550,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 265,
+          "actual": 234,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -36559,7 +36559,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 265,
+      "duration_ms": 234,
       "error": null,
       "failure_injection": [
         {
@@ -36683,7 +36683,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:51.191517Z",
+              "created_at": "2026-09-07T23:54:33.447560Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -36806,7 +36806,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:51.194138Z",
+              "created_at": "2026-09-07T23:54:33.450701Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -36864,7 +36864,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:51.197012Z",
+              "created_at": "2026-09-07T23:54:33.454404Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -36946,7 +36946,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:51.199568Z",
+              "created_at": "2026-09-07T23:54:33.458310Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -37002,7 +37002,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:51.202198Z",
+              "created_at": "2026-09-07T23:54:33.461836Z",
               "details": {
                 "facility_id": "STORE-01",
                 "reviewed_action": {
@@ -37201,7 +37201,7 @@
           "confirmed_lot_ids": [
             "LOT-EXACT-170"
           ],
-          "created_at": "2026-09-07T22:08:51.191479Z",
+          "created_at": "2026-09-07T23:54:33.447527Z",
           "disposition_events": [],
           "error_code": "closure_blocked",
           "estimated_tokens": 0,
@@ -37399,7 +37399,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:51.191517Z",
+              "created_at": "2026-09-07T23:54:33.447560Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -37512,7 +37512,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:51.194138Z",
+              "created_at": "2026-09-07T23:54:33.450701Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -37560,7 +37560,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:51.197012Z",
+              "created_at": "2026-09-07T23:54:33.454404Z",
               "details": {
                 "facility_ids": [
                   "DC-NORTH",
@@ -37632,7 +37632,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:51.199568Z",
+              "created_at": "2026-09-07T23:54:33.458310Z",
               "details": {
                 "facility_id": "DC-NORTH",
                 "reviewed_action": {
@@ -37678,7 +37678,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R16",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:51.202198Z",
+              "created_at": "2026-09-07T23:54:33.461836Z",
               "details": {
                 "facility_id": "STORE-01",
                 "reviewed_action": {
@@ -37741,84 +37741,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 0.3801670391112566,
+          "duration_ms": 0.43366686441004276,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.088079Z"
+          "timestamp": "2026-09-07T23:54:33.331184Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 1.4385839458554983,
+          "duration_ms": 1.4103748835623264,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.092197Z"
+          "timestamp": "2026-09-07T23:54:33.335617Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 1.8209170084446669,
+          "duration_ms": 1.6822919715195894,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.094078Z"
+          "timestamp": "2026-09-07T23:54:33.337363Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 0.09487499482929707,
+          "duration_ms": 0.08937506936490536,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.098130Z"
+          "timestamp": "2026-09-07T23:54:33.341741Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 0.03616698086261749,
+          "duration_ms": 0.05858391523361206,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.098217Z"
+          "timestamp": "2026-09-07T23:54:33.341857Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 0.023416941985487938,
+          "duration_ms": 0.02150004729628563,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.098269Z"
+          "timestamp": "2026-09-07T23:54:33.341927Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R16",
-          "duration_ms": 0.050042057409882545,
+          "duration_ms": 0.051208073273301125,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r16",
-          "timestamp": "2026-09-07T22:08:51.098343Z"
+          "timestamp": "2026-09-07T23:54:33.342008Z"
         }
       ]
     },
@@ -37999,7 +37999,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 333,
+          "actual": 514,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -38008,7 +38008,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 333,
+      "duration_ms": 514,
       "error": null,
       "failure_injection": [],
       "id": "R17",
@@ -38082,7 +38082,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 0,
-            "checkpoint_id": "1f1ab08b-533b-6f2e-8012-72b317db1b17",
+            "checkpoint_id": "1f1ab177-986e-6564-8012-9c66ab9e3c4c",
             "confirmed": true,
             "execution_id": "01c0adbb-eba1-5a79-8a58-0ac4acdf22ef",
             "idempotency_key": "recallops:01c0adbb-eba1-5a79-8a58-0ac4acdf22ef",
@@ -38094,7 +38094,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 1,
-            "checkpoint_id": "1f1ab08b-537d-6c80-8017-4a29b0fab0c3",
+            "checkpoint_id": "1f1ab177-98c0-662a-8017-6e38b979d6e5",
             "confirmed": true,
             "execution_id": "960738ba-5b88-5359-b2b0-2b0958de8a8d",
             "idempotency_key": "recallops:960738ba-5b88-5359-b2b0-2b0958de8a8d",
@@ -38106,7 +38106,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 2,
-            "checkpoint_id": "1f1ab08b-53b7-6b10-801c-1e66c7073a8a",
+            "checkpoint_id": "1f1ab177-9907-68fe-801c-5edb9970bdbb",
             "confirmed": true,
             "execution_id": "1b71d433-0380-579f-82ac-4e8965089ec4",
             "idempotency_key": "recallops:1b71d433-0380-579f-82ac-4e8965089ec4",
@@ -38118,7 +38118,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 3,
-            "checkpoint_id": "1f1ab08b-53f2-6d96-8021-b85c0f1e8621",
+            "checkpoint_id": "1f1ab177-994f-65be-8021-2a85ca5613f9",
             "confirmed": true,
             "execution_id": "385e2ad4-ec6d-5ab6-8243-3f96c469776c",
             "idempotency_key": "recallops:385e2ad4-ec6d-5ab6-8243-3f96c469776c",
@@ -38130,7 +38130,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 4,
-            "checkpoint_id": "1f1ab08b-542c-61fe-8026-791b0d9a58e8",
+            "checkpoint_id": "1f1ab177-9993-6944-8026-86162c7794cf",
             "confirmed": true,
             "execution_id": "f4f32c26-329f-5108-a119-a149dcf75270",
             "idempotency_key": "recallops:f4f32c26-329f-5108-a119-a149dcf75270",
@@ -38142,7 +38142,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 5,
-            "checkpoint_id": "1f1ab08b-5483-663e-802d-32adbdd190ca",
+            "checkpoint_id": "1f1ab177-9ab0-6a3e-802d-ce5a63ac8c17",
             "confirmed": true,
             "execution_id": "0a49d1a5-8119-5a8e-a87e-ba464c318053",
             "idempotency_key": "recallops:0a49d1a5-8119-5a8e-a87e-ba464c318053",
@@ -38158,7 +38158,7 @@
           "decision": "approve",
           "justification": "Reviewed against cited evidence and authoritative reconciliation.",
           "kind": "closure_review",
-          "recorded_at": "2026-09-07T22:08:51.460080+00:00",
+          "recorded_at": "2026-09-07T23:54:33.892084+00:00",
           "thread_id": "thread-r17"
         },
         "identity_conflict_probe_codes": null,
@@ -38182,7 +38182,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:51.339922Z",
+              "created_at": "2026-09-07T23:54:33.672958Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-PROBABLE-160"
@@ -38301,7 +38301,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:51.364605Z",
+              "created_at": "2026-09-07T23:54:33.705055Z",
               "details": {
                 "lot_ids": [
                   "LOT-PROBABLE-160"
@@ -38357,7 +38357,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 3,
-              "created_at": "2026-09-07T22:08:51.388335Z",
+              "created_at": "2026-09-07T23:54:33.733879Z",
               "details": {
                 "facility_ids": [
                   "DC-SOUTH",
@@ -38424,7 +38424,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 4,
-              "created_at": "2026-09-07T22:08:51.412473Z",
+              "created_at": "2026-09-07T23:54:33.762843Z",
               "details": {
                 "facility_id": "DC-SOUTH",
                 "reviewed_action": {
@@ -38478,7 +38478,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 5,
-              "created_at": "2026-09-07T22:08:51.436158Z",
+              "created_at": "2026-09-07T23:54:33.790775Z",
               "details": {
                 "facility_id": "STORE-03",
                 "reviewed_action": {
@@ -38532,7 +38532,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R17",
               "case_version": 6,
-              "created_at": "2026-09-07T22:08:51.473723Z",
+              "created_at": "2026-09-07T23:54:33.910425Z",
               "details": {
                 "reviewed_action": {
                   "action_id": "CASE-R17-close_case-v5",
@@ -38672,7 +38672,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 1,
-            "created_at": "2026-09-07T22:08:51.339922Z",
+            "created_at": "2026-09-07T23:54:33.672958Z",
             "details": {
               "confirmed_lot_ids": [
                 "LOT-PROBABLE-160"
@@ -38781,7 +38781,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 2,
-            "created_at": "2026-09-07T22:08:51.364605Z",
+            "created_at": "2026-09-07T23:54:33.705055Z",
             "details": {
               "lot_ids": [
                 "LOT-PROBABLE-160"
@@ -38827,7 +38827,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 3,
-            "created_at": "2026-09-07T22:08:51.388335Z",
+            "created_at": "2026-09-07T23:54:33.733879Z",
             "details": {
               "facility_ids": [
                 "DC-SOUTH",
@@ -38884,7 +38884,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 4,
-            "created_at": "2026-09-07T22:08:51.412473Z",
+            "created_at": "2026-09-07T23:54:33.762843Z",
             "details": {
               "facility_id": "DC-SOUTH",
               "reviewed_action": {
@@ -38928,7 +38928,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 5,
-            "created_at": "2026-09-07T22:08:51.436158Z",
+            "created_at": "2026-09-07T23:54:33.790775Z",
             "details": {
               "facility_id": "STORE-03",
               "reviewed_action": {
@@ -38972,7 +38972,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R17",
             "case_version": 6,
-            "created_at": "2026-09-07T22:08:51.473723Z",
+            "created_at": "2026-09-07T23:54:33.910425Z",
             "details": {
               "reviewed_action": {
                 "action_id": "CASE-R17-close_case-v5",
@@ -38998,84 +38998,84 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 0.31387503258883953,
+          "duration_ms": 0.3528331872075796,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.298762Z"
+          "timestamp": "2026-09-07T23:54:33.625774Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 1.435249811038375,
+          "duration_ms": 1.4521251432597637,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.303340Z"
+          "timestamp": "2026-09-07T23:54:33.631244Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 1.7040420789271593,
+          "duration_ms": 1.8965830095112324,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.305110Z"
+          "timestamp": "2026-09-07T23:54:33.633227Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 0.08462509140372276,
+          "duration_ms": 0.08541601710021496,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.309392Z"
+          "timestamp": "2026-09-07T23:54:33.637540Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 0.0338749960064888,
+          "duration_ms": 0.03537512384355068,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.309476Z"
+          "timestamp": "2026-09-07T23:54:33.637628Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 0.02308306284248829,
+          "duration_ms": 0.01958315260708332,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.309529Z"
+          "timestamp": "2026-09-07T23:54:33.637678Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R17",
-          "duration_ms": 0.04791701212525368,
+          "duration_ms": 0.04929187707602978,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r17",
-          "timestamp": "2026-09-07T22:08:51.309601Z"
+          "timestamp": "2026-09-07T23:54:33.637751Z"
         }
       ]
     },
@@ -39534,7 +39534,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 2207,
+          "actual": 3150,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -39543,7 +39543,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 2207,
+      "duration_ms": 3150,
       "error": null,
       "failure_injection": [
         {
@@ -41955,7 +41955,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R18",
             "case_version": 0,
-            "checkpoint_id": "1f1ab08b-5835-6e26-8012-0e7c11cdca5b",
+            "checkpoint_id": "1f1ab177-9e9f-6a3c-8012-16609ed8a44d",
             "confirmed": true,
             "execution_id": "7805ffe7-2b9c-5f11-8fb0-8d16728713f1",
             "idempotency_key": "recallops:7805ffe7-2b9c-5f11-8fb0-8d16728713f1",
@@ -41971,7 +41971,7 @@
           "decision": "approve",
           "justification": "Reviewed against cited evidence and authoritative reconciliation.",
           "kind": "action_review",
-          "recorded_at": "2026-09-07T22:08:51.841170+00:00",
+          "recorded_at": "2026-09-07T23:54:34.300080+00:00",
           "thread_id": "thread-r18"
         },
         "identity_conflict_probe_codes": null,
@@ -42000,7 +42000,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R18",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:51.862131Z",
+              "created_at": "2026-09-07T23:54:34.322271Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170",
@@ -42351,7 +42351,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R18",
             "case_version": 1,
-            "created_at": "2026-09-07T22:08:51.862131Z",
+            "created_at": "2026-09-07T23:54:34.322271Z",
             "details": {
               "confirmed_lot_ids": [
                 "LOT-EXACT-170",
@@ -42540,120 +42540,120 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.35091699101030827,
+          "duration_ms": 0.42512500658631325,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.628730Z"
+          "timestamp": "2026-09-07T23:54:34.076977Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 1.4610420912504196,
+          "duration_ms": 1.4796669129282236,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.632798Z"
+          "timestamp": "2026-09-07T23:54:34.081743Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 1.6837080474942923,
+          "duration_ms": 1.6988329589366913,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.634540Z"
+          "timestamp": "2026-09-07T23:54:34.083518Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.08616619743406773,
+          "duration_ms": 0.13037491589784622,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.639795Z"
+          "timestamp": "2026-09-07T23:54:34.089297Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.04037516191601753,
+          "duration_ms": 0.037708086892962456,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.639878Z"
+          "timestamp": "2026-09-07T23:54:34.089385Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.02095918171107769,
+          "duration_ms": 0.020166859030723572,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.639926Z"
+          "timestamp": "2026-09-07T23:54:34.089434Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.04537496715784073,
+          "duration_ms": 0.04495913162827492,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.639994Z"
+          "timestamp": "2026-09-07T23:54:34.089505Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.029416056349873543,
+          "duration_ms": 0.02550007775425911,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640050Z"
+          "timestamp": "2026-09-07T23:54:34.089553Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.028041889891028404,
+          "duration_ms": 0.03179209306836128,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640099Z"
+          "timestamp": "2026-09-07T23:54:34.089608Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.007875030860304832,
+          "duration_ms": 0.007207971066236496,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640128Z"
+          "timestamp": "2026-09-07T23:54:34.089635Z"
         },
         {
           "attempt": 1,
@@ -42665,55 +42665,55 @@
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640183Z"
+          "timestamp": "2026-09-07T23:54:34.089690Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.021541956812143326,
+          "duration_ms": 0.02091703936457634,
           "event_id": "trace-000009",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640227Z"
+          "timestamp": "2026-09-07T23:54:34.089733Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.021249987185001373,
+          "duration_ms": 0.02041715197265148,
           "event_id": "trace-000010",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640271Z"
+          "timestamp": "2026-09-07T23:54:34.089774Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.007458962500095367,
+          "duration_ms": 0.007041962817311287,
           "event_id": "trace-000011",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640299Z"
+          "timestamp": "2026-09-07T23:54:34.089801Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R18",
-          "duration_ms": 0.032250070944428444,
+          "duration_ms": 0.03545917570590973,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r18",
-          "timestamp": "2026-09-07T22:08:51.640351Z"
+          "timestamp": "2026-09-07T23:54:34.089856Z"
         }
       ]
     },
@@ -42851,7 +42851,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 82,
+          "actual": 134,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -42860,7 +42860,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 82,
+      "duration_ms": 134,
       "error": null,
       "failure_injection": [
         {
@@ -43103,7 +43103,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 419,
+          "actual": 1296,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -43112,7 +43112,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 419,
+      "duration_ms": 1296,
       "error": null,
       "failure_injection": [
         {
@@ -45796,156 +45796,108 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.31654094345867634,
+          "duration_ms": 0.32175006344914436,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.912162Z"
+          "timestamp": "2026-09-07T23:54:37.391616Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 1.3750421348959208,
+          "duration_ms": 1.4188331551849842,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.916004Z"
+          "timestamp": "2026-09-07T23:54:37.396375Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 1.6979998908936977,
+          "duration_ms": 1.7029999289661646,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.917745Z"
+          "timestamp": "2026-09-07T23:54:37.398141Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.07183407433331013,
+          "duration_ms": 0.0988328829407692,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922671Z"
+          "timestamp": "2026-09-07T23:54:37.423464Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.03266613930463791,
+          "duration_ms": 0.03529200330376625,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922738Z"
+          "timestamp": "2026-09-07T23:54:37.423544Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.020124949514865875,
+          "duration_ms": 0.01595797948539257,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922787Z"
+          "timestamp": "2026-09-07T23:54:37.423586Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.042584026232361794,
+          "duration_ms": 0.04670792259275913,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922853Z"
+          "timestamp": "2026-09-07T23:54:37.423656Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.030125025659799576,
+          "duration_ms": 0.02587493509054184,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922909Z"
+          "timestamp": "2026-09-07T23:54:37.423704Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.026708003133535385,
+          "duration_ms": 0.02433289773762226,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922958Z"
-        },
-        {
-          "attempt": 1,
-          "attributes": {},
-          "boundary": "tool",
-          "case_id": "CASE-R20",
-          "duration_ms": 0.007375143468379974,
-          "event_id": "trace-000007",
-          "operation": "get_inventory",
-          "status": "success",
-          "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.922986Z"
-        },
-        {
-          "attempt": 1,
-          "attributes": {},
-          "boundary": "tool",
-          "case_id": "CASE-R20",
-          "duration_ms": 0.03341585397720337,
-          "event_id": "trace-000008",
-          "operation": "reconcile_units",
-          "status": "success",
-          "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.923037Z"
-        },
-        {
-          "attempt": 1,
-          "attributes": {},
-          "boundary": "tool",
-          "case_id": "CASE-R20",
-          "duration_ms": 0.020458828657865524,
-          "event_id": "trace-000009",
-          "operation": "trace_forward",
-          "status": "success",
-          "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.923081Z"
-        },
-        {
-          "attempt": 1,
-          "attributes": {},
-          "boundary": "tool",
-          "case_id": "CASE-R20",
-          "duration_ms": 0.020208070054650307,
-          "event_id": "trace-000010",
-          "operation": "trace_backward",
-          "status": "success",
-          "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.923120Z"
+          "timestamp": "2026-09-07T23:54:37.423746Z"
         },
         {
           "attempt": 1,
@@ -45953,23 +45905,71 @@
           "boundary": "tool",
           "case_id": "CASE-R20",
           "duration_ms": 0.007207971066236496,
-          "event_id": "trace-000011",
+          "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.923147Z"
+          "timestamp": "2026-09-07T23:54:37.423771Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R20",
-          "duration_ms": 0.029750168323516846,
+          "duration_ms": 0.03241701051592827,
+          "event_id": "trace-000008",
+          "operation": "reconcile_units",
+          "status": "success",
+          "thread_id": "thread-r20",
+          "timestamp": "2026-09-07T23:54:37.423821Z"
+        },
+        {
+          "attempt": 1,
+          "attributes": {},
+          "boundary": "tool",
+          "case_id": "CASE-R20",
+          "duration_ms": 0.02045789733529091,
+          "event_id": "trace-000009",
+          "operation": "trace_forward",
+          "status": "success",
+          "thread_id": "thread-r20",
+          "timestamp": "2026-09-07T23:54:37.423863Z"
+        },
+        {
+          "attempt": 1,
+          "attributes": {},
+          "boundary": "tool",
+          "case_id": "CASE-R20",
+          "duration_ms": 0.020625069737434387,
+          "event_id": "trace-000010",
+          "operation": "trace_backward",
+          "status": "success",
+          "thread_id": "thread-r20",
+          "timestamp": "2026-09-07T23:54:37.423903Z"
+        },
+        {
+          "attempt": 1,
+          "attributes": {},
+          "boundary": "tool",
+          "case_id": "CASE-R20",
+          "duration_ms": 0.007041962817311287,
+          "event_id": "trace-000011",
+          "operation": "get_inventory",
+          "status": "success",
+          "thread_id": "thread-r20",
+          "timestamp": "2026-09-07T23:54:37.423930Z"
+        },
+        {
+          "attempt": 1,
+          "attributes": {},
+          "boundary": "tool",
+          "case_id": "CASE-R20",
+          "duration_ms": 0.02970895729959011,
           "event_id": "trace-000012",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r20",
-          "timestamp": "2026-09-07T22:08:53.923194Z"
+          "timestamp": "2026-09-07T23:54:37.423978Z"
         }
       ]
     },
@@ -46142,7 +46142,7 @@
           "path": "/counters/receipt_integrity_violation_count"
         },
         {
-          "actual": 348,
+          "actual": 454,
           "detail": "",
           "expected": 60000,
           "id": "latency_budget",
@@ -46151,7 +46151,7 @@
           "path": "/duration_ms"
         }
       ],
-      "duration_ms": 348,
+      "duration_ms": 454,
       "error": null,
       "failure_injection": [
         {
@@ -46244,7 +46244,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R21",
             "case_version": 0,
-            "checkpoint_id": "1f1ab08b-7129-6554-8012-af8aefe71122",
+            "checkpoint_id": "1f1ab177-ca1d-684e-8012-f54b3f57898f",
             "confirmed": true,
             "execution_id": "922c46e4-da45-5a48-88ed-c2b7c3f6a01c",
             "idempotency_key": "recallops:922c46e4-da45-5a48-88ed-c2b7c3f6a01c",
@@ -46256,7 +46256,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R21",
             "case_version": 1,
-            "checkpoint_id": "1f1ab08b-7165-6c0c-8017-9dbebd777e96",
+            "checkpoint_id": "1f1ab177-ca6a-6248-8017-d1ba43730965",
             "confirmed": true,
             "execution_id": "a5e58a4e-6cce-5c2c-9549-2b1fab7ddf10",
             "idempotency_key": "recallops:a5e58a4e-6cce-5c2c-9549-2b1fab7ddf10",
@@ -46272,7 +46272,7 @@
           "decision": "approve",
           "justification": "Reviewed against cited evidence and authoritative reconciliation.",
           "kind": "action_review",
-          "recorded_at": "2026-09-07T22:08:54.488738+00:00",
+          "recorded_at": "2026-09-07T23:54:38.896765+00:00",
           "thread_id": "thread-r21"
         },
         "identity_conflict_probe_codes": null,
@@ -46296,7 +46296,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R21",
               "case_version": 1,
-              "created_at": "2026-09-07T22:08:54.477923Z",
+              "created_at": "2026-09-07T23:54:38.882674Z",
               "details": {
                 "confirmed_lot_ids": [
                   "LOT-EXACT-170"
@@ -46421,7 +46421,7 @@
               "actor": "Food-safety manager",
               "case_id": "CASE-R21",
               "case_version": 2,
-              "created_at": "2026-09-07T22:08:54.500400Z",
+              "created_at": "2026-09-07T23:54:38.911822Z",
               "details": {
                 "lot_ids": [
                   "LOT-EXACT-170"
@@ -46575,7 +46575,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R21",
             "case_version": 1,
-            "created_at": "2026-09-07T22:08:54.477923Z",
+            "created_at": "2026-09-07T23:54:38.882674Z",
             "details": {
               "confirmed_lot_ids": [
                 "LOT-EXACT-170"
@@ -46690,7 +46690,7 @@
             "actor": "Food-safety manager",
             "case_id": "CASE-R21",
             "case_version": 2,
-            "created_at": "2026-09-07T22:08:54.500400Z",
+            "created_at": "2026-09-07T23:54:38.911822Z",
             "details": {
               "lot_ids": [
                 "LOT-EXACT-170"
@@ -46741,132 +46741,132 @@
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.2817919012159109,
+          "duration_ms": 0.2904580906033516,
           "event_id": "trace-000001",
           "operation": "get_recall",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.441118Z"
+          "timestamp": "2026-09-07T23:54:38.834125Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 1.3300830032676458,
+          "duration_ms": 1.478375168517232,
           "event_id": "trace-000001",
           "operation": "find_candidate_products",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.444681Z"
+          "timestamp": "2026-09-07T23:54:38.838827Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 1.6685000155121088,
+          "duration_ms": 1.7862918321043253,
           "event_id": "trace-000002",
           "operation": "match_lots",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.446387Z"
+          "timestamp": "2026-09-07T23:54:38.840675Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.09979191236197948,
+          "duration_ms": 0.10549998842179775,
           "event_id": "trace-000001",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.449748Z"
+          "timestamp": "2026-09-07T23:54:38.846928Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.03400002606213093,
+          "duration_ms": 0.06125005893409252,
           "event_id": "trace-000002",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.449824Z"
+          "timestamp": "2026-09-07T23:54:38.847069Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.018124934285879135,
+          "duration_ms": 0.018584076315164566,
           "event_id": "trace-000003",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.449869Z"
+          "timestamp": "2026-09-07T23:54:38.847124Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.04320894367992878,
+          "duration_ms": 0.048457877710461617,
           "event_id": "trace-000004",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.449936Z"
+          "timestamp": "2026-09-07T23:54:38.847198Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.022582942619919777,
+          "duration_ms": 0.02395804040133953,
           "event_id": "trace-000005",
           "operation": "trace_forward",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.449983Z"
+          "timestamp": "2026-09-07T23:54:38.847250Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.02145790494978428,
+          "duration_ms": 0.022583873942494392,
           "event_id": "trace-000006",
           "operation": "trace_backward",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.450025Z"
+          "timestamp": "2026-09-07T23:54:38.847295Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.0076659489423036575,
+          "duration_ms": 0.00800006091594696,
           "event_id": "trace-000007",
           "operation": "get_inventory",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.450054Z"
+          "timestamp": "2026-09-07T23:54:38.847324Z"
         },
         {
           "attempt": 1,
           "attributes": {},
           "boundary": "tool",
           "case_id": "CASE-R21",
-          "duration_ms": 0.032542040571570396,
+          "duration_ms": 0.03487500362098217,
           "event_id": "trace-000008",
           "operation": "reconcile_units",
           "status": "success",
           "thread_id": "thread-r21",
-          "timestamp": "2026-09-07T22:08:54.450105Z"
+          "timestamp": "2026-09-07T23:54:38.847380Z"
         }
       ]
     }
