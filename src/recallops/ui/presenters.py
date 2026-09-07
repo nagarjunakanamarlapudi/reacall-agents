@@ -14,6 +14,75 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any
 
+from recallops.ui.evaluation_reports import EvaluationProjection
+
+
+def build_retrieval_ablation_rows(
+    projection: EvaluationProjection,
+    family: str | None = None,
+) -> list[dict[str, Any]]:
+    """Keep report numeric values verbatim, including counts and zero-valued measurements."""
+    if projection.verification_status != "verified":
+        return []
+    labels = {"case_count": "Cases", "recall_at_5": "Recall@5", "ndcg_at_5": "nDCG@5"}
+    rows = []
+    for config in projection.retrieval.configurations:
+        metrics = config["family_metrics"].get(family) if family else config["metrics"]
+        if metrics is None:
+            continue
+        rows.append(
+            {
+                "Configuration": mask_display_value(config["name"]),
+                **{
+                    labels.get(name, mask_display_value(name)): value
+                    for name, value in metrics.items()
+                    if type(value) in (int, float)
+                },
+            }
+        )
+    return rows
+
+
+def build_critic_rows(
+    projection: EvaluationProjection, family: str | None = None
+) -> list[dict[str, Any]]:
+    if projection.verification_status != "verified":
+        return []
+    return [
+        {
+            "Configuration": mask_display_value(config["name"]),
+            "Critic stop": mask_display_value(reason),
+            "Cases": count,
+        }
+        for config in projection.retrieval.configurations
+        for reason, count in (
+            config["family_critic_stops"].get(family, {}) if family else config["critic_stops"]
+        ).items()
+    ]
+
+
+def build_retrieval_delta_rows(projection: EvaluationProjection) -> list[dict[str, Any]]:
+    if projection.verification_status != "verified":
+        return []
+    return [
+        {"Comparison": label, "Delta": projection.retrieval.gates[name]}
+        for name, label in (
+            ("fusion_recall_delta", "RRF fusion − best sparse/dense · Recall@5"),
+            ("rerank_ndcg_delta", "RRF + rerank − RRF fusion · nDCG@5"),
+        )
+        if name in projection.retrieval.gates
+    ]
+
+
+def build_orchestration_delta_rows(projection: EvaluationProjection) -> list[dict[str, Any]]:
+    if projection.verification_status != "verified":
+        return []
+    return [
+        {"Metric": mask_display_value(name), "Delta": value}
+        for name, value in projection.orchestration.deltas.items()
+    ]
+
+
 PINNED_RECALL = "H-1230-2026"
 DEFAULT_ACTOR = "Food-safety manager"
 APPROVAL_JUSTIFICATION = (

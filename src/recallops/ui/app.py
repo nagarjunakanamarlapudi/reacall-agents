@@ -13,6 +13,7 @@ import streamlit as st
 
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
+from recallops.ui.evaluation_reports import load_evaluation_scorecard
 from recallops.ui.presenters import (
     DECISIONS,
     EQUATION,
@@ -20,14 +21,18 @@ from recallops.ui.presenters import (
     VIEWS,
     build_case_header,
     build_closure_gate_rows,
+    build_critic_rows,
     build_evaluation_metric_rows,
     build_evaluation_rows,
     build_evidence_rows,
     build_lineage_rows,
     build_match_rows,
+    build_orchestration_delta_rows,
     build_predicate_rows,
     build_receipt_rows,
     build_reconciliation_presentation,
+    build_retrieval_ablation_rows,
+    build_retrieval_delta_rows,
     build_retrieval_rows,
     build_review_packet,
     build_timeline_rows,
@@ -505,6 +510,108 @@ def _render_human_review() -> None:
             st.dataframe([asdict(row) for row in receipts], width="stretch", hide_index=True)
 
 
+def _render_evaluation() -> None:
+    paths = RepositoryPaths(Path(os.environ.get("RECALLOPS_REPOSITORY_ROOT", PROJECT_ROOT)))
+    projection = load_evaluation_scorecard(paths)
+    st.markdown("### Evaluation scorecard")
+    if projection.verification_status != "verified":
+        st.warning(
+            "Unavailable — evaluation artifacts are missing, stale, invalid, or incomplete. No passing score is claimed."
+        )
+        for section in ("Safety", "Retrieval quality", "Orchestration quality"):
+            st.markdown(f"#### {section}")
+            st.write("Unavailable")
+        st.caption(
+            "Verification: unavailable · Artifact time, mode, counts and digests: unavailable · Optional Deep Agents: unavailable"
+        )
+        return
+    if projection.offline_gate_passed:
+        st.success("Verified offline scorecard · PASS")
+    else:
+        st.error("Verified offline scorecard · FAIL")
+    st.caption(
+        f"Verification: verified · Scorecard generated: {projection.generated_at} · Mode: {projection.execution_mode}"
+    )
+    st.caption(
+        "Integrity and recorded contract checks; execution authenticity is not established by digests. Read-only artifacts; this view does not run benchmarks."
+    )
+    st.markdown("#### Safety")
+    safety = projection.safety
+    st.caption(
+        f"{safety.scenario_count} safety scenarios · {safety.result_count} results · R01–R21 · Gate: {'PASS' if safety.gate_passed else 'FAIL'}"
+    )
+    counters = {name: value for name, value in safety.metrics.items() if name.endswith("_count")}
+    rates = {name: value for name, value in safety.metrics.items() if not name.endswith("_count")}
+    summary = st.columns(4)
+    summary[0].metric("Scenario pass rate", f"{rates['scenario_pass_rate']:.1%}")
+    summary[1].metric("Safety-critical pass rate", f"{rates['safety_critical_pass_rate']:.1%}")
+    summary[2].metric("Scenarios", safety.scenario_count)
+    summary[3].metric("Unsafe counters", sum(counters.values()))
+    report = {
+        "status": "verified",
+        "scenarios": safety.scenarios,
+        "metrics": rates,
+        "unsafe_counters": counters,
+    }
+    # Existing scenario presenter accepts JSON lists at its public boundary.
+    report["scenarios"] = list(safety.scenarios)
+    st.dataframe(
+        [asdict(row) for row in build_evaluation_rows(report)], width="stretch", hide_index=True
+    )
+    st.dataframe(
+        [asdict(row) for row in build_evaluation_metric_rows(report)],
+        width="stretch",
+        hide_index=True,
+    )
+    st.markdown("#### Retrieval quality")
+    retrieval = projection.retrieval
+    st.caption(
+        f"{retrieval.case_count} cases · {retrieval.result_count} results · Six configurations · Gate: {'PASS' if retrieval.gate_passed else 'FAIL'}"
+    )
+    st.caption(
+        "In-sample offline synthetic calibration. Values are recorded measurements; family selection changes the ablation and critic tables. Deltas below cover all cases."
+    )
+    family = st.selectbox(
+        "Case family", ("All families", *retrieval.families), key="ui_evaluation_family"
+    )
+    selected = None if family == "All families" else family
+    rows = build_retrieval_ablation_rows(projection, selected)
+    st.dataframe(rows, width="stretch", hide_index=True)
+    st.bar_chart(rows, x="Configuration", y=["Recall@5", "nDCG@5"])
+    st.dataframe(build_retrieval_delta_rows(projection), width="stretch", hide_index=True)
+    st.caption(
+        "Critic stop counts; rewrite wins/losses/no-change, citation precision, grounding, routing, latency and budget compliance appear in the ablation table."
+    )
+    st.dataframe(build_critic_rows(projection, selected), width="stretch", hide_index=True)
+    st.markdown("#### Orchestration quality")
+    orchestration = projection.orchestration
+    st.caption(
+        f"{orchestration.case_count} cases · {orchestration.result_count} results · Two offline profiles · Gate: {'PASS' if orchestration.gate_passed else 'FAIL'}"
+    )
+    st.dataframe(list(orchestration.profiles), width="stretch", hide_index=True)
+    st.caption(
+        "Measured deltas: fixed specialists minus bounded single agent. Negative differences are retained. Duration includes sequential service setup; offline model tokens and cost are unavailable."
+    )
+    st.dataframe(build_orchestration_delta_rows(projection), width="stretch", hide_index=True)
+    st.dataframe([orchestration.gates], width="stretch", hide_index=True)
+    st.markdown("##### Optional Deep Agents live profile")
+    st.caption(
+        f"Status: {projection.optional_live_status} · Excluded from offline gates · Model judges: not used"
+    )
+    st.markdown("##### Artifact digests")
+    st.caption(
+        "Report/corpus SHA-256 values bind exact file bytes. The scorecard SHA-256 is its canonical self-digest with the self-digest field excluded. Source reports do not record generation timestamps."
+    )
+    st.dataframe(
+        [
+            {"Artifact": name, "SHA-256": digest}
+            for name, digest in projection.artifact_digests.items()
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+
 def _render_audit() -> None:
     case = _case()
     st.markdown("### Audit timeline")
@@ -533,48 +640,6 @@ def _render_audit() -> None:
             st.dataframe([asdict(row) for row in receipts], width="stretch", hide_index=True)
         elif not history:
             st.info("No decision or simulated-operation receipt has been returned.")
-        st.markdown("### Evaluation")
-        report = case.raw.get("evaluation_report")
-        report = report if isinstance(report, dict) else None
-        status = report.get("status") if report else None
-        message = str(report.get("message") or "") if report else ""
-        if status == "verified":
-            if report.get("gate_passed") is True:
-                st.success(message)
-            else:
-                st.error(message)
-        elif status == "demo_only":
-            st.warning(message)
-        elif status == "stale":
-            st.warning(message)
-        elif status == "invalid":
-            st.error(message)
-        elif status == "missing":
-            st.info(message)
-        evaluation = build_evaluation_rows(report)
-        if evaluation:
-            st.dataframe([asdict(row) for row in evaluation], width="stretch", hide_index=True)
-        elif status is None:
-            st.info("No evaluation report is available; no passing score is claimed.")
-        metric_rows = build_evaluation_metric_rows(report)
-        if metric_rows:
-            rates = report.get("metrics", {}) if report else {}
-            counters = report.get("unsafe_counters", {}) if report else {}
-            summary = st.columns(4)
-            summary[0].metric(
-                "Scenario pass rate", f"{float(rates.get('scenario_pass_rate', 0)):.1%}"
-            )
-            summary[1].metric(
-                "Safety-critical pass rate",
-                f"{float(rates.get('safety_critical_pass_rate', 0)):.1%}",
-            )
-            summary[2].metric("Scenarios", str(report.get("scenario_count", 0)))
-            summary[3].metric("Unsafe counters", str(sum(counters.values())))
-            st.caption(
-                "Aggregate rates and unsafe counters are projected from the verified committed "
-                "report; raw state excerpts and tool traces are intentionally omitted."
-            )
-            st.dataframe([asdict(row) for row in metric_rows], width="stretch", hide_index=True)
 
         st.markdown("### Deterministic failure injection")
         st.selectbox(
@@ -590,7 +655,9 @@ def _render_audit() -> None:
             if failure.get("next_step"):
                 st.caption(f"Next step: {failure['next_step']}")
     else:
-        st.info("No audit or evaluation data is available until a case is opened.")
+        st.info("No case audit data is available until a case is opened.")
+
+    _render_evaluation()
 
     st.markdown("### Closure gate")
     st.button(

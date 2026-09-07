@@ -1,91 +1,65 @@
 from __future__ import annotations
 
-import hashlib
-import json
+import shutil
 import sqlite3
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 APP = Path(__file__).parents[2] / "src" / "recallops" / "ui" / "app.py"
 
 
+def test_audit_evaluation_available_without_opening_case_and_family_filter(monkeypatch, tmp_path):
+    repository = tmp_path / "repository"
+    _write_compact_evaluation_report(repository)
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
+    monkeypatch.setenv("RECALLOPS_REPOSITORY_ROOT", str(repository))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    assert not app.exception
+    rendered = "\n".join(item.value for item in (*app.markdown, *app.caption, *app.success))
+    for label in (
+        "Safety",
+        "Retrieval quality",
+        "Orchestration quality",
+        "576 results",
+        "48 results",
+        "offline_deterministic",
+        "not_run_missing_credentials",
+    ):
+        assert label in rendered
+    frames = [item.value for item in app.dataframe]
+    assert any(len(frame) == 6 and "Recall@5" in frame.columns for frame in frames)
+    assert any(len(frame) == 2 and "profile" in frame.columns for frame in frames)
+    app.selectbox(key="ui_evaluation_family").set_value("lineage").run()
+    frame = next(item.value for item in app.dataframe if "Recall@5" in item.value.columns)
+    assert list(frame["Cases"]) == [16] * 6
+
+
+@pytest.mark.parametrize(
+    "name", ["scorecard.json", "report.json", "retrieval_report.json", "orchestration_report.json"]
+)
+def test_audit_invalid_artifact_has_no_scores_or_passing_badge(monkeypatch, tmp_path, name):
+    repository = tmp_path / "repository"
+    _write_compact_evaluation_report(repository)
+    (repository / "data" / "evals" / name).write_text('{"secret":"do-not-render",broken')
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "demo")
+    monkeypatch.setenv("RECALLOPS_REPOSITORY_ROOT", str(repository))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
+    assert not app.exception
+    assert any("Unavailable" in item.value for item in app.warning)
+    assert not app.success
+    assert not app.dataframe
+    assert not any(item.label in {"Scenario pass rate", "Unsafe counters"} for item in app.metric)
+
+
 def _write_compact_evaluation_report(repository_root: Path) -> None:
     eval_dir = repository_root / "data" / "evals"
     eval_dir.mkdir(parents=True)
-    corpus = {
-        "schema_version": "1.0",
-        "common_fixture": {"name": "app-smoke"},
-        "scenarios": [{"id": "R13"}, {"id": "R18"}],
-    }
-    corpus_text = json.dumps(corpus, sort_keys=True, separators=(",", ":"))
-    (eval_dir / "scenarios.json").write_text(corpus_text, encoding="utf-8")
-    assertions = [
-        {
-            "id": "route_expected",
-            "passed": True,
-            "path": "/route_actual",
-            "operator": "ordered_subsequence",
-            "expected": ["H", "W"],
-            "actual": ["H", "W"],
-            "detail": "",
-        }
-    ]
-    rate_metrics = {
-        name: 1.0
-        for name in (
-            "scenario_pass_rate",
-            "safety_critical_pass_rate",
-            "route_accuracy",
-            "match_classification_accuracy",
-            "lineage_accuracy",
-            "quantity_evidence_coverage",
-            "gap_detection_recall",
-            "approval_guard_rate",
-            "idempotency_integrity",
-            "closure_guard_rate",
-            "recovery_correctness",
-            "bounded_execution_rate",
-            "retrieval_evidence_coverage",
-            "trace_completeness",
-            "latency_budget_rate",
-        )
-    }
-    report = {
-        "schema_version": "1.1",
-        "scenario_corpus_sha256": hashlib.sha256(corpus_text.encode()).hexdigest(),
-        "execution_mode": "offline_deterministic",
-        "run_metadata": {
-            "report_kind": "run_specific_observation",
-            "telemetry_policy": "observed_only",
-            "timing_source": "measured_wall_clock",
-        },
-        "results": [
-            {
-                "id": scenario_id,
-                "passed": True,
-                "safety_critical": True,
-                "assertions": assertions,
-                "route_actual": ["H", "W"],
-                "route_expected": ["H", "W"],
-                "state_excerpt": {"large": "not rendered"},
-                "tool_trace": [{"large": "not rendered"}],
-                "failure_injection": [],
-                "duration_ms": 10,
-                "error": None,
-            }
-            for scenario_id in ("R13", "R18")
-        ],
-        "metrics": {
-            **rate_metrics,
-            "unauthorized_write_count": 0,
-            "duplicate_logical_write_count": 0,
-            "false_close_count": 0,
-            "receipt_integrity_violation_count": 0,
-        },
-        "gate_passed": True,
-    }
-    (eval_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    for path in (APP.parents[3] / "data" / "evals").glob("*.json"):
+        shutil.copyfile(path, eval_dir / path.name)
 
 
 def test_app_starts_on_command_center_with_pinned_empty_state(monkeypatch) -> None:
@@ -219,11 +193,12 @@ def test_app_durable_audit_renders_verified_report_metrics_and_r13_r18(
     app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
 
     rendered = "\n".join(
-        item.value for item in (*app.success, *app.warning, *app.error, *app.info, *app.markdown)
+        item.value
+        for item in (*app.success, *app.warning, *app.error, *app.info, *app.markdown, *app.caption)
     )
     frames = "\n".join(str(item.value) for item in app.dataframe)
     metrics = {item.label: item.value for item in app.metric}
-    assert "Committed evaluation report verified: 2/2 scenarios passed" in rendered
+    assert "21 safety scenarios" in rendered
     assert "R13" in frames and "R18" in frames
     assert "Scenario pass rate" in metrics and metrics["Scenario pass rate"] == "100.0%"
     assert "Unsafe counters" in metrics and metrics["Unsafe counters"] == "0"
@@ -241,7 +216,7 @@ def test_app_durable_audit_labels_missing_report_without_claiming_success(
     app.radio(key="ui_active_view").set_value("Audit & Evaluation").run()
 
     rendered = "\n".join(item.value for item in (*app.info, *app.warning, *app.error))
-    assert "Committed evaluation report is missing" in rendered
+    assert "Unavailable" in rendered
     assert "No passing score is claimed" in rendered
 
 

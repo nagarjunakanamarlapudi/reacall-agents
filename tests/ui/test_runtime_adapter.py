@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import shutil
 import sqlite3
@@ -67,63 +66,14 @@ def _write_evaluation_report(
 ) -> None:
     eval_dir = root / "data" / "evals"
     eval_dir.mkdir(parents=True)
-    corpus = {
-        "schema_version": "1.0",
-        "common_fixture": {"name": "small-ui-contract"},
-        "scenarios": [
-            {"id": "R13", "title": "Lost response recovery"},
-            {"id": "R18", "title": "Durable restart and fencing"},
-        ],
-    }
-    corpus_text = json.dumps(corpus, sort_keys=True, separators=(",", ":"))
-    (eval_dir / "scenarios.json").write_text(corpus_text, encoding="utf-8")
+    for name in ("report.json", "scenarios.json"):
+        shutil.copyfile(PROJECT_ROOT / "data" / "evals" / name, eval_dir / name)
     if raw_report is not None:
         (eval_dir / "report.json").write_text(raw_report, encoding="utf-8")
-        return
-    results = []
-    for scenario_id in ("R13", "R18"):
-        results.append(
-            {
-                "id": scenario_id,
-                "passed": True,
-                "safety_critical": True,
-                "assertions": [
-                    {
-                        "id": "route_expected",
-                        "passed": True,
-                        "path": "/route_actual",
-                        "operator": "ordered_subsequence",
-                        "expected": ["H", "W"],
-                        "actual": ["H", "W"],
-                        "detail": "",
-                    }
-                ],
-                "route_actual": ["H", "W"],
-                "route_expected": ["H", "W"],
-                "state_excerpt": {"large": "must not reach the UI"},
-                "tool_trace": [{"large": "must not reach the UI"}],
-                "failure_injection": [],
-                "duration_ms": 12,
-                "error": None,
-            }
-        )
-    report = {
-        "schema_version": "1.1",
-        "scenario_corpus_sha256": digest or hashlib.sha256(corpus_text.encode()).hexdigest(),
-        "execution_mode": "offline_deterministic",
-        "run_metadata": {
-            "report_kind": "run_specific_observation",
-            "telemetry_policy": "observed_only",
-            "timing_source": "measured_wall_clock",
-        },
-        "results": results,
-        "metrics": {
-            **{name: 1.0 for name in _RATE_METRICS},
-            **{name: 0 for name in _UNSAFE_COUNTERS},
-        },
-        "gate_passed": True,
-    }
-    (eval_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    elif digest is not None:
+        report = json.loads((eval_dir / "report.json").read_bytes())
+        report["scenario_corpus_sha256"] = digest
+        (eval_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
 
 
 def test_repository_paths_exposes_evaluation_artifacts_from_configured_root(
@@ -156,8 +106,8 @@ async def test_durable_adapter_projects_verified_committed_evaluation_without_ra
 
     assert report["status"] == "verified"
     assert report["source"] == "committed_evaluation_report"
-    assert report["scenario_count"] == 2
-    assert [item["scenario"] for item in report["scenarios"]] == ["R13", "R18"]
+    assert report["scenario_count"] == 21
+    assert [item["scenario"] for item in report["scenarios"]] == [f"R{n:02d}" for n in range(1, 22)]
     assert report["metrics"]["scenario_pass_rate"] == 1.0
     assert report["unsafe_counters"] == {name: 0 for name in _UNSAFE_COUNTERS}
     assert all("tool_trace" not in item for item in report["scenarios"])

@@ -5,6 +5,12 @@ from dataclasses import asdict
 import pytest
 
 import recallops.ui.presenters as presenter_module
+from recallops.ui import presenters
+from recallops.ui.evaluation_reports import (
+    EvaluationProjection,
+    OrchestrationProjection,
+    RetrievalProjection,
+)
 from recallops.ui.presenters import (
     APPROVAL_JUSTIFICATION,
     EQUATION,
@@ -670,3 +676,59 @@ def test_safe_display_masks_sensitive_and_escapes_untrusted_text() -> None:
     escaped = mask_display_value("<script>alert('x')</script>")
     assert "<script>" not in escaped
     assert "&lt;script&gt;" in escaped
+
+
+def test_evaluation_presenters_preserve_measured_numbers_filters_and_negative_deltas():
+    projection = EvaluationProjection(
+        verification_status="verified",
+        retrieval=RetrievalProjection(
+            configurations=(
+                {
+                    "name": "agentic_rag",
+                    "metrics": {"case_count": 96, "recall_at_5": 0.731234, "ndcg_at_5": 0.612345},
+                    "family_metrics": {
+                        "lineage": {
+                            "case_count": 16,
+                            "recall_at_5": 0.123456,
+                            "ndcg_at_5": 0.234567,
+                        }
+                    },
+                    "critic_stops": {"budget_exhausted": 3},
+                    "family_critic_stops": {"lineage": {"budget_exhausted": 1}},
+                },
+            ),
+            gates={"fusion_recall_delta": -0.021234, "rerank_ndcg_delta": 0.032345},
+        ),
+        orchestration=OrchestrationProjection(deltas={"task_success_rate": -0.125}),
+    )
+    assert presenters.build_retrieval_ablation_rows(projection)[0]["Recall@5"] == 0.731234
+    rows = presenters.build_retrieval_ablation_rows(projection, "lineage")
+    assert rows[0]["Recall@5"] == 0.123456
+    assert rows[0]["nDCG@5"] == 0.234567
+    assert rows[0]["Cases"] == 16
+    assert presenters.build_retrieval_ablation_rows(projection, "unknown") == []
+    assert presenters.build_retrieval_delta_rows(projection)[0]["Delta"] == -0.021234
+    assert "best sparse/dense" in presenters.build_retrieval_delta_rows(projection)[0]["Comparison"]
+    assert presenters.build_orchestration_delta_rows(projection)[0]["Delta"] == -0.125
+    assert presenters.build_critic_rows(projection, "lineage")[0]["Cases"] == 1
+    assert presenters.build_retrieval_ablation_rows(EvaluationProjection()) == []
+
+
+def test_evaluation_presenters_escape_labels_and_mask_sensitive_text():
+    projection = EvaluationProjection(
+        verification_status="verified",
+        retrieval=RetrievalProjection(
+            configurations=(
+                {
+                    "name": "<script>alert(1)</script>",
+                    "metrics": {"case_count": 1},
+                    "critic_stops": {},
+                },
+            ),
+        ),
+    )
+    rows = presenters.build_retrieval_ablation_rows(projection)
+    assert "<script>" not in str(rows)
+    assert "&lt;script&gt;" in str(rows)
+    projection.retrieval.configurations[0]["name"] = "user@example.com sk-examplekey123"
+    assert presenters.build_retrieval_ablation_rows(projection)[0]["Configuration"] == "[MASKED]"
