@@ -317,6 +317,19 @@ class DocumentationContractTests(unittest.TestCase):
         self.assert_no_mermaid_path(diagram, first, second)
         self.assert_no_mermaid_path(diagram, second, first)
 
+    def assert_evaluation_diagram_read_only(self, diagram: str) -> None:
+        declared_ids = mermaid_declared_ids(diagram)
+        forbidden = declared_ids.intersection(WRITE_AUTHORITY_NODES)
+        self.assertTrue(
+            declared_ids.isdisjoint(WRITE_AUTHORITY_NODES),
+            f"write-authority IDs declared in evaluation diagram: {', '.join(sorted(forbidden))}",
+        )
+        self.assert_mermaid_sets_isolated(
+            diagram,
+            tuple(sorted(declared_ids)),
+            WRITE_AUTHORITY_NODES,
+        )
+
     def assert_demo_artifact_contract(
         self, path: Path, contract: dict, text: str | None = None
     ) -> None:
@@ -422,8 +435,7 @@ class DocumentationContractTests(unittest.TestCase):
     def test_evaluation_architecture_separates_deterministic_authority_from_advice(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
         declared_ids = mermaid_declared_ids(diagram)
-        evaluation_ids = tuple(sorted(declared_ids.difference(WRITE_AUTHORITY_NODES)))
-        self.assertEqual(set(evaluation_ids), declared_ids.difference(WRITE_AUTHORITY_NODES))
+        evaluation_ids = tuple(sorted(declared_ids))
         self.assertTrue(
             {"CORPORA", "RUNNERS", "MEASURES", "AUTHORITY", "OPTIONAL", "OUTPUTS"}.issubset(
                 evaluation_ids
@@ -448,11 +460,18 @@ class DocumentationContractTests(unittest.TestCase):
             ("LIVE", "JUDGE", "ADVISORY"),
             ("SCORECARD",),
         )
-        self.assert_mermaid_sets_isolated(
-            diagram,
-            evaluation_ids,
-            WRITE_AUTHORITY_NODES,
-        )
+        self.assert_evaluation_diagram_read_only(diagram)
+
+    def test_evaluation_architecture_rejects_standalone_write_declarations(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        for node_id, declaration in (
+            ("OM", 'OM["Operations MCP"]'),
+            ("OP", 'OP["Operations SQLite"]'),
+            ("SQLITE_WRITE", 'SQLITE_WRITE["SQLite write"]'),
+        ):
+            with self.subTest(node_id=node_id):
+                with self.assertRaisesRegex(AssertionError, node_id):
+                    self.assert_evaluation_diagram_read_only(f"{diagram}\n{declaration}\n")
 
     def test_mermaid_declared_id_inventory_covers_nodes_subgraphs_and_inline_nodes(self) -> None:
         fixture = """\
@@ -528,9 +547,7 @@ flowchart LR
     def test_full_authority_guard_covers_subgraphs_open_edges_and_reverse_paths(self) -> None:
         evaluation = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
         architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
-        evaluation_roots = tuple(
-            sorted(mermaid_declared_ids(evaluation).difference(WRITE_AUTHORITY_NODES))
-        )
+        evaluation_roots = tuple(sorted(mermaid_declared_ids(evaluation)))
 
         mutations = (
             (
@@ -582,9 +599,7 @@ flowchart LR
         evaluation = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
         architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
         orchestration = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
-        evaluation_roots = tuple(
-            sorted(mermaid_declared_ids(evaluation).difference(WRITE_AUTHORITY_NODES))
-        )
+        evaluation_roots = tuple(sorted(mermaid_declared_ids(evaluation)))
 
         mutations = (
             (evaluation, evaluation_roots, "SAFETY --> GN", r"SAFETY.*GN"),
@@ -624,7 +639,7 @@ flowchart LR
             mutated = f"{evaluation}\n{mutation}\n"
             self.assert_mermaid_sets_isolated(
                 mutated,
-                tuple(sorted(mermaid_declared_ids(mutated).difference(WRITE_AUTHORITY_NODES))),
+                tuple(sorted(mermaid_declared_ids(mutated))),
                 WRITE_AUTHORITY_NODES,
             )
 
