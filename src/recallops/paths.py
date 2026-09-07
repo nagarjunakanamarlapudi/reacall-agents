@@ -23,6 +23,14 @@ class RepositoryPaths:
     def evaluation_corpus(self) -> Path:
         return self.root / "data" / "evals" / "scenarios.json"
 
+    @property
+    def retrieval_evaluation_corpus(self) -> Path:
+        return self.root / "data" / "evals" / "retrieval_cases.json"
+
+    @property
+    def retrieval_evaluation_report(self) -> Path:
+        return self.root / "data" / "evals" / "retrieval_report.json"
+
 
 DATA_DIR = PROJECT_ROOT / "data"
 PUBLIC_DATA_DIR = DATA_DIR / "public"
