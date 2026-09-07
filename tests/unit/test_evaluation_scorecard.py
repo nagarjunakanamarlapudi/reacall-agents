@@ -584,8 +584,12 @@ def test_fix_failed_atomic_replace_preserves_existing_output(paths, tmp_path, mo
     output = tmp_path / "scorecard.json"
     before = output.read_bytes()
 
-    def fail_replace(source, destination):
-        assert Path(source).read_bytes() != b""
+    def fail_replace(source, destination, **kwargs):
+        descriptor = os.open(source, os.O_RDONLY, dir_fd=kwargs.get("src_dir_fd"))
+        try:
+            assert os.read(descriptor, 1) != b""
+        finally:
+            os.close(descriptor)
         assert output.read_bytes() == before
         raise OSError("injected atomic replacement failure")
 
@@ -603,9 +607,9 @@ def test_fix_alias_appearing_at_replace_cannot_modify_input(paths, tmp_path, mon
     before = paths.safety_report.read_bytes()
     original_replace = module.os.replace
 
-    def alias_then_replace(source, destination):
-        os.link(paths.safety_report, destination)
-        original_replace(source, destination)
+    def alias_then_replace(source, destination, **kwargs):
+        os.link(paths.safety_report, destination, dst_dir_fd=kwargs.get("dst_dir_fd"))
+        original_replace(source, destination, **kwargs)
 
     monkeypatch.setattr(module.os, "replace", alias_then_replace)
     scorecard = build(paths, tmp_path)
@@ -642,3 +646,247 @@ def test_fix_persisted_receipt_type_coercion_is_rejected(paths, tmp_path, target
     paths.safety_report.write_bytes(canonical_json_bytes(payload))
     with pytest.raises(ValueError, match="counter|receipt"):
         build(paths, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "execution_confirmation_history",
+        "service_authorization_evidence",
+        "receipt_ledger",
+        "write_receipts",
+        "candidate_lots",
+        "review_lifecycle",
+        "service_probe",
+        "acknowledgements",
+        "retry_count",
+        "human_decision",
+    ],
+)
+@pytest.mark.parametrize("bad", [1, "PRIVATE_SENTINEL" * 100], ids=["integer", "private_string"])
+@pytest.mark.parametrize("api", ["load", "build"])
+def test_round2_malformed_safety_containers_are_bounded_value_errors(
+    paths, tmp_path, field, bad, api
+):
+    from recallops.evaluation.scorecard import load_safety_report
+
+    payload = json.loads(paths.safety_report.read_bytes())
+    payload["results"][11]["state_excerpt"][field] = bad
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError) as failure:
+        if api == "load":
+            load_safety_report(paths.safety_report, paths.safety_corpus)
+        else:
+            build(paths, tmp_path)
+    assert type(failure.value) is ValueError
+    assert len(str(failure.value)) <= 200
+    assert "PRIVATE_SENTINEL" not in str(failure.value)
+
+
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+def test_round2_schema_errors_do_not_echo_observations(paths, tmp_path, suite):
+    source = getattr(paths, f"{suite}_report")
+    payload = json.loads(source.read_bytes())
+    payload["execution_mode"] = "PRIVATE_SENTINEL" * 100
+    if suite == "safety":
+        source.write_bytes(canonical_json_bytes(payload))
+    else:
+        resign(source, payload, "report_sha256")
+    with pytest.raises(ValueError) as failure:
+        build(paths, tmp_path)
+    assert type(failure.value) is ValueError
+    assert len(str(failure.value)) <= 200
+    assert "PRIVATE_SENTINEL" not in str(failure.value)
+
+
+@pytest.mark.parametrize("operation", ["build", "validate"])
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+def test_round2_private_copy_aba_has_no_mutable_loader_path(
+    paths, tmp_path, monkeypatch, operation, suite
+):
+    from recallops.evaluation import scorecard as module
+
+    build(paths, tmp_path)
+    source = getattr(paths, f"{suite}_report")
+    passing = source.read_bytes()
+    payload = json.loads(passing)
+    payload["gate_passed"] = False
+    failed = canonical_json_bytes(payload)
+    source.write_bytes(failed)
+    output = tmp_path / "scorecard.json"
+    if operation == "validate":
+        scorecard = json.loads(output.read_bytes())
+        scorecard["artifact_digests"][f"{suite}_report"] = hashlib.sha256(failed).hexdigest()
+        resign(output, scorecard)
+    original = getattr(module, f"load_{suite}_report")
+
+    def swap_private_copy(path, case_path):
+        before = path.read_bytes()
+        path.write_bytes(passing)
+        try:
+            return original(path, case_path)
+        finally:
+            path.write_bytes(before)
+
+    monkeypatch.setattr(module, f"load_{suite}_report", swap_private_copy)
+    with pytest.raises(ValueError):
+        if operation == "build":
+            build(paths, tmp_path)
+        else:
+            validate_scorecard(output, paths)
+
+
+@pytest.mark.parametrize("boundary", ["create", "replace"])
+@pytest.mark.parametrize("swap", ["symlink", "rename"])
+def test_round2_output_parent_swap_never_overwrites_input(
+    paths, tmp_path, monkeypatch, boundary, swap
+):
+    from recallops.evaluation import scorecard as module
+
+    intended = tmp_path / "intended"
+    intended.mkdir()
+    parent = tmp_path / "output-parent"
+    if swap == "symlink":
+        parent.symlink_to(intended, target_is_directory=True)
+    else:
+        parent.mkdir()
+        intended = parent
+    moved = tmp_path / "pinned-original"
+    output = parent / paths.safety_report.name
+    before = {name: getattr(paths, name).read_bytes() for name in paths.__dataclass_fields__}
+    swapped = False
+
+    def redirect():
+        nonlocal swapped, intended
+        if swapped:
+            return
+        swapped = True
+        if swap == "symlink":
+            parent.unlink()
+        else:
+            parent.rename(moved)
+            intended = moved
+        parent.symlink_to(paths.safety_report.parent, target_is_directory=True)
+
+    if boundary == "create":
+        original_open = module.os.open
+        temporary_module = getattr(module, "tempfile", None)
+        original_mkstemp = temporary_module.mkstemp if temporary_module is not None else None
+
+        def redirected_open(path, flags, *args, **kwargs):
+            if flags & os.O_CREAT:
+                redirect()
+            return original_open(path, flags, *args, **kwargs)
+
+        def redirected_mkstemp(*args, **kwargs):
+            redirect()
+            return original_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(module.os, "open", redirected_open)
+        if temporary_module is not None:
+            monkeypatch.setattr(temporary_module, "mkstemp", redirected_mkstemp)
+    else:
+        original_replace = module.os.replace
+
+        def redirected_replace(*args, **kwargs):
+            redirect()
+            return original_replace(*args, **kwargs)
+
+        monkeypatch.setattr(module.os, "replace", redirected_replace)
+    try:
+        build_scorecard(
+            paths.safety_report, paths.retrieval_report, paths.orchestration_report, output
+        )
+    except (ValueError, OSError):
+        pass
+    assert {name: getattr(paths, name).read_bytes() for name in before} == before
+    if (intended / output.name).exists():
+        assert validate_scorecard(intended / output.name, paths).offline_gate_passed
+
+
+@pytest.mark.parametrize("kind", ["symbolic", "hard"])
+def test_round2_unrelated_output_leaf_symlink_is_rejected(paths, tmp_path, kind):
+    target = tmp_path / "other.json"
+    target.write_text("keep me")
+    output = tmp_path / "scorecard.json"
+    if kind == "symbolic":
+        output.symlink_to(target)
+    else:
+        os.link(target, output)
+    with pytest.raises(ValueError):
+        build(paths, tmp_path)
+    assert target.read_text() == "keep me"
+
+
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+def test_round2_public_path_and_bytes_loaders_agree(paths, suite):
+    from recallops.evaluation import orchestration_benchmark, retrieval_benchmark, scorecard
+
+    module = {
+        "safety": scorecard,
+        "retrieval": retrieval_benchmark,
+        "orchestration": orchestration_benchmark,
+    }[suite]
+    path = getattr(paths, f"{suite}_report")
+    corpus = getattr(paths, f"{suite}_corpus")
+    path_loader = getattr(module, f"load_{suite}_report")
+    bytes_loader = getattr(module, f"load_{suite}_report_bytes")
+    kwargs = {} if suite == "safety" else {"data_dir": DATA_DIR}
+    assert bytes_loader(path.read_bytes(), corpus.read_bytes(), **kwargs) == path_loader(
+        path, corpus, **kwargs
+    )
+
+
+def test_round2_semantic_validation_materializes_no_snapshot_files(paths, tmp_path, monkeypatch):
+    def forbid_materialized_snapshot(*args, **kwargs):
+        raise AssertionError("validation must not materialize mutable snapshot files")
+
+    monkeypatch.setattr(Path, "write_bytes", forbid_materialized_snapshot)
+    scorecard = build(paths, tmp_path)
+    assert validate_scorecard(tmp_path / "scorecard.json", paths) == scorecard
+
+
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+def test_round2_public_corpus_bytes_loaders_reject_mutable_buffers(paths, suite):
+    from recallops.evaluation.orchestration_schema import load_orchestration_cases_bytes
+    from recallops.evaluation.retrieval_schema import load_retrieval_cases_bytes
+    from recallops.evaluation.runner import load_scenarios_bytes
+
+    loader = {
+        "safety": load_scenarios_bytes,
+        "retrieval": load_retrieval_cases_bytes,
+        "orchestration": load_orchestration_cases_bytes,
+    }[suite]
+    raw = bytearray(getattr(paths, f"{suite}_corpus").read_bytes())
+    with pytest.raises(ValueError, match="immutable bytes"):
+        loader(raw)
+
+
+@pytest.mark.parametrize(
+    "field,bad",
+    [
+        ("execution_confirmation_history", {}),
+        ("service_authorization_evidence", {}),
+        ("candidate_lots", {}),
+        ("receipt_ledger", {}),
+        ("write_receipts", {}),
+        ("service_probe", []),
+        ("acknowledgements", []),
+        ("retry_count", []),
+        ("human_decision", []),
+        ("execution_confirmation_history", [1]),
+        ("receipt_ledger", [1]),
+        ("service_authorization_evidence", [1]),
+        ("service_probe", {"authorization_evidence": 1}),
+        ("service_probe", {"authorization_evidence": [1]}),
+        ("service_probe", {"write_receipts": {}}),
+    ],
+)
+def test_round2_nested_and_opposite_container_shapes_fail_closed(paths, tmp_path, field, bad):
+    payload = json.loads(paths.safety_report.read_bytes())
+    payload["results"][11]["state_excerpt"][field] = bad
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError) as failure:
+        build(paths, tmp_path)
+    assert type(failure.value) is ValueError
+    assert len(str(failure.value)) <= 200

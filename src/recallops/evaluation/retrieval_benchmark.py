@@ -12,7 +12,6 @@ retains the production search defaults, including its source diversity selector.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -20,7 +19,13 @@ from time import perf_counter_ns
 
 import numpy as np
 
-from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256, verify_sha256
+from recallops.evaluation.digests import (
+    artifact_validation,
+    canonical_json_bytes,
+    canonical_sha256,
+    decode_artifact_bytes,
+    verify_sha256,
+)
 from recallops.evaluation.ranking import ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank
 from recallops.evaluation.retrieval_schema import (
     EXPECTED_RETRIEVAL_FAMILY_COUNTS,
@@ -34,6 +39,7 @@ from recallops.evaluation.retrieval_schema import (
     RetrievalEvalReport,
     RetrievalExecutionConfig,
     load_retrieval_cases,
+    load_retrieval_cases_bytes,
 )
 from recallops.paths import DATA_DIR
 from recallops.retrieval.agentic import (
@@ -628,8 +634,24 @@ def validate_retrieval_report(
 def load_retrieval_report(
     path: Path, case_path: Path, *, data_dir: Path = DATA_DIR
 ) -> RetrievalEvalReport:
-    raw = path.read_bytes()
-    payload = json.loads(raw)
+    try:
+        raw, case_raw = Path(path).read_bytes(), Path(case_path).read_bytes()
+    except OSError:
+        raise ValueError("retrieval report inputs could not be read") from None
+    return load_retrieval_report_bytes(raw, case_raw, data_dir=data_dir)
+
+
+def load_retrieval_report_bytes(
+    raw: bytes, case_raw: bytes, *, data_dir: Path = DATA_DIR
+) -> RetrievalEvalReport:
+    """Validate immutable report/corpus bytes against an explicit knowledge directory."""
+    with artifact_validation("retrieval report"):
+        return _load_retrieval_report_bytes(raw, case_raw, data_dir=data_dir)
+
+
+def _load_retrieval_report_bytes(raw: bytes, case_raw: bytes, *, data_dir: Path):
+    payload = decode_artifact_bytes(raw)
+    decode_artifact_bytes(case_raw)
     if raw != canonical_json_bytes(payload):
         raise ValueError("retrieval report must use canonical JSON")
     if not isinstance(payload, dict):
@@ -641,7 +663,7 @@ def load_retrieval_report(
     report = RetrievalEvalReport.model_validate(payload)
     if raw != canonical_json_bytes(report.model_dump(mode="json")):
         raise ValueError("retrieval report must contain the complete typed schema")
-    corpus = load_retrieval_cases(case_path, data_dir=data_dir)
+    corpus = load_retrieval_cases_bytes(case_raw, data_dir=data_dir)
     validate_retrieval_report(report, corpus, KnowledgeCorpus.load(data_dir=data_dir))
     return report
 

@@ -13,7 +13,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from recallops.evaluation.digests import canonical_json_bytes
+from recallops.evaluation.digests import canonical_json_bytes, decode_artifact_bytes
 from recallops.evaluation.metrics import calculate_metrics, safety_gate_passes
 from recallops.evaluation.schema import (
     AssertionResult,
@@ -209,7 +209,12 @@ class EvaluationGateError(RuntimeError):
 def load_scenarios(path: Path | str) -> ScenarioCorpus:
     """Load and strictly validate the complete R01-R21 golden corpus."""
 
-    return ScenarioCorpus.model_validate_json(Path(path).read_text(encoding="utf-8"))
+    return load_scenarios_bytes(Path(path).read_bytes())
+
+
+def load_scenarios_bytes(raw: bytes) -> ScenarioCorpus:
+    """Validate a captured scenario corpus without reopening a mutable path."""
+    return ScenarioCorpus.model_validate(decode_artifact_bytes(raw))
 
 
 def normalize_route(nodes: Sequence[str]) -> list[str]:
@@ -403,6 +408,7 @@ def validate_persisted_safety_counters(
     scenario: EvaluationScenario, state: dict[str, Any], claimed: dict[str, int]
 ) -> None:
     """Reject counters below observable lower bounds or an inconsistent receipt ledger."""
+    validate_persisted_safety_containers(state)
     observed = observed_safety_counters(scenario, state, persisted=True)
     if set(claimed) != set(observed) or any(
         type(claimed[name]) is not int or claimed[name] < minimum
@@ -413,6 +419,60 @@ def validate_persisted_safety_counters(
         _receipt_ledger_excerpt(state)
     ):
         raise ValueError("safety receipt ledger differs from persisted receipt sources")
+
+
+def validate_persisted_safety_containers(state: dict[str, Any]) -> None:
+    """Check retained list/map shapes before any receipt or observation iteration."""
+    required_lists = _EMPTY_LIST_FIELDS
+    optional_lists = {
+        "execution_confirmation_history",
+        "service_authorization_evidence",
+        "review_lifecycle",
+        "consent_probe_codes",
+        "identity_conflict_probe_codes",
+        "start_input_probe_codes",
+        "toctou_outcomes",
+        "toctou_race_evidence",
+        "toctou_version_deltas",
+    }
+    optional_maps = {
+        "service_probe",
+        "human_decision",
+        "compiled_guard_results",
+        "concurrency_probe",
+        "copied_checkpoint_probe",
+        "dependency_failure_outcomes",
+        "disposition_lifecycle",
+        "middleware_probe",
+        "model_budget_probe",
+        "public_history_probe",
+        "runtime_result_probe",
+        "trace_fixture_probe",
+        "watchdog_probe",
+    }
+    for name in required_lists | optional_lists:
+        value = state.get(name)
+        if not isinstance(value, list) and not (name in optional_lists and value is None):
+            raise ValueError("safety observation list container invalid")
+    for name in _EMPTY_DICT_FIELDS | optional_maps:
+        value = state.get(name)
+        if not isinstance(value, dict) and not (name in optional_maps and value is None):
+            raise ValueError("safety observation map container invalid")
+    for name in (
+        "execution_confirmation_history",
+        "service_authorization_evidence",
+        "receipt_ledger",
+    ):
+        if any(not isinstance(item, dict) for item in state.get(name) or []):
+            raise ValueError("safety receipt observation entry invalid")
+    probe = state.get("service_probe")
+    if probe is not None:
+        for name in ("write_receipts", "authorization_evidence"):
+            value = probe.get(name)
+            if value is not None and not isinstance(value, list):
+                raise ValueError("safety service receipt list container invalid")
+        if any(not isinstance(item, dict) for item in probe.get("authorization_evidence") or []):
+            raise ValueError("safety service authorization entry invalid")
 
 
 def _global_assertions(

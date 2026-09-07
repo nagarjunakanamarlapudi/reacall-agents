@@ -9,9 +9,9 @@ recomputes every aggregate; it does not claim to rerun the original execution.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import tempfile
+import secrets
+import stat
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,18 +19,29 @@ from typing import Annotated, Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256, verify_sha256
+from recallops.evaluation.digests import (
+    artifact_validation,
+    canonical_json_bytes,
+    canonical_sha256,
+    decode_artifact_bytes,
+    verify_sha256,
+)
 from recallops.evaluation.metrics import calculate_metrics, safety_gate_passes
-from recallops.evaluation.orchestration_benchmark import load_orchestration_report
-from recallops.evaluation.retrieval_benchmark import load_retrieval_report
+from recallops.evaluation.orchestration_benchmark import (
+    load_orchestration_report as load_orchestration_report,
+)
+from recallops.evaluation.orchestration_benchmark import load_orchestration_report_bytes
+from recallops.evaluation.retrieval_benchmark import load_retrieval_report as load_retrieval_report
+from recallops.evaluation.retrieval_benchmark import load_retrieval_report_bytes
 from recallops.evaluation.runner import (
     STATE_EXCERPT_FIELDS,
-    load_scenarios,
+    load_scenarios_bytes,
     normalize_route,
+    validate_persisted_safety_containers,
     validate_persisted_safety_counters,
 )
 from recallops.evaluation.schema import EvaluationReport
-from recallops.paths import EvaluationArtifactPaths
+from recallops.paths import DATA_DIR, EvaluationArtifactPaths
 
 Digest = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
 SuiteName = Literal["safety", "retrieval", "orchestration"]
@@ -67,22 +78,11 @@ class EvaluationScorecard(ScorecardContract):
 
 
 def _read_json(path: Path) -> tuple[bytes, Any]:
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key: {key}")
-            result[key] = value
-        return result
-
     try:
         raw = Path(path).read_bytes()
-        payload = json.loads(raw, object_pairs_hook=unique_object)
-        # Also rejects non-finite values buried in untyped observations.
-        canonical_json_bytes(payload)
-        return raw, payload
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError(f"invalid evaluation artifact {path.name}: {exc}") from exc
+    except OSError:
+        raise ValueError("evaluation artifact could not be read") from None
+    return raw, decode_artifact_bytes(raw)
 
 
 def _contains(actual: Any, expected: Any) -> bool:
@@ -219,9 +219,23 @@ def load_safety_report(path: Path, case_path: Path) -> EvaluationReport:
     indented JSON. Its corpus digest uses the original no-newline convention.
     Scorecards additionally bind its exact file bytes, including whitespace.
     """
-    _, payload = _read_json(path)
-    _read_json(case_path)
-    corpus = load_scenarios(case_path)
+    try:
+        raw, case_raw = Path(path).read_bytes(), Path(case_path).read_bytes()
+    except OSError:
+        raise ValueError("safety report inputs could not be read") from None
+    return load_safety_report_bytes(raw, case_raw)
+
+
+def load_safety_report_bytes(raw: bytes, case_raw: bytes) -> EvaluationReport:
+    """Validate exact immutable bytes against the captured legacy scenario corpus."""
+    with artifact_validation("safety report"):
+        return _load_safety_report_bytes(raw, case_raw)
+
+
+def _load_safety_report_bytes(raw: bytes, case_raw: bytes) -> EvaluationReport:
+    payload = decode_artifact_bytes(raw)
+    decode_artifact_bytes(case_raw)
+    corpus = load_scenarios_bytes(case_raw)
     report = EvaluationReport.model_validate(payload, strict=True)
     if canonical_json_bytes(payload) != canonical_json_bytes(report.model_dump(mode="json")):
         raise ValueError("safety report must contain the complete typed schema")
@@ -235,6 +249,7 @@ def load_safety_report(path: Path, case_path: Path) -> EvaluationReport:
     for row, case in zip(report.results, corpus.scenarios, strict=True):
         if set(row.state_excerpt) != set(STATE_EXCERPT_FIELDS):
             raise ValueError("safety state excerpt is incomplete")
+        validate_persisted_safety_containers(row.state_excerpt)
         if row.safety_critical != case.safety_critical or row.route_expected != case.expected.route:
             raise ValueError("safety result differs from scenario contract")
         expected_route = normalize_route(case.expected.route)
@@ -332,22 +347,16 @@ def _capture_artifacts(paths: EvaluationArtifactPaths) -> dict[str, bytes]:
 
 
 def _verified_snapshots(snapshots: dict[str, bytes]):
-    # Existing public path loaders read private copies, never mutable originals.
-    # The files retain report/corpus adjacency but input names never choose paths.
-    with tempfile.TemporaryDirectory(prefix="recallops-scorecard-") as directory:
-        locations = {}
-        for name, raw in snapshots.items():
-            target = Path(directory) / f"{name}.json"
-            target.write_bytes(raw)
-            locations[name] = target
-        return _verified_inputs(EvaluationArtifactPaths(**locations))
-
-
-def _verified_inputs(paths: EvaluationArtifactPaths):
-    safety = load_safety_report(paths.safety_report, paths.safety_corpus)
-    retrieval = load_retrieval_report(paths.retrieval_report, paths.retrieval_corpus)
-    orchestration = load_orchestration_report(
-        paths.orchestration_report, paths.orchestration_corpus
+    safety = load_safety_report_bytes(snapshots["safety_report"], snapshots["safety_corpus"])
+    retrieval = load_retrieval_report_bytes(
+        snapshots["retrieval_report"],
+        snapshots["retrieval_corpus"],
+        data_dir=DATA_DIR,
+    )
+    orchestration = load_orchestration_report_bytes(
+        snapshots["orchestration_report"],
+        snapshots["orchestration_corpus"],
+        data_dir=DATA_DIR,
     )
     summaries = (
         SuiteSummary(
@@ -395,26 +404,98 @@ def _offline_gate(summaries: tuple[SuiteSummary, ...]) -> bool:
     )
 
 
+def _open_output_directory(parent: Path) -> int:
+    """Resolve once, then open and verify each directory component without following links."""
+    directory = parent.resolve()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    current = os.open(directory.anchor, flags)
+    try:
+        for component in directory.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o755, dir_fd=current)
+                child = os.open(component, flags, dir_fd=current)
+            try:
+                entry = os.stat(component, dir_fd=current, follow_symlinks=False)
+                opened = os.fstat(child)
+                if not stat.S_ISDIR(entry.st_mode) or (entry.st_dev, entry.st_ino) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                ):
+                    raise ValueError("scorecard destination directory identity changed")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
 def _write_scorecard(output_path: Path, raw: bytes, paths: EvaluationArtifactPaths) -> None:
     output_path = output_path.expanduser().absolute()
+    input_inodes = set()
     for name in paths.__dataclass_fields__:
-        source = getattr(paths, name)
-        if output_path.resolve() == source or (
-            output_path.exists() and output_path.samefile(source)
+        source = getattr(paths, name).stat()
+        input_inodes.add((source.st_dev, source.st_ino))
+    directory_fd = _open_output_directory(output_path.parent)
+    identity = os.fstat(directory_fd)
+    leaf = output_path.name
+    temporary = None
+
+    def check_leaf():
+        try:
+            entry = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if (
+            stat.S_ISLNK(entry.st_mode)
+            or entry.st_nlink > 1
+            or (entry.st_dev, entry.st_ino) in input_inodes
         ):
             raise ValueError("scorecard output must not overwrite or alias an input artifact")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    # A fresh inode also protects inputs if an alias appears after the check.
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".scorecard-", dir=output_path.parent)
-    temporary = Path(temporary_name)
+        if not stat.S_ISREG(entry.st_mode):
+            raise ValueError("scorecard output must be a regular file")
+
     try:
+        check_leaf()
+        for _ in range(10):
+            candidate = f".scorecard-{secrets.token_hex(16)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        else:
+            raise OSError("could not create scorecard temporary inode")
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, output_path)
+        current = os.fstat(directory_fd)
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            raise ValueError("scorecard destination directory identity changed")
+        check_leaf()
+        os.replace(temporary, leaf, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(directory_fd)
 
 
 def build_scorecard(
@@ -438,7 +519,8 @@ def build_scorecard(
         "optional_live_status": live.model_dump(mode="json"),
     }
     payload["scorecard_sha256"] = canonical_sha256(payload)
-    scorecard = EvaluationScorecard.model_validate(payload)
+    with artifact_validation("scorecard"):
+        scorecard = EvaluationScorecard.model_validate(payload)
     _write_scorecard(
         Path(output_path), canonical_json_bytes(scorecard.model_dump(mode="json")), paths
     )
@@ -450,7 +532,8 @@ def validate_scorecard(path: Path, expected_paths: EvaluationArtifactPaths) -> E
     raw, payload = _read_json(path)
     if raw != canonical_json_bytes(payload):
         raise ValueError("scorecard must use canonical JSON")
-    scorecard = EvaluationScorecard.model_validate(payload)
+    with artifact_validation("scorecard"):
+        scorecard = EvaluationScorecard.model_validate(payload)
     verify_sha256(
         {key: value for key, value in payload.items() if key != "scorecard_sha256"},
         scorecard.scorecard_sha256,

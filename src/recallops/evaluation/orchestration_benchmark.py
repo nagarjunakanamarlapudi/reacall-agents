@@ -37,7 +37,13 @@ from recallops.agents.specialists import (
     investigate_recall,
 )
 from recallops.config import Settings
-from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256, verify_sha256
+from recallops.evaluation.digests import (
+    artifact_validation,
+    canonical_json_bytes,
+    canonical_sha256,
+    decode_artifact_bytes,
+    verify_sha256,
+)
 from recallops.evaluation.orchestration_schema import (
     OPERATIONS_TOOLS,
     READ_TOOLS,
@@ -60,6 +66,7 @@ from recallops.evaluation.orchestration_schema import (
     assessment_citation_facts,
     evidence_boundary_sha256,
     load_orchestration_cases,
+    load_orchestration_cases_bytes,
 )
 from recallops.models import (
     InventoryPosition,
@@ -1286,7 +1293,7 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
 
 
 def validate_orchestration_report(
-    payload: Any, corpus: OrchestrationEvalCorpus
+    payload: Any, corpus: OrchestrationEvalCorpus, *, data_dir: Path = DATA_DIR
 ) -> OrchestrationEvalReport:
     """Recompute all scores and compare digests, ordering, denominators and gates."""
     if isinstance(payload, OrchestrationEvalReport):
@@ -1304,7 +1311,7 @@ def validate_orchestration_report(
         raise ValueError("orchestration corpus digest mismatch")
     if report.evidence_boundary_sha256 != corpus.evidence_boundary_sha256:
         raise ValueError("report evidence boundary digest mismatch")
-    if report.evidence_boundary_sha256 != evidence_boundary_sha256():
+    if report.evidence_boundary_sha256 != evidence_boundary_sha256(data_dir=data_dir):
         raise ValueError("current evidence boundary digest mismatch")
     if tuple(profile.name for profile in report.profiles) != (
         "bounded_single_agent",
@@ -1348,12 +1355,30 @@ def validate_orchestration_report(
     return report
 
 
-def load_orchestration_report(path: Path, case_path: Path) -> OrchestrationEvalReport:
-    raw = Path(path).read_bytes()
-    payload = json.loads(raw)
-    if raw != canonical_json_bytes(payload):
-        raise ValueError("orchestration report must use canonical JSON")
-    return validate_orchestration_report(payload, load_orchestration_cases(case_path))
+def load_orchestration_report(
+    path: Path, case_path: Path, *, data_dir: Path = DATA_DIR
+) -> OrchestrationEvalReport:
+    try:
+        raw, case_raw = Path(path).read_bytes(), Path(case_path).read_bytes()
+    except OSError:
+        raise ValueError("orchestration report inputs could not be read") from None
+    return load_orchestration_report_bytes(raw, case_raw, data_dir=data_dir)
+
+
+def load_orchestration_report_bytes(
+    raw: bytes, case_raw: bytes, *, data_dir: Path = DATA_DIR
+) -> OrchestrationEvalReport:
+    """Validate immutable report/corpus bytes against an explicit evidence directory."""
+    with artifact_validation("orchestration report"):
+        payload = decode_artifact_bytes(raw)
+        decode_artifact_bytes(case_raw)
+        if raw != canonical_json_bytes(payload):
+            raise ValueError("orchestration report must use canonical JSON")
+        return validate_orchestration_report(
+            payload,
+            load_orchestration_cases_bytes(case_raw, data_dir=data_dir),
+            data_dir=data_dir,
+        )
 
 
 async def run_orchestration_benchmark(

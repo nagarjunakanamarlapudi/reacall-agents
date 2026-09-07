@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from pathlib import Path
@@ -11,7 +10,12 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, model_validator
 
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
-from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256, verify_sha256
+from recallops.evaluation.digests import (
+    canonical_json_bytes,
+    canonical_sha256,
+    decode_artifact_bytes,
+    verify_sha256,
+)
 from recallops.evaluation.retrieval_schema import StrictFiniteFloat
 from recallops.paths import DATA_DIR
 
@@ -223,14 +227,14 @@ def assessment_citation_facts(value):
     return tuple(facts)
 
 
-def audited_assessment_facts(lot_ids):
+def audited_assessment_facts(lot_ids, *, data_dir: Path = DATA_DIR):
     """Gold citations derived from the pinned snapshot, never an evaluated adapter.
 
     This independent corpus audit traverses snapshot ancestry and projects facility
     and quantity-component relationships. It shares only fact serialization with
     runtime verification of captured reads.
     """
-    dataset = load_demo_dataset(DATA_DIR)
+    dataset = load_demo_dataset(data_dir)
     projection = {"coverage": [], "reconciliations": [], "evidence_ids": []}
     affected = set()
     for lot in lot_ids:
@@ -329,9 +333,9 @@ def audited_assessment_facts(lot_ids):
     return assessment_citation_facts(projection)
 
 
-def audited_predicate():
+def audited_predicate(*, data_dir: Path = DATA_DIR):
     """Parse the audited notice structure without importing evaluated agent code."""
-    payload = load_recall_snapshot("H-1230-2026", data_dir=DATA_DIR).payload
+    payload = load_recall_snapshot("H-1230-2026", data_dir=data_dir).payload
     description = payload["product_description"]
     markers = list(
         re.finditer(
@@ -383,12 +387,12 @@ def audited_predicate():
     return predicate, catalog
 
 
-def evidence_boundary_sha256() -> str:
+def evidence_boundary_sha256(*, data_dir: Path = DATA_DIR) -> str:
     """Bind all source records actually available to these snapshot services."""
     return canonical_sha256(
         {
-            "dataset": load_demo_dataset(DATA_DIR),
-            "recall": load_recall_snapshot("H-1230-2026", data_dir=DATA_DIR).model_dump(
+            "dataset": load_demo_dataset(data_dir),
+            "recall": load_recall_snapshot("H-1230-2026", data_dir=data_dir).model_dump(
                 mode="json"
             ),
         }
@@ -608,15 +612,21 @@ class OrchestrationEvalReport(FrozenContract):
     report_sha256: Digest
 
 
-def load_orchestration_cases(path: Path) -> OrchestrationEvalCorpus:
-    raw = Path(path).read_bytes()
-    payload = json.loads(raw)
+def load_orchestration_cases(path: Path, *, data_dir: Path = DATA_DIR) -> OrchestrationEvalCorpus:
+    return load_orchestration_cases_bytes(Path(path).read_bytes(), data_dir=data_dir)
+
+
+def load_orchestration_cases_bytes(
+    raw: bytes, *, data_dir: Path = DATA_DIR
+) -> OrchestrationEvalCorpus:
+    """Validate captured case bytes against an explicit source evidence directory."""
+    payload = decode_artifact_bytes(raw)
     if raw != canonical_json_bytes(payload):
         raise ValueError("orchestration corpus must use canonical JSON")
     corpus = OrchestrationEvalCorpus.model_validate(payload)
-    if corpus.evidence_boundary_sha256 != evidence_boundary_sha256():
+    if corpus.evidence_boundary_sha256 != evidence_boundary_sha256(data_dir=data_dir):
         raise ValueError("evidence boundary digest mismatch")
-    predicate, catalog = audited_predicate()
+    predicate, catalog = audited_predicate(data_dir=data_dir)
     for case in corpus.cases:
         if case.expected_predicate.model_dump(
             mode="json"
@@ -631,7 +641,9 @@ def load_orchestration_cases(path: Path) -> OrchestrationEvalCorpus:
             )
         )
         declared = {fact for fact in case.evidence_facts if fact.startswith("assessment:")}
-        expected = set(audited_assessment_facts(scoped_lots)) if scoped_lots else set()
+        expected = (
+            set(audited_assessment_facts(scoped_lots, data_dir=data_dir)) if scoped_lots else set()
+        )
         if declared != expected:
             raise ValueError("gold assessment citations differ from audited snapshot")
         if case.expected_citations != ("openfda:H-1230-2026",):

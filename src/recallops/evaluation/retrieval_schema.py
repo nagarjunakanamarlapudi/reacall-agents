@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections import Counter
 from collections.abc import Mapping
@@ -23,7 +22,7 @@ from pydantic import (
     model_validator,
 )
 
-from recallops.evaluation.digests import canonical_json_bytes
+from recallops.evaluation.digests import canonical_json_bytes, decode_artifact_bytes
 from recallops.paths import DATA_DIR
 from recallops.retrieval.corpus import KnowledgeCorpus
 
@@ -417,12 +416,12 @@ class RetrievalEvalReport(RetrievalExecutionConfig):
 def load_retrieval_cases(path: Path, *, data_dir: Path = DATA_DIR) -> RetrievalEvalCorpus:
     """Load a canonical case artifact and validate it against production knowledge."""
 
-    resolved = Path(path)
-    raw = resolved.read_bytes()
-    try:
-        decoded: Any = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("retrieval corpus is not valid UTF-8 JSON") from exc
+    return load_retrieval_cases_bytes(Path(path).read_bytes(), data_dir=data_dir)
+
+
+def load_retrieval_cases_bytes(raw: bytes, *, data_dir: Path = DATA_DIR) -> RetrievalEvalCorpus:
+    """Validate captured case bytes against the explicitly selected knowledge data."""
+    decoded = decode_artifact_bytes(raw)
     if raw != canonical_json_bytes(decoded):
         raise ValueError("retrieval corpus must use canonical JSON")
     corpus = RetrievalEvalCorpus.model_validate(decoded)
