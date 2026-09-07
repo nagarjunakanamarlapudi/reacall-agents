@@ -10,7 +10,11 @@ from pydantic import ValidationError
 from recallops.evaluation.digests import canonical_json_bytes
 from recallops.evaluation.retrieval_schema import (
     RetrievalCase,
+    RetrievalCaseResult,
+    RetrievalConfigurationMetrics,
+    RetrievalConfigurationResult,
     RetrievalEvalCorpus,
+    RetrievalJudgment,
     load_retrieval_cases,
 )
 from recallops.paths import DATA_DIR, RepositoryPaths
@@ -63,6 +67,60 @@ def test_retrieval_corpus_is_immutable_and_bound_to_canonical_knowledge() -> Non
     assert corpus.knowledge_corpus_sha256 == KnowledgeCorpus.load().manifest.corpus_sha256
     with pytest.raises(ValidationError, match="frozen"):
         corpus.cases[0].question = "mutated"  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        corpus.cases[0].judgments["MUTATED"] = RetrievalJudgment(relevance=3)  # type: ignore[index]
+
+
+def _zero_metrics() -> RetrievalConfigurationMetrics:
+    return RetrievalConfigurationMetrics(
+        case_count=0,
+        recall_at_1=0.0,
+        recall_at_3=0.0,
+        recall_at_5=0.0,
+        precision_at_5=0.0,
+        mean_reciprocal_rank=0.0,
+        ndcg_at_5=0.0,
+        citation_precision=0.0,
+        required_fact_coverage=0.0,
+        route_accuracy=0.0,
+        abstention_accuracy=0.0,
+        provenance_label_accuracy=0.0,
+        budget_compliance=0.0,
+        prohibited_hit_count=0,
+        unsupported_answer_count=0,
+        latency_p50_ms=0.0,
+        latency_p95_ms=0.0,
+    )
+
+
+def test_result_mapping_fields_are_deeply_immutable_and_serializable() -> None:
+    default_result = RetrievalCaseResult(
+        case_id="RET-001",
+        family="exact_identifier",
+    )
+    result = RetrievalCaseResult(
+        case_id="RET-001",
+        family="exact_identifier",
+        metric_contributions={"hit": True},
+    )
+    metrics = _zero_metrics()
+    configuration = RetrievalConfigurationResult(
+        name="sparse_bm25",
+        results=(result,),
+        metrics=metrics,
+        family_metrics={"exact_identifier": metrics},
+    )
+
+    with pytest.raises(TypeError):
+        default_result.metric_contributions["hit"] = True  # type: ignore[index]
+    with pytest.raises(TypeError):
+        result.metric_contributions["hit"] = False  # type: ignore[index]
+    with pytest.raises(TypeError):
+        configuration.family_metrics["lineage"] = metrics  # type: ignore[index]
+    assert result.model_dump(mode="json")["metric_contributions"] == {"hit": True}
+    assert configuration.model_dump(mode="json")["family_metrics"] == {
+        "exact_identifier": metrics.model_dump(mode="json")
+    }
 
 
 def test_loader_rejects_duplicate_case_id(tmp_path: Path) -> None:
@@ -137,6 +195,44 @@ def test_loader_rejects_knowledge_digest_mutation(tmp_path: Path) -> None:
         load_retrieval_cases(_write_payload(tmp_path, payload))
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("unanswerable", "false"),
+        ("rewrite_allowed", 0),
+        ("top_k", "5"),
+        ("question", 123),
+    ],
+)
+def test_loader_rejects_canonical_but_coercible_case_scalars(
+    tmp_path: Path, field: str, invalid_value: object
+) -> None:
+    payload = _payload()
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+    mutated = dict(cases[0])
+    mutated[field] = invalid_value
+    cases[0] = mutated
+
+    with pytest.raises(ValidationError):
+        load_retrieval_cases(_write_payload(tmp_path, payload))
+
+
+def test_loader_rejects_string_relevance_grade(tmp_path: Path) -> None:
+    payload = _payload()
+    cases = payload["cases"]
+    assert isinstance(cases, list)
+    mutated = dict(cases[0])
+    judgments = dict(mutated["judgments"])
+    document_id = next(iter(judgments))
+    judgments[document_id] = {"relevance": "3"}
+    mutated["judgments"] = judgments
+    cases[0] = mutated
+
+    with pytest.raises(ValidationError):
+        load_retrieval_cases(_write_payload(tmp_path, payload))
+
+
 def test_loader_rejects_noncanonical_json(tmp_path: Path) -> None:
     path = tmp_path / "retrieval-cases.json"
     path.write_text(json.dumps(_payload(), indent=2), encoding="utf-8")
@@ -159,6 +255,39 @@ def test_cases_have_independent_facts_and_bounded_read_only_budgets() -> None:
         any(fact.casefold() not in case.question.casefold() for fact in case.required_facts)
         for case in answerable
     )
+
+
+def test_synthetic_acknowledgement_facts_match_source_booleans() -> None:
+    corpus = load_retrieval_cases(CASE_PATH)
+    dataset = json.loads(
+        (DATA_DIR / "synthetic/northstar_demo/dataset.json").read_text(encoding="utf-8")
+    )
+    acknowledgements = {
+        row["facility_id"]: row["acknowledged"]
+        for row in dataset["facility_acknowledgements"]
+    }
+    checked = 0
+    prefix = "NORTHSTAR-FACILITY_ACKNOWLEDGEMENTS-"
+    for case in corpus.cases:
+        facts = {
+            fact.split("=", 1)[0]: fact.split("=", 1)[1]
+            for fact in case.required_facts
+            if "=" in fact
+        }
+        if "synthetic_acknowledged" not in facts:
+            continue
+        acknowledgement_ids = [
+            document_id
+            for document_id in case.required_document_ids
+            if document_id.startswith(prefix)
+        ]
+        assert len(acknowledgement_ids) == 1
+        facility_id = acknowledgement_ids[0].removeprefix(prefix)
+        assert facts["synthetic_acknowledged"] == str(
+            acknowledgements[facility_id]
+        ).lower()
+        checked += 1
+    assert checked == 4
 
 
 def test_repository_paths_expose_retrieval_artifacts(tmp_path: Path) -> None:

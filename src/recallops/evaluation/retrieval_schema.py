@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from recallops.evaluation.digests import canonical_json_bytes
 from recallops.retrieval.corpus import KnowledgeCorpus
@@ -42,6 +55,13 @@ EXPECTED_RETRIEVAL_FAMILY_COUNTS: dict[str, int] = {
     "abstention_adversarial": 8,
 }
 
+def _freeze_mapping[Key, Value](
+    value: Mapping[Key, Value],
+) -> Mapping[Key, Value]:
+    """Copy a validated mapping behind a read-only runtime view."""
+
+    return MappingProxyType(dict(value))
+
 
 class RetrievalJudgment(BaseModel):
     """Independent graded relevance label for one corpus document."""
@@ -64,22 +84,22 @@ class RetrievalCase(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str = Field(pattern=r"^RET-(?:0[0-9]{2}|[1-9][0-9]{2})$")
+    id: StrictStr = Field(pattern=r"^RET-(?:0[0-9]{2}|[1-9][0-9]{2})$")
     family: RetrievalFamily
-    question: str = Field(min_length=1)
+    question: StrictStr = Field(min_length=1)
     expected_route: tuple[RetrievalRoute, ...] = Field(min_length=1, max_length=2)
-    judgments: dict[str, RetrievalJudgment]
-    required_document_ids: tuple[str, ...] = ()
-    prohibited_document_ids: tuple[str, ...] = ()
-    required_facts: tuple[str, ...] = ()
-    unanswerable: bool = False
-    rewrite_allowed: bool = False
+    judgments: Mapping[StrictStr, RetrievalJudgment]
+    required_document_ids: tuple[StrictStr, ...] = ()
+    prohibited_document_ids: tuple[StrictStr, ...] = ()
+    required_facts: tuple[StrictStr, ...] = ()
+    unanswerable: StrictBool = False
+    rewrite_allowed: StrictBool = False
     expected_rewrite_intent: RetrievalIntent
     top_k: StrictInt = Field(default=5, ge=1, le=20)
     max_queries: StrictInt = Field(default=2, ge=1, le=4)
     max_hops: StrictInt = Field(default=1, ge=1, le=2)
     max_reads: StrictInt = Field(default=2, ge=1, le=8)
-    rationale: str = Field(min_length=1)
+    rationale: StrictStr = Field(min_length=1)
 
     @field_validator("question", "rationale")
     @classmethod
@@ -97,6 +117,19 @@ class RetrievalCase(BaseModel):
         if value == ("synthetic", "official"):
             raise ValueError("mixed expected route must use official then synthetic order")
         return value
+
+    @field_validator("judgments")
+    @classmethod
+    def freeze_judgments(
+        cls, value: Mapping[str, RetrievalJudgment]
+    ) -> Mapping[str, RetrievalJudgment]:
+        return _freeze_mapping(value)
+
+    @field_serializer("judgments")
+    def serialize_judgments(
+        self, value: Mapping[str, RetrievalJudgment]
+    ) -> dict[str, RetrievalJudgment]:
+        return dict(value)
 
     @field_validator(
         "required_document_ids", "prohibited_document_ids", "required_facts"
@@ -160,7 +193,7 @@ class RetrievalEvalCorpus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["1.0"]
-    knowledge_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    knowledge_corpus_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     cases: tuple[RetrievalCase, ...]
 
     @model_validator(mode="after")
@@ -183,22 +216,37 @@ class RetrievalEvalCorpus(BaseModel):
 class RetrievalCaseResult(BaseModel):
     """Persisted observable result for one case/configuration pair."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
 
-    case_id: str
+    case_id: StrictStr
     family: RetrievalFamily
-    ranked_document_ids: tuple[str, ...] = ()
+    ranked_document_ids: tuple[StrictStr, ...] = ()
     route_actual: tuple[RetrievalRoute, ...] = ()
-    cited_document_ids: tuple[str, ...] = ()
-    cited_facts: tuple[str, ...] = ()
-    answered: bool = False
-    rewrite_used: bool = False
+    cited_document_ids: tuple[StrictStr, ...] = ()
+    cited_facts: tuple[StrictStr, ...] = ()
+    answered: StrictBool = False
+    rewrite_used: StrictBool = False
     query_count: StrictInt = Field(default=0, ge=0)
     hop_count: StrictInt = Field(default=0, ge=0)
     read_count: StrictInt = Field(default=0, ge=0)
     duration_ms: StrictInt = Field(default=0, ge=0)
-    error_code: str | None = None
-    metric_contributions: dict[str, float | int | bool] = Field(default_factory=dict)
+    error_code: StrictStr | None = None
+    metric_contributions: Mapping[
+        StrictStr, StrictFloat | StrictInt | StrictBool
+    ] = Field(default_factory=dict)
+
+    @field_validator("metric_contributions")
+    @classmethod
+    def freeze_metric_contributions(
+        cls, value: Mapping[str, float | int | bool]
+    ) -> Mapping[str, float | int | bool]:
+        return _freeze_mapping(value)
+
+    @field_serializer("metric_contributions")
+    def serialize_metric_contributions(
+        self, value: Mapping[str, float | int | bool]
+    ) -> dict[str, float | int | bool]:
+        return dict(value)
 
 
 class RetrievalConfigurationMetrics(BaseModel):
@@ -207,22 +255,22 @@ class RetrievalConfigurationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     case_count: StrictInt = Field(ge=0)
-    recall_at_1: float = Field(ge=0, le=1)
-    recall_at_3: float = Field(ge=0, le=1)
-    recall_at_5: float = Field(ge=0, le=1)
-    precision_at_5: float = Field(ge=0, le=1)
-    mean_reciprocal_rank: float = Field(ge=0, le=1)
-    ndcg_at_5: float = Field(ge=0, le=1)
-    citation_precision: float = Field(ge=0, le=1)
-    required_fact_coverage: float = Field(ge=0, le=1)
-    route_accuracy: float = Field(ge=0, le=1)
-    abstention_accuracy: float = Field(ge=0, le=1)
-    provenance_label_accuracy: float = Field(ge=0, le=1)
-    budget_compliance: float = Field(ge=0, le=1)
+    recall_at_1: StrictFloat = Field(ge=0, le=1)
+    recall_at_3: StrictFloat = Field(ge=0, le=1)
+    recall_at_5: StrictFloat = Field(ge=0, le=1)
+    precision_at_5: StrictFloat = Field(ge=0, le=1)
+    mean_reciprocal_rank: StrictFloat = Field(ge=0, le=1)
+    ndcg_at_5: StrictFloat = Field(ge=0, le=1)
+    citation_precision: StrictFloat = Field(ge=0, le=1)
+    required_fact_coverage: StrictFloat = Field(ge=0, le=1)
+    route_accuracy: StrictFloat = Field(ge=0, le=1)
+    abstention_accuracy: StrictFloat = Field(ge=0, le=1)
+    provenance_label_accuracy: StrictFloat = Field(ge=0, le=1)
+    budget_compliance: StrictFloat = Field(ge=0, le=1)
     prohibited_hit_count: StrictInt = Field(ge=0)
     unsupported_answer_count: StrictInt = Field(ge=0)
-    latency_p50_ms: float = Field(ge=0)
-    latency_p95_ms: float = Field(ge=0)
+    latency_p50_ms: StrictFloat = Field(ge=0)
+    latency_p95_ms: StrictFloat = Field(ge=0)
     rewrite_win_count: StrictInt = Field(default=0, ge=0)
     rewrite_loss_count: StrictInt = Field(default=0, ge=0)
     rewrite_no_change_count: StrictInt = Field(default=0, ge=0)
@@ -234,34 +282,47 @@ class RetrievalConfigurationResult(BaseModel):
     name: RetrievalConfigurationName
     results: tuple[RetrievalCaseResult, ...]
     metrics: RetrievalConfigurationMetrics
-    family_metrics: dict[RetrievalFamily, RetrievalConfigurationMetrics]
+    family_metrics: Mapping[RetrievalFamily, RetrievalConfigurationMetrics]
+
+    @field_validator("family_metrics")
+    @classmethod
+    def freeze_family_metrics(
+        cls, value: Mapping[RetrievalFamily, RetrievalConfigurationMetrics]
+    ) -> Mapping[RetrievalFamily, RetrievalConfigurationMetrics]:
+        return _freeze_mapping(value)
+
+    @field_serializer("family_metrics")
+    def serialize_family_metrics(
+        self, value: Mapping[RetrievalFamily, RetrievalConfigurationMetrics]
+    ) -> dict[RetrievalFamily, RetrievalConfigurationMetrics]:
+        return dict(value)
 
 
 class RetrievalEvalGates(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    route_accuracy: float = Field(ge=0, le=1)
-    abstention_accuracy: float = Field(ge=0, le=1)
-    provenance_label_accuracy: float = Field(ge=0, le=1)
-    budget_compliance: float = Field(ge=0, le=1)
+    route_accuracy: StrictFloat = Field(ge=0, le=1)
+    abstention_accuracy: StrictFloat = Field(ge=0, le=1)
+    provenance_label_accuracy: StrictFloat = Field(ge=0, le=1)
+    budget_compliance: StrictFloat = Field(ge=0, le=1)
     prohibited_hit_count: StrictInt = Field(ge=0)
     unsupported_answer_count: StrictInt = Field(ge=0)
-    agentic_recall_at_5: float = Field(ge=0, le=1)
-    agentic_ndcg_at_5: float = Field(ge=0, le=1)
-    fusion_recall_delta: float
-    rerank_ndcg_delta: float
+    agentic_recall_at_5: StrictFloat = Field(ge=0, le=1)
+    agentic_ndcg_at_5: StrictFloat = Field(ge=0, le=1)
+    fusion_recall_delta: StrictFloat
+    rerank_ndcg_delta: StrictFloat
 
 
 class RetrievalEvalReport(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["1.0"]
-    retrieval_case_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    knowledge_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    retrieval_case_corpus_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    knowledge_corpus_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     execution_mode: Literal["offline_deterministic"] = "offline_deterministic"
     configurations: tuple[RetrievalConfigurationResult, ...]
     gates: RetrievalEvalGates
-    gate_passed: bool
+    gate_passed: StrictBool
 
 
 def load_retrieval_cases(path: Path) -> RetrievalEvalCorpus:

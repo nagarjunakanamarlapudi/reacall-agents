@@ -86,6 +86,9 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
     lots = _rows_by_id(dataset, "lots", "lot_id")
     shipments = _rows_by_id(dataset, "supplier_shipments", "shipment_id")
     facilities = _rows_by_id(dataset, "facilities", "facility_id")
+    acknowledgements = _rows_by_id(
+        dataset, "facility_acknowledgements", "facility_id"
+    )
     events_by_lot: dict[str, list[dict[str, Any]]] = defaultdict(list)
     inventory_by_lot: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in dataset["events"]:
@@ -94,6 +97,15 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
         inventory_by_lot[str(row["lot_id"])].append(row)
 
     cases: list[RetrievalCase] = []
+
+    def acknowledgement_fact(facility_id: str, *, expected: bool) -> str:
+        actual = acknowledgements[facility_id]["acknowledged"]
+        if type(actual) is not bool or actual is not expected:
+            raise ValueError(
+                f"audited acknowledgement changed for {facility_id}: "
+                f"expected {expected!r}, found {actual!r}"
+            )
+        return f"synthetic_acknowledged={str(actual).lower()}"
 
     def add(
         *,
@@ -376,7 +388,10 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
             "Use official effectiveness guidance and synthetic acknowledgement evidence to say "
             "whether STORE-01 recorded receipt of the notice.",
             ("FDA-RECALL-EFFECTIVENESS", _citation("facility_acknowledgements", "STORE-01")),
-            ("official_check=consignee received communication", "synthetic_acknowledged=true"),
+            (
+                "official_check=consignee received communication",
+                acknowledgement_fact("STORE-01", expected=True),
+            ),
         ),
         (
             "Relate official recall communication guidance to the synthetic facility type for "
@@ -405,7 +420,10 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
             "Did the downstream recipient acted on the notice for STORE-02, and what official "
             "effectiveness check makes that evidence relevant?",
             ("FDA-RECALL-EFFECTIVENESS", _citation("facility_acknowledgements", "STORE-02")),
-            ("official_check=followed instructions", "synthetic_acknowledged=true"),
+            (
+                "official_check=followed instructions",
+                acknowledgement_fact("STORE-02", expected=True),
+            ),
         ),
         (
             "Show the batch handoff movement for LOT-AMBIG-175 and the official supply-chain "
@@ -423,7 +441,10 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
             "Was recipient STORE-08 shown as acted on the notice, and what does official recall "
             "effectiveness guidance test?",
             ("FDA-RECALL-EFFECTIVENESS", _citation("facility_acknowledgements", "STORE-08")),
-            ("synthetic_acknowledged=true", "official_check=received communication"),
+            (
+                acknowledgement_fact("STORE-08", expected=False),
+                "official_check=received communication",
+            ),
         ),
         (
             "Decode the movement handoff for LOT-BG-000-01 and connect it to official shipping "
@@ -447,7 +468,10 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
             "Did downstream recipient DC-NORTH acknowledge, and who does official guidance say "
             "formally decides recall termination?",
             ("FDA-RECALL-EFFECTIVENESS", _citation("facility_acknowledgements", "DC-NORTH")),
-            ("synthetic_acknowledged=true", "termination_authority=FDA"),
+            (
+                acknowledgement_fact("DC-NORTH", expected=True),
+                "termination_authority=FDA",
+            ),
         ),
     )
     for question, required, facts in difficult:
