@@ -83,6 +83,7 @@ def test_ranking_metrics_match_hand_calculated_example() -> None:
     ideal_dcg = 7 + 3 / math.log2(3) + 1 / math.log2(4)
     assert ndcg_at_k(relevance, ranked, 3) == pytest.approx(expected_dcg / ideal_dcg)
 
+
 def test_canonical_digest_is_key_order_independent() -> None:
     assert canonical_sha256({"b": 2, "a": 1}) == canonical_sha256({"a": 1, "b": 2})
 ```
@@ -99,6 +100,7 @@ def recall_at_k(relevance: Mapping[str, int], ranked_ids: Sequence[str], k: int)
     _validate_ranking(relevance, ranked_ids, k)
     relevant = {key for key, grade in relevance.items() if grade > 0}
     return 0.0 if not relevant else len(relevant & set(ranked_ids[:k])) / len(relevant)
+
 
 def reciprocal_rank(relevance: Mapping[str, int], ranked_ids: Sequence[str]) -> float:
     _validate_ranking(relevance, ranked_ids, max(1, len(ranked_ids)))
@@ -148,6 +150,7 @@ EXPECTED_COUNTS = {
     "difficult_rewrite": 8,
     "abstention_adversarial": 8,
 }
+
 
 def test_retrieval_corpus_has_exact_balance_and_known_documents() -> None:
     corpus = load_retrieval_cases(DATA_DIR / "evals" / "retrieval_cases.json")
@@ -222,8 +225,12 @@ async def test_retrieval_benchmark_runs_every_case_in_every_configuration(tmp_pa
         output_path=tmp_path / "report.json",
     )
     assert [item.name for item in report.configurations] == [
-        "sparse_bm25", "dense_lsa", "naive_hybrid",
-        "rrf_fusion", "rrf_plus_rerank", "agentic_rag",
+        "sparse_bm25",
+        "dense_lsa",
+        "naive_hybrid",
+        "rrf_fusion",
+        "rrf_plus_rerank",
+        "agentic_rag",
     ]
     assert all(len(item.results) == 96 for item in report.configurations)
     assert report.gates.route_accuracy == 1.0
@@ -304,6 +311,7 @@ def test_orchestration_corpus_has_24_bounded_cases() -> None:
     assert all(case.max_tool_calls <= 16 for case in corpus.cases)
     assert all("operations" not in case.required_tool_families for case in corpus.cases)
 
+
 @pytest.mark.asyncio
 async def test_offline_profiles_have_no_operations_capability(tmp_path: Path) -> None:
     report = await run_orchestration_benchmark(CASES, tmp_path / "report.json")
@@ -331,7 +339,9 @@ async def run_orchestration_benchmark(
         await _run_profile(corpus, BoundedSingleAgentProfile()),
         await _run_profile(corpus, FixedSpecialistsProfile()),
     ]
-    live_status = await _run_live_profile(corpus, live_model) if live_model else LiveProfileStatus.not_run()
+    live_status = (
+        await _run_live_profile(corpus, live_model) if live_model else LiveProfileStatus.not_run()
+    )
     return _validate_write_report(corpus, profiles, live_status, output_path)
 ```
 
@@ -376,8 +386,11 @@ def test_scorecard_requires_all_three_passing_reports(tmp_path: Path) -> None:
     scorecard = build_scorecard(SAFETY, RETRIEVAL, ORCHESTRATION, tmp_path / "scorecard.json")
     assert scorecard.offline_gate_passed is True
     assert [suite.name for suite in scorecard.suite_summaries] == [
-        "safety", "retrieval", "orchestration"
+        "safety",
+        "retrieval",
+        "orchestration",
     ]
+
 
 def test_scorecard_rejects_changed_report_after_build(tmp_path: Path) -> None:
     output = tmp_path / "scorecard.json"
@@ -395,11 +408,9 @@ Expected: collection failure.
 - [ ] **Step 3: Implement strict aggregate validation and canonical write**
 
 ```python
-offline_gate_passed = all(
-    summary.gate_passed for summary in suite_summaries
-) and set(summary.name for summary in suite_summaries) == {
-    "safety", "retrieval", "orchestration"
-}
+offline_gate_passed = all(summary.gate_passed for summary in suite_summaries) and set(
+    summary.name for summary in suite_summaries
+) == {"safety", "retrieval", "orchestration"}
 ```
 
 Reject missing results, inconsistent counts, non-finite metrics, digest mismatch, a false suite marked true in the aggregate, and any attempt to include optional live status in the offline gate.
@@ -441,6 +452,7 @@ def test_make_eval_expands_all_offline_suites() -> None:
     assert "retrieval_benchmark" in result.stdout
     assert "orchestration_benchmark" in result.stdout
     assert "eval-scorecard" in result.stdout
+
 
 def test_eval_scorecard_summary_fails_on_stale_artifact(capsys, tmp_path: Path) -> None:
     paths = copy_verified_artifacts(tmp_path)
@@ -506,6 +518,7 @@ def test_verified_scorecard_projects_three_eval_sections(repository_root: Path) 
     assert projection.safety.scenario_count == 21
     assert projection.retrieval.case_count == 96
     assert projection.orchestration.case_count == 24
+
 
 @pytest.mark.parametrize("mutation", ["missing", "stale", "forged_gate", "nan_metric"])
 def test_untrusted_eval_artifacts_never_project_pass(mutation: str, repository_root: Path) -> None:
@@ -619,7 +632,12 @@ git commit -m "docs: teach evaluation ablations and judging limits"
 ```python
 def test_evaluation_architecture_separates_authority_and_optional_judges() -> None:
     source = (IMAGES / "10_evaluation_architecture.mmd").read_text()
-    for term in ("96 retrieval cases", "24 orchestration cases", "R01–R21", "digest-bound scorecard"):
+    for term in (
+        "96 retrieval cases",
+        "24 orchestration cases",
+        "R01–R21",
+        "digest-bound scorecard",
+    ):
         assert term in source
     assert "model judge --> Operations" not in source
 ```
@@ -678,9 +696,7 @@ git commit -m "docs: diagram the evaluation architecture"
 def test_demo_includes_measured_eval_story_under_five_minutes() -> None:
     contract = json.loads((DOCS / "demo_contract.json").read_text())
     assert contract["duration_seconds"] <= 295
-    assert contract["evaluation_reveal"]["suites"] == [
-        "safety", "retrieval", "orchestration"
-    ]
+    assert contract["evaluation_reveal"]["suites"] == ["safety", "retrieval", "orchestration"]
     assert contract["evaluation_reveal"]["no_unsupported_uplift_claims"] is True
 ```
 
