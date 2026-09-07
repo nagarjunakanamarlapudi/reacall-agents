@@ -44,24 +44,74 @@ def _sources(notebook: dict) -> str:
     return "\n".join(cell.get("source", "") for cell in notebook.cells)
 
 
+def _execute_code_cells(notebook: dict) -> dict:
+    namespace: dict = {"__name__": "notebook_contract"}
+    for cell in notebook.cells:
+        if cell.cell_type == "code":
+            exec(cell.source, namespace)
+    return namespace
+
+
 def test_exactly_seven_numbered_notebooks_exist() -> None:
     actual = sorted(path.name for path in NOTEBOOKS.glob("*.ipynb"))
     assert actual == EXPECTED
 
 
-def test_evaluation_notebook_is_self_contained_and_emits_ablation_markers() -> None:
+def test_evaluation_notebook_derives_ranking_trajectory_and_ablation_results() -> None:
     notebook = nbformat.read(NOTEBOOKS / "07_evaluation_ablation_and_orchestration.ipynb", 4)
     source = _sources(notebook)
     assert "import recallops" not in source
-    assert "RRF uplift" in source
-    assert "single-agent" in source
-    assert "fixed-specialists" in source
-    assert "96 retrieval" in source
-    assert "24 orchestration" in source
-    assert "zero rewrite uplift" in source
-    assert "in-sample" in source
-    assert "tamper rejection" in source
-    assert "deterministic safety" in source
+    assert "os.environ" not in source and "getenv" not in source
+    namespace = _execute_code_cells(notebook)
+    rankings = {
+        tuple(namespace["bm25_ranking"]),
+        tuple(namespace["dense_ranking"]),
+        tuple(namespace["rrf_ranking"]),
+        tuple(namespace["reranked_ranking"]),
+    }
+    assert len(rankings) == 4
+    assert namespace["bm25_scores"]["A"] > namespace["bm25_scores"]["B"]
+    assert namespace["agentic_summary"] == {
+        "queries": 2,
+        "hops": 2,
+        "reads": 2,
+        "stop": "evidence_gap_after_rewrite",
+    }
+    assert namespace["comparison_deltas"]["fusion_recall_at_5"] > 0
+    assert namespace["comparison_deltas"]["rerank_ndcg_at_5"] > 0
+    assert namespace["comparison_deltas"]["agentic_minus_rerank_recall_at_5"] < 0
+    assert namespace["comparison_deltas"]["agentic_minus_rerank_ndcg_at_5"] < 0
+    assert namespace["comparison_deltas"]["rewrite_uplift"] == 0
+    assert namespace["trajectory_metrics"]["single-agent"]["task_success_rate"] == 1.0
+    assert namespace["trajectory_metrics"]["fixed-specialists"]["delegation_accuracy"] == 1.0
+    assert namespace["trajectory_metrics"]["fixed-specialists"]["specialist_count"] == 4
+    assert namespace["trajectory_metrics"]["fixed-specialists"]["order_accuracy"] == 1.0
+    assert namespace["trajectory_metrics"]["fixed-specialists"]["duplicate_tool_call_ratio"] == 0.0
+    assert namespace["optional_live_status"] == {
+        "status": "not_run_missing_credentials",
+        "excluded_from_offline_gates": True,
+    }
+    assert namespace["tamper_rejected"]
+
+
+def test_evaluation_notebook_executes_from_a_clean_temporary_cwd() -> None:
+    notebook = nbformat.read(NOTEBOOKS / "07_evaluation_ablation_and_orchestration.ipynb", 4)
+    with tempfile.TemporaryDirectory() as temporary:
+        NotebookClient(
+            notebook,
+            timeout=120,
+            kernel_name=os.environ.get("RECALLOPS_NOTEBOOK_KERNEL", "python3"),
+            resources={"metadata": {"path": temporary}},
+        ).execute()
+    outputs = "\n".join(
+        output.get("text", "")
+        for cell in notebook.cells
+        if cell.cell_type == "code"
+        for output in cell.get("outputs", [])
+    )
+    assert "BM25-like rankings" in outputs
+    assert "agentic trace" in outputs
+    assert "digest-bound" in outputs
 
 
 def test_evaluation_rubric_has_anchored_human_scores_and_authority_limits() -> None:
@@ -74,11 +124,18 @@ def test_evaluation_rubric_has_anchored_human_scores_and_authority_limits() -> N
         "Clarity",
     ):
         assert dimension in rubric
-    for score in ("Score 1", "Score 2", "Score 3", "Score 4", "Score 5"):
-        assert score in rubric
+        section = rubric.split(f"### {dimension}", 1)[1].split("###", 1)[0]
+        assert all(f"**Score {score}:**" in section for score in range(1, 6))
     assert "deterministic-only" in rubric
     assert "must not approve" in rubric
     assert "must not close" in rubric
+    assert "| Dimension | Evidence IDs | Score (1–5) | Rationale |" in rubric
+    assert "Rubric and prompt digest" in rubric
+    assert "anonymous randomized A/B" in rubric
+    assert "multiple independent, repeated judgments" in rubric
+    assert "score distributions" in rubric
+    assert "variance" in rubric
+    assert "Adjudication" in rubric
 
 
 def test_builder_is_byte_deterministic_in_separate_directories() -> None:

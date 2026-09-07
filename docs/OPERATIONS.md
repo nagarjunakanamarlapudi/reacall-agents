@@ -107,7 +107,7 @@ uv run pytest -q tests/notebooks/test_notebooks.py
 ./scripts/render_diagrams.sh --verify
 ```
 
-`build_notebooks.py` recreates six executed self-contained notebooks. Each notebook contains embedded teaching data, does not import the product package, and requires no network/key.
+`build_notebooks.py` recreates seven unexecuted self-contained notebooks. Each notebook contains embedded teaching data, does not import the product package, and requires no network/key.
 
 ## Run the evaluators
 

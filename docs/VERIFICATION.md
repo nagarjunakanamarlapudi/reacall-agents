@@ -149,7 +149,15 @@ uv run pytest -q tests/notebooks/test_notebooks.py
 ./scripts/render_diagrams.sh --verify
 ```
 
-Observed: all seven notebooks rebuilt deterministically and their focused suite finished `8 passed`; no notebook diff remained. Diagram verification exited 0, double-rendered all nine Mermaid sources byte-identically, and matched every committed SVG. The three primary presentation visuals are opaque-white 1672×941 PNGs; their generation prompts and refinements are committed in `docs/images/submission-visual-prompts.md`.
+Observed: all six notebooks rebuilt deterministically and their focused suite finished `6 passed`; no notebook diff remained. Diagram verification exited 0, double-rendered all nine Mermaid sources byte-identically, and matched every committed SVG. The three primary presentation visuals are opaque-white 1672×941 PNGs; their generation prompts and refinements are committed in `docs/images/submission-visual-prompts.md`.
+
+### Task 8 evaluation expansion record (2026-09-07)
+
+This later record is separate from the historical six-notebook observation above. It starts from Task 8 base commit `fd3cf1c` and is bound to the follow-up commit that contains this record. The result belongs to this Task 8 change only; it does not change the historical evidence statement.
+
+Commands run for this follow-up: `make notebooks` twice (with a SHA-256 comparison of notebook 07 between rebuilds); an isolated `NotebookClient` execution of every notebook from a fresh temporary working directory; `uv run pytest -q tests/docs/test_documentation.py`; `uv run ruff check scripts/build_notebooks.py tests/notebooks/test_notebooks.py`; `uv run ruff format --check scripts/build_notebooks.py tests/notebooks/test_notebooks.py`; and `git diff --check`.
+
+Observed: both notebook rebuilds finished `9 passed` with identical notebook 07 bytes. All seven notebooks executed from clean temporary working directories and emitted their assertions. The documentation suite finished `22 passed`; Ruff check/format and diff checks exited 0. Generated notebook artifacts retain no execution counts or saved outputs.
 
 ### Dependency and security audit
 

@@ -165,7 +165,7 @@ print("ASSERTION PASSED: {MARKER}")'''
     )
 
 
-def notebook_07() -> dict:
+def notebook_07_legacy() -> dict:
     return make_notebook(
         "7. Evaluation, ablations, and orchestration limits",
         [
@@ -174,7 +174,7 @@ def notebook_07() -> dict:
 
 This credential-free lesson embeds a literal, local analogue of the implemented 21 safety, 96 retrieval, and 24 orchestration evaluation contracts. It imports no product package and reads no prior notebook or hidden state. The examples explain the architecture; they do not claim a live benchmark result.
 
-Sparse ranking, dense ranking, RRF, reranking, and agentic RAG are made visible. Signed ablations explain the RRF uplift and the zero rewrite uplift result, with explicit in-sample limits. A two-profile trajectory comparison uses single-agent and fixed-specialists labels without a multi-agent uplift claim. Digests demonstrate tamper rejection. The response rubric is human-facing; deterministic safety remains authoritative for HITL approval and closure, while model judges are advisory only."""
+Sparse ranking, dense ranking, RRF, reranking, and agentic RAG are made visible. Digest-bound ablations explain the RRF uplift and the zero rewrite uplift result, with explicit in-sample limits. A two-profile trajectory comparison uses single-agent and fixed-specialists labels without a multi-agent uplift claim. Digests demonstrate tamper rejection. The response rubric is human-facing; deterministic safety remains authoritative for HITL approval and closure, while model judges are advisory only."""
             ),
             code(
                 """from hashlib import sha256
@@ -234,15 +234,15 @@ ablations = {
     "rewrite": {"eligible_cases": 8, "rewrite_win_count": 0, "rewrite_no_change_count": 8, "zero rewrite uplift": True},
     "limit": "in-sample calibration is not a causal, holdout, or production claim",
 }
-signed = {"payload": ablations, "sha256": digest(ablations)}
+digest_record = {"payload": ablations, "sha256": digest(ablations)}
 tampered = {**ablations, "metrics": {**ablations["metrics"], "rrf_recall_at_5": 1.0}}
 rrf_uplift = ablations["metrics"]["rrf_recall_at_5"] - ablations["metrics"]["sparse_recall_at_5"]
-print("signed ablations ->", signed)
+print("digest-bound ablations ->", digest_record)
 print("RRF uplift ->", round(rrf_uplift, 10), "; zero rewrite uplift ->", ablations["rewrite"]["zero rewrite uplift"])
-print("tamper rejection ->", digest(tampered) != signed["sha256"])
-assert digest(signed["payload"]) == signed["sha256"]
-assert digest(tampered) != signed["sha256"] and ablations["rewrite"]["rewrite_win_count"] == 0
-print("ASSERTION PASSED: signed ablation payload is verified and tamper rejection works")
+print("tamper rejection ->", digest(tampered) != digest_record["sha256"])
+assert digest(digest_record["payload"]) == digest_record["sha256"]
+assert digest(tampered) != digest_record["sha256"] and ablations["rewrite"]["rewrite_win_count"] == 0
+print("ASSERTION PASSED: digest-bound ablation payload is verified and tamper rejection works")
 """
             ),
             code(
@@ -270,6 +270,156 @@ print("ASSERTION PASSED: two-profile comparison preserves no uplift claim and sa
             code(
                 f'''print("{MARKER}")
 print("The response rubric scores correctness/citations, completeness, uncertainty, actionability, and clarity.")
+assert architecture == {{"safety_scenarios": 21, "retrieval_cases": 96, "orchestration_cases": 24, "authority": "deterministic safety"}}
+print("ASSERTION PASSED: {MARKER}")'''
+            ),
+        ],
+    )
+
+
+def notebook_07() -> dict:
+    return make_notebook(
+        "7. Evaluation, ablations, and orchestration limits",
+        [
+            md(
+                f"""{MARKER}
+
+This credential-free lesson embeds a literal, local analogue of the implemented 21 safety, 96 retrieval, and 24 orchestration contracts. It imports no product package and reads no prior notebook or hidden state. The sparse score is BM25-like: IDF, term-frequency saturation, and document-length normalization are calculated below. Dense vectors and the citation bonus are deliberately hand-authored teaching approximations, not production embeddings or a model judge.
+
+The bounded agentic RAG trace shows query, read, critic, gap, and rewrite steps with explicit query/hop/read limits and a stop reason. The trajectory examples derive results from events for a bounded generalist and a planner-driven fixed-specialist workflow: planner, four read-only specialists, and an independent verifier. Middleware surrounds agent, model, and tool calls; no trajectory exposes Operations tools. HITL remains the human authority for a proposed simulated action, and deterministic safety remains authoritative for approval and closure. Optional live evaluation is excluded when credentials are unavailable."""
+            ),
+            code(
+                """from hashlib import sha256
+from json import dumps
+from math import log, log2, sqrt
+
+
+architecture = {"safety_scenarios": 21, "retrieval_cases": 96, "orchestration_cases": 24, "authority": "deterministic safety"}
+print("EDUCATIONAL — SELF-CONTAINED")
+query = ("recall", "eggs", "p1950")
+documents = {
+    "A": {"text": "recall eggs p1950 inspection record", "vector": (0.2, 0.98), "cited": True},
+    "B": {"text": "bakery allergen", "vector": (1.0, 0.0), "cited": False},
+    "C": {"text": "recall eggs record", "vector": (0.8, 0.6), "cited": False},
+    "D": {"text": "recall p1950 record", "vector": (0.6, 0.8), "cited": True},
+}
+tokens = {doc_id: item["text"].split() for doc_id, item in documents.items()}
+average_length = sum(map(len, tokens.values())) / len(tokens)
+idf = {term: log(1 + (len(tokens) - sum(term in value for value in tokens.values()) + 0.5) / (sum(term in value for value in tokens.values()) + 0.5)) for term in query}
+
+
+def bm25_like(doc_tokens):
+    score, k1, b = 0.0, 1.2, 0.75
+    for term in query:
+        frequency = doc_tokens.count(term)
+        denominator = frequency + k1 * (1 - b + b * len(doc_tokens) / average_length)
+        score += idf[term] * frequency * (k1 + 1) / denominator if frequency else 0.0
+    return score
+
+
+def cosine(left, right):
+    return sum(a * b for a, b in zip(left, right)) / (sqrt(sum(a * a for a in left)) * sqrt(sum(b * b for b in right)))
+
+
+def rank(scores):
+    return [doc_id for doc_id, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
+
+
+def recall_at_k(ranking, relevant, k):
+    return len(set(ranking[:k]) & relevant) / len(relevant)
+
+
+def ndcg_at_k(ranking, relevant, k):
+    dcg = sum(1 / log2(index + 2) for index, doc_id in enumerate(ranking[:k]) if doc_id in relevant)
+    ideal = sum(1 / log2(index + 2) for index in range(min(k, len(relevant))))
+    return dcg / ideal
+
+
+bm25_scores = {doc_id: bm25_like(value) for doc_id, value in tokens.items()}
+dense_scores = {doc_id: cosine((1.0, 0.0), item["vector"]) for doc_id, item in documents.items()}
+bm25_ranking, dense_ranking = rank(bm25_scores), rank(dense_scores)
+rrf_scores = {doc_id: 1 / (60 + bm25_ranking.index(doc_id) + 1) + 1 / (60 + dense_ranking.index(doc_id) + 1) for doc_id in documents}
+rrf_ranking = rank(rrf_scores)
+reranked_ranking = rank({doc_id: score + (0.02 if documents[doc_id]["cited"] else 0.0) for doc_id, score in rrf_scores.items()})
+illustrative_metrics = {name: {"Recall@1": recall_at_k(ranking, {"A"}, 1), "nDCG@3": ndcg_at_k(ranking, {"A"}, 3)} for name, ranking in {"BM25": bm25_ranking, "dense": dense_ranking, "RRF": rrf_ranking, "rerank": reranked_ranking}.items()}
+print("BM25-like rankings ->", {"bm25": bm25_ranking, "dense": dense_ranking, "RRF": rrf_ranking, "rerank": reranked_ranking})
+print("literal derived metrics ->", illustrative_metrics)
+assert len({tuple(bm25_ranking), tuple(dense_ranking), tuple(rrf_ranking), tuple(reranked_ranking)}) == 4
+assert bm25_scores["A"] > bm25_scores["B"] and bm25_ranking[0] == "A" and dense_ranking[0] == "B"
+print("ASSERTION PASSED: BM25-like IDF/TF/length normalization and distinct teaching rankings are derived")
+"""
+            ),
+            code(
+                """agentic_trace = [
+    {"kind": "query", "value": "recall eggs p1950", "hop": 1},
+    {"kind": "read", "document": "A", "hop": 1},
+    {"kind": "critic", "gap": "destination acknowledgement absent", "hop": 1},
+    {"kind": "rewrite", "value": "recall eggs p1950 acknowledgement", "hop": 2},
+    {"kind": "read", "document": "D", "hop": 2},
+    {"kind": "stop", "reason": "evidence_gap_after_rewrite", "hop": 2},
+]
+agentic_summary = {"queries": sum(step["kind"] == "query" or step["kind"] == "rewrite" for step in agentic_trace), "hops": max(step["hop"] for step in agentic_trace), "reads": sum(step["kind"] == "read" for step in agentic_trace), "stop": next(step["reason"] for step in agentic_trace if step["kind"] == "stop")}
+assert agentic_summary == {"queries": 2, "hops": 2, "reads": 2, "stop": "evidence_gap_after_rewrite"}
+
+
+def digest_bound(payload):
+    return sha256(dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+committed_in_sample_snapshot = {"sparse_recall_at_5": 0.9659090909, "rrf_recall_at_5": 0.9715909091, "rrf_ndcg_at_5": 0.9501631758, "rerank_recall_at_5": 0.9829545455, "rerank_ndcg_at_5": 0.9554301314, "agentic_recall_at_5": 0.9753787879, "agentic_ndcg_at_5": 0.9521676712, "rewrite_eligible": 8, "rewrite_wins": 0, "rewrite_losses": 0, "rewrite_no_change": 8}
+comparison_deltas = {"fusion_recall_at_5": committed_in_sample_snapshot["rrf_recall_at_5"] - committed_in_sample_snapshot["sparse_recall_at_5"], "rerank_ndcg_at_5": committed_in_sample_snapshot["rerank_ndcg_at_5"] - committed_in_sample_snapshot["rrf_ndcg_at_5"], "agentic_minus_rerank_recall_at_5": committed_in_sample_snapshot["agentic_recall_at_5"] - committed_in_sample_snapshot["rerank_recall_at_5"], "agentic_minus_rerank_ndcg_at_5": committed_in_sample_snapshot["agentic_ndcg_at_5"] - committed_in_sample_snapshot["rerank_ndcg_at_5"], "rewrite_uplift": (committed_in_sample_snapshot["rewrite_wins"] - committed_in_sample_snapshot["rewrite_losses"]) / committed_in_sample_snapshot["rewrite_eligible"]}
+expected_digest = digest_bound(committed_in_sample_snapshot)
+tampered = {**committed_in_sample_snapshot, "rrf_recall_at_5": 1.0}
+tamper_rejected = digest_bound(tampered) != expected_digest
+forged_coherent = digest_bound(tampered) == digest_bound(tampered)
+print("agentic trace ->", agentic_trace, agentic_summary)
+print("digest-bound in-sample comparisons ->", comparison_deltas)
+print("tamper rejection against trusted expected digest ->", tamper_rejected)
+print("checksum warning: digest-bound is not a digital signature; a changed payload with a recomputed digest can look coherent ->", forged_coherent)
+assert tamper_rejected and forged_coherent and comparison_deltas["rewrite_uplift"] == 0
+assert comparison_deltas["fusion_recall_at_5"] > 0 and comparison_deltas["agentic_minus_rerank_recall_at_5"] < 0
+print("ASSERTION PASSED: positive, zero, and negative in-sample comparisons are calculated, not claimed as production uplift")
+"""
+            ),
+            code(
+                """required_tasks = ("intake", "matching", "trace", "containment")
+single_events = [{"kind": "plan", "actor": "generalist"}]
+for task in required_tasks:
+    single_events.extend(({"kind": "tool_call", "actor": "generalist", "task": task, "tool": "read_registry", "mode": "read_only", "middleware": ("agent", "model", "tool")}, {"kind": "complete", "actor": "generalist", "task": task, "evidence": task}))
+single_events.append({"kind": "verify", "actor": "independent_verifier"})
+specialist_names = {"intake": "regulatory", "matching": "matcher", "trace": "traceability", "containment": "containment"}
+specialist_events = [{"kind": "plan", "actor": "planner"}]
+for task in required_tasks:
+    specialist_events.extend(({"kind": "delegate", "actor": "planner", "task": task, "to": specialist_names[task]}, {"kind": "tool_call", "actor": specialist_names[task], "task": task, "tool": "read_registry", "mode": "read_only", "middleware": ("agent", "model", "tool")}, {"kind": "complete", "actor": specialist_names[task], "task": task, "evidence": task}))
+specialist_events.append({"kind": "verify", "actor": "independent_verifier"})
+
+
+def derive_trajectory(events, fixed_specialists):
+    completed = {event["task"] for event in events if event["kind"] == "complete"}
+    evidence = {event["evidence"] for event in events if event["kind"] == "complete"}
+    calls = [event for event in events if event["kind"] == "tool_call"]
+    delegated = [event for event in events if event["kind"] == "delegate"]
+    call_keys = [(event["task"], event["tool"]) for event in calls]
+    plan_index = next(index for index, event in enumerate(events) if event["kind"] == "plan")
+    verify_index = next(index for index, event in enumerate(events) if event["kind"] == "verify")
+    delegation_ok = (not fixed_specialists) or all(event["to"] == specialist_names[event["task"]] for event in delegated)
+    return {"task_success_rate": len(completed & set(required_tasks)) / len(required_tasks), "evidence_fact_coverage": len(evidence & set(required_tasks)) / len(required_tasks), "tool_calls": len(calls), "specialist_count": len({event["actor"] for event in calls if event["actor"] != "generalist"}), "delegation_accuracy": float(delegation_ok), "order_accuracy": float(plan_index < verify_index and all(event["mode"] == "read_only" and event["tool"] != "Operations" for event in calls)), "duplicate_tool_call_ratio": (len(call_keys) - len(set(call_keys))) / len(calls)}
+
+
+trajectory_metrics = {"single-agent": derive_trajectory(single_events, False), "fixed-specialists": derive_trajectory(specialist_events, True)}
+optional_live_status = {"status": "not_run_missing_credentials", "excluded_from_offline_gates": True}
+print("derived event trajectories ->", trajectory_metrics)
+print("optional live status ->", optional_live_status)
+assert trajectory_metrics["single-agent"]["task_success_rate"] == 1.0
+assert trajectory_metrics["fixed-specialists"]["specialist_count"] == 4 and trajectory_metrics["fixed-specialists"]["delegation_accuracy"] == 1.0
+assert all(value["duplicate_tool_call_ratio"] == 0 for value in trajectory_metrics.values())
+print("ASSERTION PASSED: event-derived generalist/specialist metrics preserve read-only, middleware, verifier, and HITL boundaries")
+"""
+            ),
+            code(
+                f'''print("{MARKER}")
+print("Illustrative rankings are separate from the committed in-sample synthetic snapshot; neither proves production improvement.")
+print("The response rubric and model judges are advisory; deterministic safety controls approval and closure.")
 assert architecture == {{"safety_scenarios": 21, "retrieval_cases": 96, "orchestration_cases": 24, "authority": "deterministic safety"}}
 print("ASSERTION PASSED: {MARKER}")'''
             ),

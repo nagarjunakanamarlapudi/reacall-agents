@@ -53,3 +53,23 @@ Model judges are optional and advisory. They may help prioritize review of wordi
 ## Recommended review record
 
 Record the response identifier, cited evidence IDs, five dimension scores, reviewer rationale, any model-judge output (if used), and the deterministic safety result separately. A high presentation score never changes a deterministic safety result.
+
+## Fillable review worksheet
+
+| Run / response ID | Reviewer | Rubric and prompt digest | Deterministic safety result |
+|---|---|---|---|
+|  |  |  |  |
+
+| Dimension | Evidence IDs | Score (1–5) | Rationale |
+|---|---|---:|---|
+| Correctness and citation alignment |  |  |  |
+| Completeness |  |  |  |
+| Uncertainty and abstention |  |  |  |
+| Actionability |  |  |  |
+| Clarity |  |  |  |
+
+## Advisory judge protocol
+
+If an optional model judge is used, freeze the rubric text and judge prompt and record a **Rubric and prompt digest** with the run. Present candidate responses under anonymous randomized A/B labels. Collect multiple independent, repeated judgments before comparing variants; retain the raw per-dimension scores, score distributions, reviewer notes, and within- and between-reviewer variance.
+
+**Adjudication:** a human reviewer resolves material disagreement by re-reading cited evidence, documenting the reason for the final score, and preserving both the pre-adjudication scores and the final rationale. The result is advisory-only interpretation for presentation quality. It never alters deterministic-only approval, write, receipt-integrity, reconciliation, or closure outcomes.
