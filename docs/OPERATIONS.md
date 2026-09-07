@@ -46,7 +46,7 @@ make ui PORT=8765 RUNTIME_DIR=.recording-runtime
 make demo RECALL_NUMBER=H-1230-2026
 ```
 
-`make security` is the production gate: Python dependency audit, Bandit medium/high-severity scan, and production-only npm audit. `make security-full` additionally reports all low-severity Bandit findings and development-only npm advisories; it returns nonzero while recorded findings remain. `make verify` composes the complete submission gate. The underlying commands are retained below for auditability and direct troubleshooting.
+`make security` is the production gate: a fully hashed, production-only Python lock export audited by a pinned auditor, a pinned Bandit medium/high-severity scan, and production-only npm audit. `make security-full` additionally reports all low-severity Bandit findings and development-only npm advisories; it returns nonzero while recorded findings remain. `make verify` composes the complete submission gate. The underlying commands are retained below for auditability and direct troubleshooting.
 
 ## Install
 
@@ -182,13 +182,15 @@ uv pip check
 ## Security checks
 
 ```bash
-uvx --from pip-audit pip-audit
-uvx --from bandit bandit -q -r src
+make security
+uv export --locked --no-dev --no-emit-project --format requirements-txt --output-file /tmp/recallops-production-requirements.txt
+uvx --from 'pip-audit==2.10.1' pip-audit --requirement /tmp/recallops-production-requirements.txt --require-hashes --disable-pip
+uvx --from 'bandit==1.9.4' bandit -q -r src -ll
 npm audit --omit=dev
 npm audit
 ```
 
-Mermaid CLI is a development-only diagram renderer. Record npm’s production-dependency result separately from transitive development-tool findings; do not imply that a clean Python audit clears Node tooling.
+`make security` creates its requirement file with `mktemp` and removes that exact file on exit; the explicit `/tmp` path above is only a readable troubleshooting example. The export excludes development dependencies and the local project while retaining locked versions and hashes. `pip-audit` receives that exported file directly with pip resolution disabled, so the isolated `uvx` tool environment is never reported as if it were RecallOps. FastMCP is constrained to `>=3.2.0,<4`; the current lock resolves 3.4.7 and no longer contains vulnerable `diskcache`, so there is no advisory exception. Mermaid CLI is a development-only diagram renderer. Record npm’s production-dependency result separately from transitive development-tool findings; do not imply that a clean Python audit clears Node tooling.
 
 ## Failure and recovery runbook
 

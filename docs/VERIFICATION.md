@@ -159,18 +159,18 @@ Commands run for this follow-up: `make notebooks` twice (with a SHA-256 comparis
 
 Observed: both notebook rebuilds finished `9 passed` with identical notebook 07 bytes. All seven notebooks executed from clean temporary working directories and emitted their assertions. The documentation suite finished `22 passed`; Ruff check/format and diff checks exited 0. Generated notebook artifacts retain no execution counts or saved outputs.
 
-### Dependency and security audit
+### Historical dependency and security audit (superseded)
 
-Commands and observed outcomes:
+These were the commands and observed outcomes at that earlier checkpoint:
 
 ```text
-uvx --from pip-audit pip-audit       exit 0; no known vulnerabilities found
+uvx --from pip-audit pip-audit       exit 0; audited the isolated tool environment, not RecallOps
 uvx --from bandit bandit -q -r src  exit 1; 31 low, 0 medium, 0 high
 npm audit --omit=dev                 exit 0; 0 vulnerabilities
 npm audit                            exit 1; 5 high findings in development-only Mermaid/Puppeteer renderer dependencies
 ```
 
-Bandit’s 31 low findings are 28 `B101` evaluator/invariant assertions, two `B105` false positives on the string value `1.0`, and one `B311` deterministic synthetic-data pseudo-random generator. No security-sensitive randomness is claimed. The npm production tree is clean; the five development-tree findings trace to `extract-zip` through Puppeteer in pinned `@mermaid-js/mermaid-cli@11.12.0`. The suggested forced fix would move Mermaid CLI outside the locked renderer version, so the finding is recorded rather than hidden or force-upgraded before submission.
+The historical pip-audit statement is withdrawn as project-dependency evidence: invoking `pip-audit` without a project or requirements argument from `uvx` audited the auditor's isolated environment. The later remediation record below supersedes it with a hashed production export. Bandit’s 31 low findings were 28 `B101` evaluator/invariant assertions, two `B105` false positives on the string value `1.0`, and one `B311` deterministic synthetic-data pseudo-random generator. No security-sensitive randomness is claimed. The npm production tree was clean; the five development-tree findings traced to `extract-zip` through Puppeteer in pinned `@mermaid-js/mermaid-cli@11.12.0`. The suggested forced fix would move Mermaid CLI outside the locked renderer version, so the finding was recorded rather than hidden or force-upgraded before submission.
 
 ### Final static/repository gate
 
@@ -304,7 +304,7 @@ Commands and exact observations:
 | `make notebooks` | Exit 0; seven notebooks rebuilt and `10 passed`. |
 | `make diagrams` | Exit 0; ten diagrams passed stable double-render and committed-SVG parity. |
 | `make mcp-smoke` | Exit 0; `16 passed in 228.35s (0:03:48)` across direct and stdio behavior. |
-| `make security` | Exit 0; pip-audit found no known vulnerabilities, Bandit found no medium/high issues, and the production npm tree had zero vulnerabilities. |
+| `make security` | Historical exit 0; Python portion superseded because it audited uvx's isolated tool environment rather than the application export. See the current remediation record below. |
 
 The ten committed diagram SHA-256 values from the stable fresh render were:
 
@@ -325,7 +325,10 @@ eb3d274e1e73d848b8e8e23a7a51546c6424237c6d422712e934705728b1cb15  10_evaluation_
 38 low-severity Bandit findings, zero medium/high findings, no known Python
 dependency vulnerabilities, zero production npm vulnerabilities, and five high
 findings confined to the pinned Mermaid/Puppeteer development renderer chain.
-No forced dependency change was applied.
+No forced dependency change was applied. The Python conclusion in this historical paragraph is
+withdrawn because that older Make target audited uvx's isolated tool environment; the current
+dependency-audit remediation below replaces it. The Bandit and npm observations remain scoped to
+that earlier source and lock state.
 
 ### Durable direct and stdio UI evidence
 
@@ -534,8 +537,9 @@ offline gate. Retrieval observations remained Recall@5 `0.9753787878787878`, nDC
 
 The implemented provenance diagram removes the previously connected USDA label; its stable fresh
 SVG SHA-256 is `b3ee5d05787f43d56a91652538dc4608712a7164f8924da6930cbe5e00aff1cb`.
-The real `.github/workflows/ci.yml` uses locked `uv`/Node/npm installation and invokes credential-free
-`make ci`. Production audit is authoritative; the separate full npm report remains visible for the
+At this checkpoint, `.github/workflows/ci.yml` used locked `uv`/Node/npm installation and invoked
+credential-free `make ci`. Its mutable action tags and the Python audit invocation were corrected by
+the later dependency-audit remediation below. The separate full npm report remained visible for the
 pinned Mermaid/Puppeteer development renderer.
 
 Fresh verification observations before this record was appended:
@@ -547,9 +551,67 @@ make data-validate                                       exit 0; 48 products, 14
 make eval-summary                                        exit 0; all three offline suites passed
 make diagrams                                            exit 0; 10 stable/parity-checked diagrams
 make lint                                                exit 0; 110 formatted, Ruff/lock/pip clean
-make security                                            exit 0; Python clean, Bandit medium/high clean,
-                                                        production npm 0 vulnerabilities
+make security                                            historical exit 0; Python conclusion withdrawn
+                                                        because uvx's tool environment was audited;
+                                                        Bandit medium/high and production npm were clean
 npm audit                                                exit 1; 5 high findings only in the
                                                         Mermaid/Puppeteer/extract-zip dev chain
 git diff --check                                         exit 0
 ```
+
+## 2026-09-07 dependency-audit and CI integrity remediation
+
+This remediation corrects the Python audit boundary documented above. `make security` now creates
+a temporary requirements file from this exact command:
+
+```text
+uv export --locked --no-dev --no-emit-project --format requirements-txt
+```
+
+The same path passed to `--output-file` is passed to pinned `pip-audit==2.10.1` with
+`--require-hashes --disable-pip`. Therefore the auditor consumes the fully hashed production-only
+lock export without resolving a different environment; its own uvx environment is not confused
+with RecallOps. `bandit==1.9.4` is pinned independently. Neither target contains
+`--ignore-vuln`, so any Python advisory fails the production gate.
+
+The direct FastMCP constraint moved from `>=2.14,<3` to `>=3.2.0,<4`; `uv.lock` resolved
+FastMCP 3.4.7. The old reverse chain was
+`FastMCP 2.14.7 → py-key-value-aio[disk]/pydocket → diskcache 5.6.3`. The new 169-package lock
+contains neither `diskcache` nor `pydocket`, so `PYSEC-2026-2447` is eliminated rather than ignored.
+The installed environment contains 161 compatible packages.
+
+GitHub Actions references were resolved from their official Git tag refs and pinned to full commit
+SHAs; checkout also sets `persist-credentials: false`:
+
+```text
+actions/checkout v4.2.2     11bd71901bbe5b1630ceea73d27597364c9af683
+astral-sh/setup-uv v6.8.0   d0cc045d04ccac9d8b7881df0226f9e82c39688e
+actions/setup-node v4.4.0   49933ea5288caeca8642d1e84afbd3f7d6820020
+```
+
+Observed verification on the final dependency and application code:
+
+```text
+make security                         exit 0; no known Python vulnerabilities,
+                                      zero Bandit medium/high findings,
+                                      zero production npm vulnerabilities
+make security-full                    expected exit 2; 43 Bandit low findings,
+                                      zero Bandit medium/high findings,
+                                      no known Python vulnerabilities,
+                                      five high advisories only in the
+                                      Mermaid/Puppeteer/extract-zip dev chain
+focused Make/CI/dependency/docs       61 passed in 50.91s
+MCP-focused pytest selection          37 passed in 340.08s
+complete pytest tree                  1345 passed in 826.93s
+make lint                             exit 0; 111 files formatted, Ruff clean,
+                                      169 lock packages, 161 compatible installed
+git diff --check                      exit 0
+```
+
+The Make contract binds one requirement path from locked export output to pip-audit input, requires
+hash checking and disabled pip resolution, asserts both pinned tool versions, and prohibits advisory
+ignores. The CI contract requires all three exact 40-character action SHAs, disabled persisted
+checkout credentials, locked installs, the production-export preflight, `make ci`, and the separate
+development-only npm report. The openFDA report-date-sorted URL is now explicitly documented as the
+rolling, mutable endpoint used for a historical frozen capture; it is not presented as a URL that
+will reproduce those five rows later.

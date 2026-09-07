@@ -365,21 +365,35 @@ class DocumentationContractTests(unittest.TestCase):
 
     def test_ci_workflow_runs_the_locked_credential_free_verification_contract(self) -> None:
         workflow_path = ROOT / ".github/workflows/ci.yml"
-        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow = yaml.safe_load(workflow_text)
         jobs = workflow["jobs"]
         self.assertEqual(set(jobs), {"offline-verification"})
         job = jobs["offline-verification"]
         self.assertEqual(job["permissions"], {"contents": "read"})
         steps = job["steps"]
         uses = {step["uses"] for step in steps if "uses" in step}
-        self.assertTrue(any(value.startswith("actions/checkout@") for value in uses))
-        self.assertTrue(any(value.startswith("astral-sh/setup-uv@") for value in uses))
-        self.assertTrue(any(value.startswith("actions/setup-node@") for value in uses))
+        expected_actions = {
+            "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+            "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e",
+            "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+        }
+        self.assertEqual(uses, expected_actions)
+        for action in expected_actions:
+            self.assertRegex(action, r"@[0-9a-f]{40}$")
+        checkout = next(
+            step for step in steps if step.get("uses", "").startswith("actions/checkout@")
+        )
+        self.assertIs(checkout["with"]["persist-credentials"], False)
+        self.assertIn("# v4.2.2", workflow_text)
+        self.assertIn("# v6.8.0", workflow_text)
+        self.assertIn("# v4.4.0", workflow_text)
         commands = "\n".join(str(step.get("run", "")) for step in steps)
         for required in (
             "uv sync --locked --all-groups",
             "npm ci",
             "make ci",
+            "uv export --locked --no-dev --no-emit-project",
             "npm audit --omit=dev",
         ):
             self.assertIn(required, commands)

@@ -147,6 +147,40 @@ def test_make_ci_dry_run_is_credential_free_and_covers_core_gates() -> None:
     assert "eval-model" not in result.stdout
 
 
+def test_make_security_audits_the_locked_production_export_with_pinned_tools() -> None:
+    """Break caught: uvx's isolated tool environment was audited instead of RecallOps."""
+
+    result = _make("-n", "security")
+
+    assert result.returncode == 0
+    assert "uv export --locked --no-dev --no-emit-project" in result.stdout
+    assert "pip-audit==2.10.1" in result.stdout
+    assert 'pip-audit --requirement "' in result.stdout
+    assert '--output-file "$requirements"' in result.stdout
+    assert '--requirement "$requirements"' in result.stdout
+    assert result.stdout.index('--output-file "$requirements"') < result.stdout.index(
+        '--requirement "$requirements"'
+    )
+    assert "--require-hashes --disable-pip" in result.stdout
+    assert "bandit==1.9.4" in result.stdout
+    assert "uvx --from pip-audit pip-audit" not in result.stdout
+    assert "uvx --from bandit bandit" not in result.stdout
+    assert "--ignore-vuln" not in result.stdout
+
+
+def test_make_security_full_uses_the_same_production_python_audit() -> None:
+    result = _make("-n", "security-full")
+
+    assert result.returncode == 0
+    assert "uv export --locked --no-dev --no-emit-project" in result.stdout
+    assert "pip-audit==2.10.1" in result.stdout
+    assert "bandit==1.9.4" in result.stdout
+    assert '--output-file "$requirements"' in result.stdout
+    assert '--requirement "$requirements"' in result.stdout
+    assert "--require-hashes --disable-pip" in result.stdout
+    assert "--ignore-vuln" not in result.stdout
+
+
 def test_make_eval_expands_all_offline_suites() -> None:
     result = _make("-n", "eval")
 

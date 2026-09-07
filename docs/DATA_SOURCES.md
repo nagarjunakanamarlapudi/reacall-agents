@@ -21,7 +21,7 @@ RecallOps has no You.com integration and performs no general web search. Retriev
 
 ## Frozen official snapshot
 
-The frozen openFDA response contains five records: the flagship `H-1230-2026` egg recall plus four neighboring food-enforcement records that provide negative retrieval controls. Its capture endpoint was `https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc`; that URL is the citation source for all five frozen rows. This is a field-for-field snapshot of the observed response, not a claim that an unrelated exact-query response supplied all five rows and not a claim of HTTP-byte identity.
+The frozen openFDA response contains five records: the flagship `H-1230-2026` egg recall plus four neighboring food-enforcement records that provide negative retrieval controls. Its capture endpoint was `https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc`; this is a rolling, mutable endpoint, so the URL documents the historical capture method and is not expected to reproduce the same rows later. The frozen artifact is a field-for-field snapshot of the observed response, not a claim that an unrelated exact-query response supplied all five rows and not a claim of HTTP-byte identity.
 
 On 2026-09-07, a separate live verification used `https://api.fda.gov/food/enforcement.json?search=recall_number.exact%3A%22H-1230-2026%22&limit=5`. It returned one result, and that JSON record matched frozen `results[0]` field-for-field. The metadata records both URLs and methods separately, preserves the original `retrieved_at`, and binds the canonical flagship record digest `16a50f3966d11ee80519c4935890db9a250b36ffccf081f812b8f6d4f5d384de`.
 

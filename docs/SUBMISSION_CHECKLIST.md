@@ -54,5 +54,5 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 - [x] The post-fix complete tree finishes `1292 passed`; the focused Make contract finishes `13 passed`; the MCP direct/stdio smoke finishes `16 passed`.
 - [x] Durable direct and stdio Streamlit processes each return HTTP 200 on distinct ports and fresh runtimes, and each transport environment passes the Audit & Evaluation AppTest.
 - [x] Relevance, completeness, digest, prohibited-tool, aggregate-gate, and optional-live mutations each produce a nonzero validator plus a non-passing UI projection.
-- [x] Production security exits 0; the separate full audit honestly records 38 low Bandit findings and five development-only Mermaid/Puppeteer advisories without a forced upgrade.
+- [x] Production security audits the fully hashed `uv.lock` production export with no advisory ignores and exits 0; the separate full audit records 43 low Bandit findings and five development-only Mermaid/Puppeteer advisories without a forced npm upgrade.
 - [x] Exact artifact hashes, all ten diagram hashes, measured retrieval/orchestration deltas, optional-live status, and command outcomes are recorded in [Verification](VERIFICATION.md#evaluation-expansion-final-integration--7-september-2026).

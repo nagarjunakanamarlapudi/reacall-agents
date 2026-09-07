@@ -177,15 +177,33 @@ lint:
 format:
 	uv run ruff format .
 
+PIP_AUDIT_VERSION := 2.10.1
+BANDIT_VERSION := 1.9.4
+
+define audit_locked_production_python
+	@set -eu; \
+	requirements="$$(mktemp "$${TMPDIR:-/tmp}/recallops-production-requirements.XXXXXX")"; \
+	trap 'rm -f "$$requirements"' EXIT; \
+	uv export --locked --no-dev --no-emit-project --format requirements-txt \
+		--output-file "$$requirements" >/dev/null; \
+	uvx --from "pip-audit==$(PIP_AUDIT_VERSION)" pip-audit \
+		--requirement "$$requirements" --require-hashes --disable-pip
+endef
+
 security:
-	uvx --from pip-audit pip-audit
-	uvx --from bandit bandit -q -r src -ll
+	$(audit_locked_production_python)
+	uvx --from "bandit==$(BANDIT_VERSION)" bandit -q -r src -ll
 	npm audit --omit=dev
 
 security-full:
 	@status=0; \
-	uvx --from pip-audit pip-audit || status=1; \
-	uvx --from bandit bandit -q -r src || status=1; \
+	requirements="$$(mktemp "$${TMPDIR:-/tmp}/recallops-production-requirements.XXXXXX")"; \
+	trap 'rm -f "$$requirements"' EXIT; \
+	uv export --locked --no-dev --no-emit-project --format requirements-txt \
+		--output-file "$$requirements" >/dev/null || status=1; \
+	uvx --from "pip-audit==$(PIP_AUDIT_VERSION)" pip-audit \
+		--requirement "$$requirements" --require-hashes --disable-pip || status=1; \
+	uvx --from "bandit==$(BANDIT_VERSION)" bandit -q -r src || status=1; \
 	npm audit --omit=dev || status=1; \
 	npm audit || status=1; \
 	exit $$status
