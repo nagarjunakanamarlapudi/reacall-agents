@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 
-from PIL import Image
+from PIL import Image, ImageStat
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
@@ -489,6 +489,54 @@ class DocumentationContractTests(unittest.TestCase):
         for path in (DOCS / "DEMO_WALKTHROUGH.md", DOCS / "SUBMISSION_DOCUMENT.md"):
             self.assertIn(reveal["spoken_copy"], path.read_text(encoding="utf-8"))
 
+    def test_evaluation_demo_timing_and_spoken_copy_are_recordable(self) -> None:
+        contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
+        timing = contract["timing"]
+
+        self.assertEqual(
+            timing,
+            {
+                "evaluation_start": "04:00",
+                "evaluation_end": "04:45",
+                "closure_start": "04:45",
+                "finish_by": "04:55",
+                "evaluation_max_words_per_minute": 135,
+            },
+        )
+        self.assertTrue(contract["timeline"]["04:00"].startswith("Audit & Evaluation —"))
+        self.assertTrue(contract["timeline"]["04:45"].startswith("Request closure —"))
+
+        def timestamp_seconds(timestamp: str) -> int:
+            minutes, seconds = (int(part) for part in timestamp.split(":"))
+            return minutes * 60 + seconds
+
+        evaluation_seconds = timestamp_seconds(timing["evaluation_end"]) - timestamp_seconds(
+            timing["evaluation_start"]
+        )
+        self.assertEqual(evaluation_seconds, 45)
+        self.assertEqual(timing["evaluation_end"], timing["closure_start"])
+        self.assertLessEqual(timestamp_seconds(timing["finish_by"]), 295)
+        self.assertEqual(contract["duration_seconds"], timestamp_seconds(timing["finish_by"]))
+
+        spoken_copy = contract["evaluation_reveal"]["spoken_copy"]
+        max_words = int(evaluation_seconds * timing["evaluation_max_words_per_minute"] / 60)
+        self.assertLessEqual(len(spoken_copy.split()), max_words)
+        for required in (
+            "Safety",
+            "six ablations",
+            "96 labelled questions",
+            "plus 0.00568",
+            "plus 0.00527",
+            "24-case orchestration benchmark",
+            "Evidence coverage",
+            "duplicate work",
+            "tool-call deltas",
+            "latency",
+            "not run because credentials were missing",
+            "excluded from offline gates",
+        ):
+            self.assertIn(required, spoken_copy)
+
     def test_evaluation_story_entrypoints_link_raster_and_reproducible_views(self) -> None:
         for path in (DOCS / "ARCHITECTURE.md", DOCS / "DEMO_WALKTHROUGH.md"):
             content = path.read_text(encoding="utf-8")
@@ -503,8 +551,22 @@ class DocumentationContractTests(unittest.TestCase):
         for name in ("recallops-system-architecture.png", "recallops-five-minute-demo.png"):
             with Image.open(IMAGES / name) as visual:
                 self.assertEqual(visual.format, "PNG")
+                self.assertGreaterEqual(visual.width, 1600)
+                self.assertGreaterEqual(visual.height, 900)
                 self.assertEqual(visual.width * 9, visual.height * 16)
                 self.assertNotIn("A", visual.getbands(), f"{name} must have no alpha channel")
+                grayscale = visual.convert("L")
+                self.assertGreater(
+                    ImageStat.Stat(grayscale).stddev[0],
+                    5.0,
+                    f"{name} must contain nonblank diagram content",
+                )
+                dark_pixels = sum(grayscale.histogram()[:224])
+                self.assertGreater(
+                    dark_pixels / (visual.width * visual.height),
+                    0.01,
+                    f"{name} must contain a meaningful amount of drawn content",
+                )
 
     def test_visual_prompt_record_captures_evaluation_plane_edits(self) -> None:
         prompts = (IMAGES / "submission-visual-prompts.md").read_text(encoding="utf-8")
@@ -837,7 +899,10 @@ flowchart LR
         self.assertLess(
             demo.index('J["Retrieval ablation'), demo.index('K["Orchestration comparison')
         )
-        self.assertLess(demo.index('K["Orchestration comparison'), demo.index('I["04:45'))
+        self.assertLess(
+            demo.index('K["Orchestration comparison'),
+            demo.index('I["04:45 Request closure'),
+        )
 
     def test_business_orientation_is_linked_from_every_submission_entrypoint(self) -> None:
         expected_targets = {

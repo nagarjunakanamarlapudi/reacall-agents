@@ -2,6 +2,13 @@
   "schema_version": "2.0",
   "runtime_integration_status": "implemented durable runtime and five-view UI",
   "duration_seconds": 295,
+  "timing": {
+    "evaluation_start": "04:00",
+    "evaluation_end": "04:45",
+    "closure_start": "04:45",
+    "finish_by": "04:55",
+    "evaluation_max_words_per_minute": 135
+  },
   "cli": {
     "data_validation_command": "uv run recallops data-validate",
     "demo_command": "uv run recallops demo --recall-number H-1230-2026",
@@ -88,7 +95,7 @@
       "model_judges": "not_used",
       "status": "not_run_missing_credentials"
     },
-    "spoken_copy": "Safety tests prove no approval bypass or false close: 21 of 21 scenarios pass. Retrieval evals compare six ablations—BM25, local LSA, naive hybrid, RRF, reranking, and agentic RAG—on the same 96 labelled questions. Fusion Recall-at-five delta is plus 0.00568; rerank nDCG-at-five delta is plus 0.00527; eight rewrite cases are unchanged, so no uplift is assumed. The 24-case orchestration benchmark compares a bounded single agent with four specialists. Evidence coverage, task success, duplicate work, and tool-call deltas are zero: multi-agent value is measured, not assumed. Optional live Deep Agents was not run because credentials were missing and is excluded from offline gates.",
+    "spoken_copy": "Safety proves no approval bypass or false close: 21 of 21 scenarios pass. Retrieval evals compare six ablations—BM25, local LSA, naive hybrid, RRF, reranking, and agentic RAG—on the same 96 labelled questions. Fusion Recall-at-five delta is plus 0.00568; rerank nDCG-at-five delta is plus 0.00527; eight rewrites are unchanged, so no uplift is assumed. The 24-case orchestration benchmark compares a bounded single agent with four specialists. Evidence coverage, task success, duplicate work, tool-call deltas, and latency are measured, not assumed; quality and tool-call deltas are zero. Optional Deep Agents was not run because credentials were missing and is excluded from offline gates.",
     "no_unsupported_uplift_claims": true
   },
   "data": {
@@ -240,7 +247,7 @@
     "02:35": "Approve, separately confirm, and record create_case version one",
     "03:05": "Review the newly planned confirmed-only hold at version one",
     "03:40": "Approve, separately confirm, and record hold version two",
-    "04:00": "Show safety, retrieval, orchestration, and same-key recovery evidence",
-    "04:45": "Request closure and finish Open — closure blocked by 04:55"
+    "04:00": "Audit & Evaluation — show safety, retrieval, orchestration, and same-key recovery evidence",
+    "04:45": "Request closure — finish Open — closure blocked by 04:55"
   }
 }
