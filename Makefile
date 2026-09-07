@@ -10,6 +10,11 @@ export LIVE_MODEL_ADAPTER
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 EVAL_DIR := $(PROJECT_ROOT)/data/evals
 UV_PROJECT := uv run --project "$(PROJECT_ROOT)"
+SCORECARD := $(EVAL_DIR)/scorecard.json
+SUITE_REPORTS := \
+	$(EVAL_DIR)/report.json \
+	$(EVAL_DIR)/retrieval_report.json \
+	$(EVAL_DIR)/orchestration_report.json
 
 .PHONY: \
 	help setup data-validate demo ui ui-stdio \
@@ -118,11 +123,13 @@ eval-orchestration:
 	mv "$$temporary" "$(EVAL_DIR)/orchestration_report.json"; \
 	trap - EXIT
 
-eval: eval-safety eval-retrieval eval-orchestration
+$(SCORECARD): $(SUITE_REPORTS)
 	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"
+
+eval: eval-safety eval-retrieval eval-orchestration $(SCORECARD)
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
-eval-summary:
+eval-summary: $(SCORECARD)
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
 eval-model:

@@ -165,6 +165,31 @@ def test_make_eval_summary_is_cwd_independent(tmp_path: Path) -> None:
     assert "Offline evaluation gate: PASSED" in result.stdout
 
 
+def test_make_eval_summary_refreshes_a_scorecard_older_than_suite_reports(
+    tmp_path: Path,
+) -> None:
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    scorecard_path = eval_dir / "scorecard.json"
+    forged = json.loads(scorecard_path.read_bytes())
+    forged["artifact_digests"]["retrieval_report"] = "0" * 64
+    scorecard_path.write_text(json.dumps(forged))
+
+    os.utime(scorecard_path, (1, 1))
+    for report_name in (
+        "report.json",
+        "retrieval_report.json",
+        "orchestration_report.json",
+    ):
+        os.utime(eval_dir / report_name, (2, 2))
+
+    result = _make("eval-summary", f"EVAL_DIR={eval_dir}")
+
+    assert result.returncode == 0
+    assert "Offline evaluation gate: PASSED" in result.stdout
+    refreshed = json.loads(scorecard_path.read_bytes())
+    assert refreshed["artifact_digests"]["retrieval_report"] != "0" * 64
+
+
 def test_make_eval_model_stops_on_missing_adapter_without_changing_artifacts(
     tmp_path: Path,
 ) -> None:
