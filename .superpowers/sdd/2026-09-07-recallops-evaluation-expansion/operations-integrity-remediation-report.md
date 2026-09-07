@@ -73,3 +73,31 @@ Canonical artifact bindings after regeneration:
 - Scorecard: `b11edb68db8783d26812434b7e6f5b119ee551195d25aa15e522fd17137d8346`
 
 The safety report was regenerated with `make eval-safety`, and the scorecard was rebuilt with `make eval-summary`; neither measured artifact was hand-edited.
+
+## Post-hardening compatibility follow-up
+
+The runtime-only authorization refactor intentionally made `OperationsService` a slotted, non-mutable consumer facade. A broader regression run then found that the direct Deep Supervisor adapter still used `vars()` to inspect the pre-refactor service layout. It also found one UI assertion that continued to treat an exact-lot case as blocked after an authoritative disposition had resolved its final quantity gap.
+
+The service now provides an immutable `OperationsReadConfiguration` contract containing only the storage path, source mode, traceability read service, and two boolean hook-presence indicators. Deep Supervisor validates that exact safe type and reconstructs its closed read capabilities from it. Callback objects, the private operations store, owner tokens, active attempts, and grant issuance never cross this interface; the ordinary service still exposes none of the workflow authority methods. Legacy mutation-resistance tests now assert that slotted operations properties reject replacement without invoking caller code, while the still-mutable read services retain the pre-access hostile-value checks.
+
+The durable UI contract now retains the final `close_case` receipt when the full exact-lot lifecycle succeeds. That receipt is shown only after the authoritative disposition, facility tasks and acknowledgements, version-bound review, and separate execution confirmation complete; the case then projects `closed` with an eligible/closed outcome. Blocked closure paths remain receipt-free.
+
+Fresh compatibility validation:
+
+- Previously failing Deep Supervisor and runtime-adapter suites: 130 passed.
+- Operations authorization and public-surface suite: 43 passed.
+- Full UI suite: 134 passed.
+- Durable workflow and planner integration suite: 100 passed.
+- Direct/real-stdio MCP and retrieval MCP suites: 32 passed.
+- Evaluation scorecard, tamper, and end-to-end projection suites: 293 passed.
+- Transport-inclusive safety gate: 21/21 scenarios and 320/320 assertions passed; all unsafe counters remain zero.
+- Combined offline scorecard: safety 21/21, retrieval 96 cases/576 results, and orchestration 24 cases/48 results; gate passed.
+- Ruff formatting, lint, lock, and installed-package checks: passed.
+
+Canonical artifact bindings after this compatibility run:
+
+- Safety corpus: `483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`
+- Safety report: `426403172f9d11e1e5459e80afe289464edb01df6db97dc9b6286e01e3df2938`
+- Scorecard: `2cfcd8dfb931f9ece847e7be0ac982da008ec847c72c2e589b4beb4642e8bac8`
+
+The measured safety report and scorecard were regenerated through their Make targets after the code and regression changes; neither artifact was hand-edited.

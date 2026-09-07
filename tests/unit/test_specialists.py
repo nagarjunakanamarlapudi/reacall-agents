@@ -994,7 +994,7 @@ def test_deep_supervisor_rejects_caller_retrieval_indexes_before_access(
     gateway = DirectGateway(operations=OperationsService(storage_path=storage_path))
     owner: Any = gateway
     for segment in owner_path.split("."):
-        owner = vars(owner)[segment]
+        owner = getattr(owner, segment)
     access_calls: list[str] = []
 
     class ExecutableIndex:
@@ -2114,7 +2114,13 @@ def test_direct_gateway_rejects_untyped_state_without_running_dunders(
     gateway = DirectGateway(
         operations=OperationsService(storage_path=tmp_path / "untyped-state.sqlite3")
     )
-    setattr(getattr(gateway, owner_name), field_name, ExecutableValue())
+    owner = getattr(gateway, owner_name)
+    if owner_name == "operations":
+        with pytest.raises(AttributeError):
+            setattr(owner, field_name, ExecutableValue())
+        assert dunder_calls == []
+        return
+    setattr(owner, field_name, ExecutableValue())
 
     with pytest.raises(ValueError, match="exact trusted state types"):
         build_deep_supervisor(

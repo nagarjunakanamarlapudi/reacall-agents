@@ -24,6 +24,7 @@ from recallops.services.operations import (
     ApprovalRequiredError,
     ClosureBlockedError,
     IdempotencyConflictError,
+    OperationsReadConfiguration,
     OperationStoreError,
     StaleCaseVersionError,
     _workflow_authorization_broker,
@@ -323,6 +324,16 @@ def test_normal_operations_service_exposes_no_workflow_authority_capability(
 ) -> None:
     """Break caught: a normal mutation consumer can reserve, claim, or mint authority."""
     service = RawOperationsService(storage_path=tmp_path / "public-service.sqlite3")
+    config = service.read_configuration()
+
+    assert type(config) is OperationsReadConfiguration
+    assert config.storage_path == service.storage_path
+    assert config.source_mode == service.source_mode
+    assert config.traceability is service.traceability
+    assert config.failure_injector_configured is False
+    assert config.before_cas_hook_configured is False
+    with pytest.raises(AttributeError):
+        config.source_mode = "live"  # type: ignore[misc]
 
     for surface in (
         "reserve_workflow_identity",
@@ -336,6 +347,8 @@ def test_normal_operations_service_exposes_no_workflow_authority_capability(
     ):
         with pytest.raises(AttributeError):
             getattr(service, surface)
+        with pytest.raises(AttributeError):
+            getattr(config, surface)
 
 
 def test_broker_authenticates_execution_identity_against_the_active_attempt(

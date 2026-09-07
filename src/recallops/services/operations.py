@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ValidationError
@@ -58,6 +58,16 @@ class OperationStoreError(RuntimeError):
 
 def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+class OperationsReadConfiguration(NamedTuple):
+    """Immutable, non-authorizing configuration visible to read-only adapters."""
+
+    storage_path: Path
+    source_mode: str
+    traceability: TraceabilityService
+    failure_injector_configured: bool
+    before_cas_hook_configured: bool
 
 
 class _OperationsStore:
@@ -1994,6 +2004,17 @@ class OperationsService:
     @property
     def traceability(self) -> TraceabilityService:
         return self.__store.traceability
+
+    def read_configuration(self) -> OperationsReadConfiguration:
+        """Describe safe adapter inputs without exposing callbacks or workflow authority."""
+
+        return OperationsReadConfiguration(
+            storage_path=self.__store.storage_path,
+            source_mode=self.__store.source_mode,
+            traceability=self.__store.traceability,
+            failure_injector_configured=self.__store._failure_injector is not None,
+            before_cas_hook_configured=self.__store._before_cas_hook is not None,
+        )
 
     def get_case(self, case_id: str) -> RecallCaseState | None:
         return self.__store.get_case(case_id)

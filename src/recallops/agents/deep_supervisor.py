@@ -59,7 +59,7 @@ from recallops.models import (
     TraceEvent,
 )
 from recallops.paths import PROJECT_ROOT
-from recallops.services.operations import OperationsService
+from recallops.services.operations import OperationsReadConfiguration, OperationsService
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 
@@ -850,22 +850,12 @@ def _close_read_gateway(
             "registry service",
         )
         traceability_state = _traceability_service_state(traceability)
-        operations_state = _exact_state(
-            operations,
-            frozenset(
-                {
-                    "storage_path",
-                    "source_mode",
-                    "_failure_injector",
-                    "_before_cas_hook",
-                    "traceability",
-                }
-            ),
-            "operations service",
-        )
-        operations_traceability_state = _traceability_service_state(
-            operations_state["traceability"]
-        )
+        operations_config = operations.read_configuration()
+        if type(operations_config) is not OperationsReadConfiguration:
+            raise ValueError(
+                "trusted RecallOps direct gateway requires an exact operations read configuration"
+            )
+        operations_traceability_state = _traceability_service_state(operations_config.traceability)
         settings = _validated_settings()
         path_type = type(settings.data_dir)
         timeout = registry_state["timeout_seconds"]
@@ -874,9 +864,11 @@ def _close_read_gateway(
             or type(registry_state["source_mode"]) is not str
             or type(timeout) not in {int, float}
             or (type(timeout) is float and not math.isfinite(timeout))
-            or type(operations_state["storage_path"]) is not path_type
-            or type(operations_state["source_mode"]) is not str
-            or type(operations_state["traceability"]) is not TraceabilityService
+            or type(operations_config.storage_path) is not path_type
+            or type(operations_config.source_mode) is not str
+            or type(operations_config.traceability) is not TraceabilityService
+            or type(operations_config.failure_injector_configured) is not bool
+            or type(operations_config.before_cas_hook_configured) is not bool
             or type(traceability_state["data_dir"]) is not path_type
             or type(traceability_state["source_mode"]) is not str
             or type(operations_traceability_state["data_dir"]) is not path_type
@@ -888,8 +880,8 @@ def _close_read_gateway(
                 "trusted RecallOps read gateway forbids caller-supplied HTTP transport"
             )
         if (
-            operations_state["_failure_injector"] is not None
-            or operations_state["_before_cas_hook"] is not None
+            operations_config.failure_injector_configured
+            or operations_config.before_cas_hook_configured
         ):
             raise ValueError(
                 "trusted RecallOps read gateway forbids caller-supplied operation hook"
@@ -915,7 +907,7 @@ def _close_read_gateway(
             trusted_dataset=trusted_dataset,
         )
         _validate_traceability_service(
-            operations_state["traceability"],
+            operations_config.traceability,
             settings=settings,
             trusted_dataset=trusted_dataset,
         )
@@ -923,8 +915,8 @@ def _close_read_gateway(
             registry_state["data_dir"] != settings.data_dir
             or registry_state["source_mode"] != settings.source_mode
             or timeout != 2.0
-            or operations_state["storage_path"] != settings.operations_db_path
-            or operations_state["source_mode"] != settings.source_mode
+            or operations_config.storage_path != settings.operations_db_path
+            or operations_config.source_mode != settings.source_mode
         ):
             raise ValueError("trusted RecallOps read gateway configuration differs from Settings")
         return _make_read_config("direct", settings)

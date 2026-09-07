@@ -707,8 +707,7 @@ async def test_product_adapter_routes_exact_lot_through_required_disposition(
     )
     assert reviewed_actions[-1] == "close_case"
     assert receipt_versions == list(range(1, len(receipt_versions) + 1))
-    assert [item["action_type"] for item in case["receipts"]] == reviewed_actions[:-1]
-    assert case["status"] == "open_closure_blocked"
-    assert case["closure_outcome"]["eligible"] is False
-    assert case["closure_outcome"].get("closed") is not True
-    assert _receipt_count(operations) == len(reviewed_actions) - 1
+    assert [item["action_type"] for item in case["receipts"]] == reviewed_actions
+    assert case["status"] == "closed"
+    assert case["closure_outcome"] == {"eligible": True, "closed": True}
+    assert _receipt_count(operations) == len(reviewed_actions)
