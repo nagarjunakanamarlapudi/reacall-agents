@@ -5,7 +5,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from recallops.evaluation.digests import canonical_json_bytes
+from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256
 from recallops.evaluation.orchestration_schema import (
     LiveProfileStatus,
     OrchestrationEvalCorpus,
@@ -97,3 +97,22 @@ def test_questions_do_not_leak_labels_and_cases_have_distinct_contracts():
     ]
     assert len(set(signatures)) == 24
     assert len({case.expected_tasks for case in corpus.cases}) >= 5
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_target"])
+def test_rehashed_assessment_gold_must_match_snapshot_targets(tmp_path, mutation):
+    payload = json.loads(CASES.read_bytes())
+    facts = payload["cases"][0]["evidence_facts"]
+    fact = next(
+        value for value in facts if value.startswith("assessment:LOT-EXACT-170:facility:DC-NORTH:")
+    )
+    facts.remove(fact)
+    if mutation == "wrong_target":
+        facts.append(fact.replace("DC-NORTH", "STORE-01"))
+    payload["corpus_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "corpus_sha256"}
+    )
+    target = tmp_path / "gold-forgery.json"
+    target.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError, match="assessment citations"):
+        load_orchestration_cases(target)

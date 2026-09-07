@@ -664,6 +664,148 @@ async def test_unknown_worker_facts_are_hashed_before_persistence(tmp_path, monk
     assert "unsupported_fact:" in target.read_text()
 
 
+@pytest.mark.parametrize("mutation", ["renamed", "permuted", "mutated_inputs"])
+async def test_assessment_citations_must_agree_with_captured_sources(
+    tmp_path, monkeypatch, mutation
+):
+    from recallops.agents.specialists import TraceabilityAssessment
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.assess_traceability
+    valid_mutations = []
+
+    def corrupt(**kwargs):
+        payload = original(**kwargs).model_dump(mode="json")
+        identifiers = sorted(payload["evidence_ids"])
+        replacements = {
+            identifier: f"RENAMED-{index}"
+            if mutation in {"renamed", "mutated_inputs"}
+            else identifiers[(index + 1) % len(identifiers)]
+            for index, identifier in enumerate(identifiers)
+        }
+
+        def replace(value):
+            if isinstance(value, str):
+                return replacements.get(value, value)
+            if isinstance(value, list):
+                return [replace(item) for item in value]
+            if isinstance(value, dict):
+                return {key: replace(item) for key, item in value.items()}
+            return value
+
+        if mutation == "mutated_inputs":
+            for field in ("events", "inventory_positions", "reconciliations"):
+                for row in kwargs[field]:
+                    changed_row = type(row).model_validate(replace(row.model_dump(mode="json")))
+                    for name in type(row).model_fields:
+                        setattr(row, name, getattr(changed_row, name))
+            changed = original(**kwargs)
+        else:
+            changed = TraceabilityAssessment.model_validate(replace(payload))
+        assert changed != TraceabilityAssessment.model_validate(payload)
+        if mutation == "permuted":
+            assert set(changed.evidence_ids) == set(payload["evidence_ids"])
+        valid_mutations.append(changed)
+        return changed
+
+    monkeypatch.setattr(benchmark, "assess_traceability", corrupt)
+    target = tmp_path / "assessment-forgery.json"
+    result = await run_orchestration_benchmark(CASES, target)
+    assert valid_mutations
+    assert not result.gate_passed
+    assert all(len(profile.results) == 24 for profile in result.profiles)
+    for profile in result.profiles:
+        for index in (0, 11, 12, 13, 14, 15, 16, 17, 20, 21, 23):
+            row = profile.results[index]
+            assert not row.metrics.task_success
+            assert "containment" not in row.observation.tasks
+            assert "quantities_verified" not in row.observation.completion_criteria
+    assert load_orchestration_report(target, CASES) == result
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        "facility_evidence",
+        "component_evidence",
+        "event_ids",
+        "forward_event_ids",
+        "backward_event_ids",
+        "inventory_evidence_ids",
+        "reconciliation_evidence_ids",
+        "evidence_ids",
+    ],
+)
+async def test_each_assessment_mapping_is_checked_independently(tmp_path, monkeypatch, mapping):
+    from recallops.agents.specialists import TraceabilityAssessment
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.assess_traceability
+
+    def corrupt(**kwargs):
+        payload = original(**kwargs).model_dump(mode="json")
+        coverage = payload["coverage"][0]
+        if mapping == "facility_evidence":
+            facility = next(iter(coverage[mapping]))
+            coverage[mapping][facility] = [coverage["event_ids"][-1]]
+        elif mapping == "component_evidence":
+            components = payload["reconciliations"][0][mapping]
+            components["received"], components["on_hand"] = (
+                components["on_hand"],
+                components["received"],
+            )
+        elif mapping in {"forward_event_ids", "backward_event_ids"}:
+            coverage[mapping].reverse()
+            key = "forward_traces" if mapping == "forward_event_ids" else "backward_traces"
+            payload[key][coverage["lot_id"]] = coverage[mapping]
+        elif mapping in {"inventory_evidence_ids", "reconciliation_evidence_ids"}:
+            coverage[mapping] = [coverage["event_ids"][-1]]
+        elif mapping == "evidence_ids":
+            payload[mapping].append("EXTRA-UNSUPPORTED")
+        else:
+            coverage[mapping].reverse()
+        return TraceabilityAssessment.model_validate(payload)
+
+    monkeypatch.setattr(benchmark, "assess_traceability", corrupt)
+    target = tmp_path / "mapping-forgery.json"
+    result = await run_orchestration_benchmark(CASES, target)
+    assert not result.gate_passed
+    assert all(not profile.results[0].metrics.task_success for profile in result.profiles)
+    assert all(
+        "containment" not in profile.results[0].observation.tasks for profile in result.profiles
+    )
+
+
+async def test_target_specific_assessment_citations_are_scored_and_report_validated(report):
+    case = load_orchestration_cases(CASES).cases[0]
+    fact = "assessment:LOT-EXACT-170:facility:DC-NORTH:" + canonical_sha256(
+        ["EV-001", "EV-002", "EV-003", "EV-008", "INV-LOT-EXACT-170"]
+    )
+    assert fact in case.evidence_facts
+    for profile in report.profiles:
+        observation = profile.results[0].observation
+        assert fact in observation.evidence_facts
+        changed = observation.model_copy(
+            update={
+                "evidence_facts": tuple(
+                    item
+                    if item != fact
+                    else "assessment:LOT-EXACT-170:facility:DC-NORTH:"
+                    + canonical_sha256(["EV-002"])
+                    for item in observation.evidence_facts
+                )
+            }
+        )
+        assert not score_trajectory(case, changed, profile.name).task_success
+    payload = report.model_dump(mode="json")
+    payload["profiles"][0]["results"][0]["observation"]["evidence_facts"].remove(fact)
+    payload["report_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "report_sha256"}
+    )
+    with pytest.raises(ValueError):
+        validate_orchestration_report(payload, load_orchestration_cases(CASES))
+
+
 @pytest.mark.parametrize("mutation", ["empty", "partial", "duplicate", "reordered"])
 async def test_runtime_error_live_matrix_cannot_be_removed_or_rewritten(tmp_path, mutation):
     async def fail(inputs, capture):

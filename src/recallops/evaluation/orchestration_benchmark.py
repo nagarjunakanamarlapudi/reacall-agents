@@ -57,10 +57,17 @@ from recallops.evaluation.orchestration_schema import (
     ToolCallObservation,
     TrajectoryMetrics,
     TrajectoryObservation,
+    assessment_citation_facts,
     evidence_boundary_sha256,
     load_orchestration_cases,
 )
-from recallops.models import InventoryPosition, RecallPredicate, RecallRecord, TraceEvent
+from recallops.models import (
+    InventoryPosition,
+    RecallPredicate,
+    RecallRecord,
+    Reconciliation,
+    TraceEvent,
+)
 from recallops.paths import DATA_DIR
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
@@ -179,16 +186,16 @@ def _exposed_tools() -> tuple[str, ...]:
     )
 
 
-def _independent_verify(matching, traceability, proposal) -> bool:
+def _independent_verify(matching, source_assessment, proposal) -> bool:
     """Verify complete target coverage from typed source evidence, not draft claims."""
     matching = ProductLotAssessment.model_validate(matching.model_dump(mode="python"))
-    traceability = TraceabilityAssessment.model_validate(traceability.model_dump(mode="python"))
     proposal = ContainmentProposal.model_validate(proposal.model_dump(mode="python"))
     confirmed, ambiguous = set(matching.confirmed_lot_ids), set(matching.ambiguous_lot_ids)
-    facilities = {f for coverage in traceability.coverage for f in coverage.facility_evidence}
+    sources = json.loads(source_assessment)
+    facilities = {f for coverage in sources["coverage"] for f in coverage["facility_evidence"]}
     if (
         confirmed & ambiguous
-        or facilities != set(traceability.affected_facilities)
+        or facilities != set(sources["affected_facilities"])
         or proposal.executed
     ):
         return False
@@ -208,17 +215,20 @@ def _independent_verify(matching, traceability, proposal) -> bool:
         draft for draft in proposal.communication_drafts if draft.audience == "food_safety_manager"
     ]
     lot_sources = {
-        row.lot_id: set(row.event_ids)
-        | set(row.inventory_evidence_ids)
-        | set(row.reconciliation_evidence_ids)
-        for row in traceability.coverage
+        row["lot_id"]: set(row["event_ids"])
+        | set(row["inventory_evidence_ids"])
+        | set(row["reconciliation_evidence_ids"])
+        for row in sources["coverage"]
     }
     facility_sources = {
         facility: {
             evidence
-            for row in traceability.coverage
-            if facility in row.facility_evidence
-            for evidence in (*row.facility_evidence[facility], *row.reconciliation_evidence_ids)
+            for row in sources["coverage"]
+            if facility in row["facility_evidence"]
+            for evidence in (
+                *row["facility_evidence"][facility],
+                *row["reconciliation_evidence_ids"],
+            )
         }
         for facility in facilities
     }
@@ -319,6 +329,115 @@ def _validated_lineage(lot_id, forward, backward):
     return left
 
 
+def _captured_assessment(lot_ids, events, backward_events, inventory, reconciliations):
+    """Build citation authority solely from captured typed source reads, before assessment.
+
+    No evaluated specialist is invoked here. Immutable canonical bytes prevent the
+    assessed function from changing its own oracle through its mutable input models.
+    """
+    if len(lot_ids) != len(set(lot_ids)):
+        raise ValueError("duplicate source lot scope")
+    if any(row.lot_id not in lot_ids for row in (*events, *backward_events, *inventory)):
+        raise ValueError("source evidence exceeds delegated scope")
+    source_ids = [row.event_id for row in events] + [row.position_id for row in inventory]
+    if len(source_ids) != len(set(source_ids)):
+        raise ValueError("source identifiers collide")
+    raw_reconciliations = [
+        Reconciliation.model_validate(
+            row.model_dump(mode="json") if isinstance(row, Reconciliation) else row
+        )
+        for row in reconciliations
+    ]
+    if [row.lot_id for row in raw_reconciliations] != list(lot_ids):
+        raise ValueError("source reconciliation scope/order mismatch")
+    result = {
+        "lot_ids": list(lot_ids),
+        "coverage": [],
+        "forward_traces": {},
+        "backward_traces": {},
+        "reconciliations": [],
+        "evidence_ids": [],
+        "evidence_gaps": [],
+    }
+    facilities = set()
+    for lot, reconciliation in zip(lot_ids, raw_reconciliations, strict=True):
+        forward = [row for row in events if row.lot_id == lot]
+        backward = [row for row in backward_events if row.lot_id == lot]
+        _validated_lineage(lot, forward, backward)
+        positions = [row for row in inventory if row.lot_id == lot]
+        forward_ids = [row.event_id for row in forward]
+        backward_ids = [row.event_id for row in backward]
+        position_ids = [row.position_id for row in positions]
+        components = {}
+        quantities = {}
+        for name, event_type in (
+            ("received", "receiving"),
+            ("on_hand", None),
+            ("quarantined", "quarantine"),
+            ("sold", "sale"),
+            ("returned", "return"),
+            ("disposed", "disposal"),
+        ):
+            components[name] = (
+                position_ids
+                if event_type is None
+                else [row.event_id for row in forward if row.event_type == event_type]
+            )
+            quantities[name] = (
+                sum(row.on_hand for row in positions)
+                if event_type is None
+                else sum(row.quantity for row in forward if row.event_type == event_type)
+            )
+        reconciliation_ids = list(dict.fromkeys(e for ids in components.values() for e in ids))
+        components["unaccounted"] = reconciliation_ids
+        quantities["unaccounted"] = quantities["received"] - sum(
+            value for name, value in quantities.items() if name != "received"
+        )
+        expected_reconciliation = {
+            "lot_id": lot,
+            **quantities,
+            "component_evidence": components,
+            "evidence_ids": reconciliation_ids,
+            "verified": True,
+        }
+        if reconciliation.model_dump(mode="json") != expected_reconciliation:
+            raise ValueError("raw reconciliation conflicts with captured event/inventory evidence")
+        facility_evidence = {}
+        for row in forward:
+            for facility in (row.from_facility, row.to_facility):
+                if facility:
+                    facility_evidence.setdefault(facility, []).append(row.event_id)
+        for row in positions:
+            facility_evidence.setdefault(row.facility_id, []).append(row.position_id)
+        facility_evidence = {
+            key: list(dict.fromkeys(value)) for key, value in sorted(facility_evidence.items())
+        }
+        facilities.update(facility_evidence)
+        result["coverage"].append(
+            {
+                "lot_id": lot,
+                "facility_ids": list(facility_evidence),
+                "event_ids": forward_ids,
+                "forward_event_ids": forward_ids,
+                "backward_event_ids": backward_ids,
+                "inventory_evidence_ids": position_ids,
+                "reconciliation_evidence_ids": reconciliation_ids,
+                "facility_evidence": facility_evidence,
+                "unaccounted_units": quantities["unaccounted"],
+                "complete": quantities["unaccounted"] == 0,
+            }
+        )
+        result["forward_traces"][lot] = forward_ids
+        result["backward_traces"][lot] = backward_ids
+        result["reconciliations"].append(expected_reconciliation)
+        result["evidence_ids"].extend((*forward_ids, *position_ids, *reconciliation_ids))
+        if quantities["unaccounted"]:
+            result["evidence_gaps"].append(f"{lot}: {quantities['unaccounted']} unaccounted units")
+    result["evidence_ids"] = list(dict.fromkeys(result["evidence_ids"]))
+    result["affected_facilities"] = sorted(facilities)
+    return canonical_json_bytes(result)
+
+
 class InvestigationSession:
     """Bounded task workers shared below the two independent schedulers."""
 
@@ -331,6 +450,8 @@ class InvestigationSession:
         self.halted = False
         self.intelligence = self.matching = self.traceability = None
         self.active, self.events, self.inventory, self.reconciliations = [], [], [], []
+        self.backward_events = []
+        self.source_assessment = None
 
     def escalate(self, fact):
         self.facts.append(fact)
@@ -403,6 +524,7 @@ class InvestigationSession:
             backward = await self.gateway.trace_backward(lot)
             records = _validated_lineage(lot, forward, backward)
             self.events.extend(records)
+            self.backward_events.extend(TraceEvent.model_validate(row) for row in backward)
             self.facts.append(
                 f"lineage:{lot}:{canonical_sha256({row.event_id: row.model_dump(mode='json') for row in records})}"
             )
@@ -420,12 +542,22 @@ class InvestigationSession:
                 f"inventory:{lot}:{canonical_sha256([row.model_dump(mode='json') for row in positions])}"
             )
             self.reconciliations.append(await self.gateway.reconcile_units(lot))
-        self.traceability = assess_traceability(
+        self.source_assessment = _captured_assessment(
+            self.active, self.events, self.backward_events, self.inventory, self.reconciliations
+        )
+        assessed = assess_traceability(
             lot_ids=self.active,
             events=self.events,
             inventory_positions=self.inventory,
             reconciliations=self.reconciliations,
         )
+        self.traceability = TraceabilityAssessment.model_validate(assessed.model_dump(mode="json"))
+        if (
+            canonical_json_bytes(self.traceability.model_dump(mode="json"))
+            != self.source_assessment
+        ):
+            raise ValueError("assessment citations or coverage disagree with captured sources")
+        self.facts.extend(assessment_citation_facts(self.traceability.model_dump(mode="json")))
         for row in self.traceability.reconciliations:
             self.facts.extend(
                 f"quantity:{row.lot_id}:{name}:{getattr(row, name)}"
@@ -467,7 +599,7 @@ class InvestigationSession:
         if not proposal.executed:
             self.facts.append("writes_executed:0")
             self.criteria.append("draft_only")
-        if not _independent_verify(self.matching, self.traceability, proposal):
+        if not _independent_verify(self.matching, self.source_assessment, proposal):
             raise ValueError("independent containment verification failed")
         self.facts.append("ambiguous_holds:0")
         self.criteria.extend(

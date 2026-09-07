@@ -6,6 +6,7 @@ from recallops.evaluation.orchestration_schema import (
     OPERATIONS_TOOLS,
     SPECIALISTS,
     OrchestrationEvalCorpus,
+    audited_assessment_facts,
     audited_predicate,
     evidence_boundary_sha256,
 )
@@ -340,6 +341,7 @@ def generate():
                                 ]
                                 if quantities["unaccounted"]:
                                     stop = "evidence_gap"
+                            facts.extend(audited_assessment_facts(tuple(lot for lot, _ in active)))
                             criteria.append("quantities_verified")
                             if intent == "containment":
                                 specialists = list(SPECIALISTS)

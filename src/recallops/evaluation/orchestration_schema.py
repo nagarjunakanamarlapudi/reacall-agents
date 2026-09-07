@@ -194,6 +194,141 @@ class OrchestrationCase(InvestigationInput):
         return self
 
 
+def assessment_citation_facts(value):
+    """Serialize checked citation mappings only; no inference or specialist execution."""
+    facts = []
+    for coverage in value["coverage"]:
+        lot = coverage["lot_id"]
+        facts.append(f"assessment:{lot}:coverage:{canonical_sha256(coverage)}")
+        for name in (
+            "event_ids",
+            "forward_event_ids",
+            "backward_event_ids",
+            "inventory_evidence_ids",
+            "reconciliation_evidence_ids",
+        ):
+            facts.append(f"assessment:{lot}:{name}:{canonical_sha256(coverage[name])}")
+        for facility, identifiers in coverage["facility_evidence"].items():
+            facts.append(f"assessment:{lot}:facility:{facility}:{canonical_sha256(identifiers)}")
+    for row in value["reconciliations"]:
+        for component, identifiers in row["component_evidence"].items():
+            facts.append(
+                f"assessment:{row['lot_id']}:component:{component}:{canonical_sha256(identifiers)}"
+            )
+        facts.append(
+            f"assessment:{row['lot_id']}:reconciliation:{canonical_sha256(row['evidence_ids'])}"
+        )
+    for name in ("evidence_ids", "affected_facilities"):
+        facts.append(f"assessment:all:{name}:{canonical_sha256(value[name])}")
+    return tuple(facts)
+
+
+def audited_assessment_facts(lot_ids):
+    """Gold citations derived from the pinned snapshot, never an evaluated adapter.
+
+    This independent corpus audit traverses snapshot ancestry and projects facility
+    and quantity-component relationships. It shares only fact serialization with
+    runtime verification of captured reads.
+    """
+    dataset = load_demo_dataset(DATA_DIR)
+    projection = {"coverage": [], "reconciliations": [], "evidence_ids": []}
+    affected = set()
+    for lot in lot_ids:
+        records = {row["event_id"]: row for row in dataset["events"] if row["lot_id"] == lot}
+        inventory = [row for row in dataset["inventory_positions"] if row["lot_id"] == lot]
+
+        def ancestry(identifier):
+            chain = []
+            while identifier is not None:
+                if identifier in chain:
+                    raise ValueError("invalid audited source ancestry")
+                chain.append(identifier)
+                identifier = records[identifier]["parent_event_id"]
+            return tuple(reversed(chain))
+
+        chains = {identifier: ancestry(identifier) for identifier in records}
+        order_keys = {
+            identifier: (row["occurred_at"], identifier) for identifier, row in records.items()
+        }
+        forward = sorted(
+            records, key=lambda identifier: tuple(order_keys[key] for key in chains[identifier])
+        )
+        backward = sorted(
+            records, key=lambda identifier: (-len(chains[identifier]), order_keys[identifier])
+        )
+        positions = [row["position_id"] for row in inventory]
+        components = {
+            name: [
+                identifier
+                for identifier in forward
+                if records[identifier]["event_type"] == event_type
+            ]
+            for name, event_type in (
+                ("received", "receiving"),
+                ("on_hand", None),
+                ("quarantined", "quarantine"),
+                ("sold", "sale"),
+                ("returned", "return"),
+                ("disposed", "disposal"),
+            )
+        }
+        components["on_hand"] = positions
+        reconciliation = list(
+            dict.fromkeys(identifier for ids in components.values() for identifier in ids)
+        )
+        components["unaccounted"] = reconciliation
+        facility_ids = sorted(
+            {
+                facility
+                for row in records.values()
+                for facility in (row["from_facility"], row["to_facility"])
+                if facility
+            }
+            | {row["facility_id"] for row in inventory}
+        )
+        facility_evidence = {
+            facility: [
+                identifier
+                for identifier in forward
+                if facility
+                in (records[identifier]["from_facility"], records[identifier]["to_facility"])
+            ]
+            + [row["position_id"] for row in inventory if row["facility_id"] == facility]
+            for facility in facility_ids
+        }
+        gap = (
+            sum(row["quantity"] for row in records.values() if row["event_type"] == "receiving")
+            - sum(
+                row["quantity"]
+                for row in records.values()
+                if row["event_type"] in {"quarantine", "sale", "return", "disposal"}
+            )
+            - sum(row["on_hand"] for row in inventory)
+        )
+        projection["coverage"].append(
+            {
+                "lot_id": lot,
+                "facility_ids": facility_ids,
+                "event_ids": forward,
+                "forward_event_ids": forward,
+                "backward_event_ids": backward,
+                "inventory_evidence_ids": positions,
+                "reconciliation_evidence_ids": reconciliation,
+                "facility_evidence": facility_evidence,
+                "unaccounted_units": gap,
+                "complete": gap == 0,
+            }
+        )
+        projection["reconciliations"].append(
+            {"lot_id": lot, "component_evidence": components, "evidence_ids": reconciliation}
+        )
+        projection["evidence_ids"].extend((*forward, *positions, *reconciliation))
+        affected.update(facility_ids)
+    projection["evidence_ids"] = list(dict.fromkeys(projection["evidence_ids"]))
+    projection["affected_facilities"] = sorted(affected)
+    return assessment_citation_facts(projection)
+
+
 def audited_predicate():
     """Parse the audited notice structure without importing evaluated agent code."""
     payload = load_recall_snapshot("H-1230-2026", data_dir=DATA_DIR).payload
@@ -487,6 +622,18 @@ def load_orchestration_cases(path: Path) -> OrchestrationEvalCorpus:
             mode="json"
         ) != predicate or case.expected_product_catalog_sha256 != canonical_sha256(catalog):
             raise ValueError("gold predicate differs from audited snapshot")
+        scoped_lots = tuple(
+            lot
+            for lot in case.lot_ids
+            if any(
+                call.name == "reconcile_units" and call.input_sha256 == canonical_sha256(lot)
+                for call in case.expected_calls
+            )
+        )
+        declared = {fact for fact in case.evidence_facts if fact.startswith("assessment:")}
+        expected = set(audited_assessment_facts(scoped_lots)) if scoped_lots else set()
+        if declared != expected:
+            raise ValueError("gold assessment citations differ from audited snapshot")
         if case.expected_citations != ("openfda:H-1230-2026",):
             raise ValueError("gold citation differs from audited snapshot")
     return corpus
