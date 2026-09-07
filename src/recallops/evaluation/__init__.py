@@ -1,6 +1,9 @@
 """Deterministic, offline evaluation contracts for RecallOps."""
 
 from recallops.evaluation.orchestration_benchmark import (
+    LiveProgram,
+    LiveRunnerFactory,
+    LiveUsage,
     load_orchestration_report,
     run_orchestration_benchmark,
     validate_orchestration_report,
@@ -35,6 +38,9 @@ from recallops.evaluation.schema import (
 )
 
 __all__ = [
+    "LiveProgram",
+    "LiveRunnerFactory",
+    "LiveUsage",
     "OrchestrationEvalReport",
     "load_orchestration_cases",
     "load_orchestration_report",

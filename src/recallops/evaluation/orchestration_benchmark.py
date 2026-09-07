@@ -10,20 +10,22 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from time import perf_counter
 from typing import Any
 
-from recallops.agents.deep_supervisor import build_deep_supervisor
-from recallops.agents.planner import plan_investigation
+from recallops.agents.deep_supervisor import (
+    _make_read_config,
+    _make_sealed_capability,
+    build_deep_supervisor,
+)
+from recallops.agents.planner import InvestigationPlan, plan_investigation
 from recallops.agents.prompts import (
-    CONTAINMENT_COMMUNICATIONS_PROMPT,
-    PRODUCT_LOT_MATCHING_PROMPT,
-    RECALL_INTELLIGENCE_PROMPT,
     SUPERVISOR_PROMPT,
-    TRACEABILITY_RECONCILIATION_PROMPT,
 )
 from recallops.agents.specialists import (
     ContainmentProposal,
@@ -34,14 +36,17 @@ from recallops.agents.specialists import (
     draft_containment,
     investigate_recall,
 )
-from recallops.data.loaders import load_recall_snapshot
+from recallops.config import Settings
 from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256, verify_sha256
 from recallops.evaluation.orchestration_schema import (
     OPERATIONS_TOOLS,
     READ_TOOLS,
     ComparisonDeltas,
+    Count,
+    FrozenContract,
     InvestigationInput,
     LiveProfileStatus,
+    Milliseconds,
     OrchestrationCase,
     OrchestrationCaseResult,
     OrchestrationEvalCorpus,
@@ -55,10 +60,14 @@ from recallops.evaluation.orchestration_schema import (
     evidence_boundary_sha256,
     load_orchestration_cases,
 )
-from recallops.models import RecallPredicate
+from recallops.models import InventoryPosition, RecallPredicate, RecallRecord, TraceEvent
 from recallops.paths import DATA_DIR
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
+
+_CASE_READS: ContextVar[tuple[list[ToolCallObservation], int] | None] = ContextVar(
+    "orchestration_case_reads", default=None
+)
 
 
 def _family(name: str) -> str:
@@ -74,9 +83,11 @@ class ReadOnlyEvidenceGateway:
     """Own only snapshot read services, with a hard bound at each invocation."""
 
     max_tool_calls: int
+    sealed: bool = False
     _registry: RecallRegistryService = field(init=False, repr=False)
     _traceability: TraceabilityService = field(init=False, repr=False)
     _calls: list[ToolCallObservation] = field(default_factory=list, init=False, repr=False)
+    _capabilities: tuple = field(default=(), init=False, repr=False)
 
     def __post_init__(self):
         if type(self.max_tool_calls) is not int or not 1 <= self.max_tool_calls <= 16:
@@ -87,50 +98,74 @@ class ReadOnlyEvidenceGateway:
         object.__setattr__(
             self, "_traceability", TraceabilityService(data_dir=DATA_DIR, source_mode="snapshot")
         )
+        if self.sealed:
+            config = _make_read_config(
+                "direct", Settings(data_dir=DATA_DIR, source_mode="snapshot")
+            )
+            object.__setattr__(
+                self,
+                "_capabilities",
+                tuple(_make_sealed_capability(config, name) for name in READ_TOOLS),
+            )
 
-    def _read(self, name: str, value: Any):
+    async def _read(self, name: str, value: Any):
         if name not in READ_TOOLS:
             raise ValueError("capability outside read boundary")
         if len(self._calls) >= self.max_tool_calls:
             raise RuntimeError("tool budget exhausted")
+        capture = _CASE_READS.get()
+        if capture is not None and len(capture[0]) >= capture[1]:
+            raise RuntimeError("case tool budget exhausted")
         payload = value.model_dump(mode="json") if isinstance(value, RecallPredicate) else value
         fingerprint = canonical_sha256(payload)
         succeeded = False
         try:
-            service = self._registry if name == "get_recall" else self._traceability
-            result = getattr(service, name)(value)
+            if self.sealed:
+                argument = (
+                    "recall_number"
+                    if name == "get_recall"
+                    else "predicate"
+                    if name in {"find_candidate_products", "match_lots"}
+                    else "lot_id"
+                )
+                result = await self._capabilities[READ_TOOLS.index(name)](**{argument: value})
+            else:
+                service = self._registry if name == "get_recall" else self._traceability
+                result = getattr(service, name)(value)
             succeeded = True
             return result
         finally:
-            self._calls.append(
-                ToolCallObservation(
-                    name=name,
-                    family=_family(name),
-                    input_sha256=fingerprint,
-                    succeeded=succeeded,
-                )
+            observation = ToolCallObservation(
+                name=name,
+                family=_family(name),
+                input_sha256=fingerprint,
+                succeeded=succeeded,
             )
+            self._calls.append(observation)
+            if capture is not None:
+                capture[0].append(observation)
 
     async def get_recall(self, recall_number):
-        return self._read("get_recall", recall_number)
+        value = await self._read("get_recall", recall_number)
+        return RecallRecord.model_validate(value) if value is not None else None
 
     async def find_candidate_products(self, predicate):
-        return self._read("find_candidate_products", predicate)
+        return await self._read("find_candidate_products", predicate)
 
     async def match_lots(self, predicate):
-        return self._read("match_lots", predicate)
+        return await self._read("match_lots", predicate)
 
     async def trace_forward(self, lot_id):
-        return self._read("trace_forward", lot_id)
+        return await self._read("trace_forward", lot_id)
 
     async def trace_backward(self, lot_id):
-        return self._read("trace_backward", lot_id)
+        return await self._read("trace_backward", lot_id)
 
     async def get_inventory(self, lot_id):
-        return self._read("get_inventory", lot_id)
+        return await self._read("get_inventory", lot_id)
 
     async def reconcile_units(self, lot_id):
-        return self._read("reconcile_units", lot_id)
+        return await self._read("reconcile_units", lot_id)
 
 
 def _exposed_tools() -> tuple[str, ...]:
@@ -145,182 +180,398 @@ def _exposed_tools() -> tuple[str, ...]:
 
 
 def _independent_verify(matching, traceability, proposal) -> bool:
-    """Revalidate typed outputs and check policy invariants independently of drafts."""
+    """Verify complete target coverage from typed source evidence, not draft claims."""
     matching = ProductLotAssessment.model_validate(matching.model_dump(mode="python"))
     traceability = TraceabilityAssessment.model_validate(traceability.model_dump(mode="python"))
     proposal = ContainmentProposal.model_validate(proposal.model_dump(mode="python"))
-    confirmed = set(matching.confirmed_lot_ids)
-    ambiguous = set(matching.ambiguous_lot_ids)
-    facilities = {
-        facility for coverage in traceability.coverage for facility in coverage.facility_evidence
-    }
-    if confirmed & ambiguous or facilities != set(traceability.affected_facilities):
+    confirmed, ambiguous = set(matching.confirmed_lot_ids), set(matching.ambiguous_lot_ids)
+    facilities = {f for coverage in traceability.coverage for f in coverage.facility_evidence}
+    if (
+        confirmed & ambiguous
+        or facilities != set(traceability.affected_facilities)
+        or proposal.executed
+    ):
         return False
-    if proposal.executed or not proposal.communication_drafts:
-        return False
-    held = {
-        target
-        for action in proposal.proposed_actions
-        if action.action_type == "apply_inventory_hold"
-        for target in action.target_ids
-    }
-    return held == confirmed and not held & ambiguous
 
+    def targets(action_type):
+        return {
+            target
+            for action in proposal.proposed_actions
+            if action.action_type == action_type
+            for target in action.target_ids
+        }
 
-async def _investigate(
-    inputs: InvestigationInput, budget: int, *, fixed: bool
-) -> TrajectoryObservation:
-    started = perf_counter()
-    tasks, specialists, facts, criteria = [], [], [], []
-    gateway = None
-    stop = "error"
-    try:
-        gateway = ReadOnlyEvidenceGateway(max_tool_calls=budget)
-        if fixed:
-            plan = plan_investigation(case_id=inputs.id, question=inputs.question)
-            delegation = tuple(todo.specialist.value for todo in plan.todos)
-        else:
-            delegation = ()
-
-        def delegate(index):
-            if fixed:
-                specialists.append(delegation[index])
-
-        delegate(0)
-        tasks.append("intake")
-        recall = await gateway.get_recall(inputs.recall_number)
-        if recall is None:
-            facts.append(f"recall_missing:{inputs.recall_number}")
-            criteria.append("missing_evidence_reported")
-            tasks.append("escalate")
-            stop = "evidence_gap"
-        else:
-            intelligence = investigate_recall(recall)
-            predicate = intelligence.predicate
-            facts.extend(
-                [
-                    f"recall:{intelligence.recall_number}",
-                    f"julian_window:{predicate.julian_start}-{predicate.julian_end}",
-                ]
-            )
-            if (
-                intelligence.source_provenance == "OFFICIAL_OPENFDA_SNAPSHOT"
-                and intelligence.citations
-            ):
-                facts.append("source:official_snapshot")
-                criteria.append("predicate_cited")
-            delegate(1)
-            tasks.append("matching")
-            products = await gateway.find_candidate_products(predicate)
-            all_lots = await gateway.match_lots(predicate)
-            by_id = {lot["lot_id"]: lot for lot in all_lots}
-            missing = [lot_id for lot_id in inputs.lot_ids if lot_id not in by_id]
-            if missing:
-                facts.extend(f"lot_missing:{lot_id}" for lot_id in missing)
-                criteria.append("missing_evidence_reported")
-                tasks.append("escalate")
-                stop = "evidence_gap"
-            else:
-                matching = assess_product_lots(
-                    predicate=predicate,
-                    candidate_products=products,
-                    candidate_lots=[by_id[lot_id] for lot_id in inputs.lot_ids],
-                )
-                facts.extend(
-                    f"classification:{item.lot_id}:{item.classification}"
-                    for item in matching.decisions
-                )
-                criteria.append("scope_classified")
-                active = [
-                    item.lot_id for item in matching.decisions if item.classification != "rejected"
-                ]
-                if not active:
-                    tasks.append("verify")
-                    criteria.append("out_of_scope_reported")
-                    stop = "out_of_scope"
-                else:
-                    delegate(2)
-                    tasks.append("lineage")
-                    events, positions, reconciliations = [], [], []
-                    for lot_id in active:
-                        forward = await gateway.trace_forward(lot_id)
-                        backward = await gateway.trace_backward(lot_id)
-                        if {row["event_id"] for row in forward} != {
-                            row["event_id"] for row in backward
-                        }:
-                            raise ValueError("forward/backward lineage mismatch")
-                        events.extend(forward)
-                        positions.extend(await gateway.get_inventory(lot_id))
-                        reconciliations.append(await gateway.reconcile_units(lot_id))
-                    tasks.append("reconciliation")
-                    traceability = assess_traceability(
-                        lot_ids=active,
-                        events=events,
-                        inventory_positions=positions,
-                        reconciliations=reconciliations,
-                    )
-                    criteria.extend(["lineage_supported", "quantities_verified"])
-                    facts.extend(
-                        f"unaccounted:{row.lot_id}:{row.unaccounted}"
-                        for row in traceability.reconciliations
-                    )
-                    delegate(3)
-                    tasks.append("containment")
-                    proposal = draft_containment(
-                        case_id=inputs.id,
-                        expected_case_version=0,
-                        matching=matching,
-                        traceability=traceability,
-                    )
-                    if proposal.executed is False:
-                        criteria.append("draft_only")
-                        facts.append("writes_executed:0")
-                    tasks.append("verify")
-                    if not _independent_verify(matching, traceability, proposal):
-                        raise ValueError("independent policy verification failed")
-                    criteria.append("policy_verified")
-                    facts.append("ambiguous_holds:0")
-                    stop = (
-                        "evidence_gap"
-                        if traceability.evidence_gaps or matching.ambiguous_lot_ids
-                        else "human_review"
-                    )
-    except Exception:
-        # An explicit failed observation remains in the denominator. Exceptions can
-        # contain raw payloads/provider secrets, so never serialize their message.
-        stop = "error"
-    calls = tuple(gateway._calls) if gateway is not None else ()
-    routes = tuple(
-        dict.fromkeys(
-            "official" if call.family == "registry" else "synthetic"
-            for call in calls
-            if call.family in {"registry", "traceability"}
+    facility_drafts = [
+        draft for draft in proposal.communication_drafts if draft.audience == "facility"
+    ]
+    manager_drafts = [
+        draft for draft in proposal.communication_drafts if draft.audience == "food_safety_manager"
+    ]
+    return (
+        targets("apply_inventory_hold") == confirmed
+        and targets("create_facility_tasks") == facilities
+        and bool(facility_drafts)
+        and bool(manager_drafts)
+        and {target for draft in facility_drafts for target in draft.target_ids} == facilities
+        and {target for draft in manager_drafts for target in draft.target_ids}
+        == confirmed | ambiguous
+        and all(
+            action.action_type in {"apply_inventory_hold", "create_facility_tasks"}
+            for action in proposal.proposed_actions
         )
     )
-    return TrajectoryObservation(
-        tasks=tuple(tasks),
-        routes=routes,
-        specialists=tuple(specialists),
-        tool_calls=calls,
-        evidence_facts=tuple(facts),
-        completion_criteria=tuple(criteria),
-        safe_stop=stop,
-        duration_ms=(perf_counter() - started) * 1000.0,
-    )
+
+
+def _validated_lineage(lot_id, forward, backward):
+    """Require typed content agreement and real ancestry in both observed directions."""
+    left = [TraceEvent.model_validate(row) for row in forward]
+    right = [TraceEvent.model_validate(row) for row in backward]
+    by_id = {row.event_id: row for row in left}
+    if not left or len(by_id) != len(left) or len(right) != len(left):
+        raise ValueError("incomplete or duplicate lineage")
+    if len({row.event_id for row in right}) != len(right):
+        raise ValueError("duplicate backward lineage")
+    if any(row.lot_id != lot_id for row in (*left, *right)):
+        raise ValueError("lineage lot scope mismatch")
+    if {row.event_id: row for row in right} != by_id:
+        raise ValueError("forward/backward source record mismatch")
+    depths, visiting = {}, set()
+
+    def depth(identifier):
+        if identifier in visiting:
+            raise ValueError("lineage cycle")
+        if identifier in depths:
+            return depths[identifier]
+        visiting.add(identifier)
+        event = by_id[identifier]
+        if event.parent_event_id:
+            if event.parent_event_id not in by_id:
+                raise ValueError("missing lineage parent")
+            parent = by_id[event.parent_event_id]
+            if (parent.to_facility or parent.from_facility) != (
+                event.from_facility or event.to_facility
+            ):
+                raise ValueError("lineage facility continuity mismatch")
+            value = depth(event.parent_event_id) + 1
+        else:
+            if event.event_type != "receiving" or not event.to_facility:
+                raise ValueError("invalid receiving root")
+            value = 0
+        visiting.remove(identifier)
+        depths[identifier] = value
+        return value
+
+    for row in left:
+        depth(row.event_id)
+    fpos = {row.event_id: index for index, row in enumerate(left)}
+    bpos = {row.event_id: index for index, row in enumerate(right)}
+    if any(
+        row.parent_event_id
+        and (
+            fpos[row.parent_event_id] >= fpos[row.event_id]
+            or bpos[row.parent_event_id] <= bpos[row.event_id]
+        )
+        for row in left
+    ):
+        raise ValueError("incorrect forward/backward ancestry order")
+    if [depths[row.event_id] for row in right] != sorted(
+        (depths[row.event_id] for row in right), reverse=True
+    ):
+        raise ValueError("backward lineage is not descending ancestry depth")
+    return left
+
+
+class InvestigationSession:
+    """Bounded task workers shared below the two independent schedulers."""
+
+    def __init__(self, inputs, budget, *, sealed=False):
+        self.started = perf_counter()
+        self.inputs = inputs
+        self.gateway = ReadOnlyEvidenceGateway(max_tool_calls=budget, sealed=sealed)
+        self.tasks, self.specialists, self.facts, self.criteria = [], [], [], []
+        self.stop = "human_review"
+        self.halted = False
+        self.intelligence = self.matching = self.traceability = None
+        self.active, self.events, self.inventory, self.reconciliations = [], [], [], []
+
+    def escalate(self, fact):
+        self.facts.append(fact)
+        self.criteria.append("missing_evidence_reported")
+        self.tasks.append("escalate")
+        self.stop, self.halted = "evidence_gap", True
+
+    async def intake(self):
+        self.tasks.append("intake")
+        recall = await self.gateway.get_recall(self.inputs.recall_number)
+        if recall is None:
+            self.escalate(f"recall_missing:{self.inputs.recall_number}")
+            return
+        self.intelligence = investigate_recall(recall)
+        value = self.intelligence
+        self.facts.extend(
+            f"field:{name}:{canonical_sha256(item)}"
+            for name, item in value.predicate.model_dump(mode="json").items()
+        )
+        self.facts.append(
+            f"field:official_products:{canonical_sha256([item.model_dump(mode='json') for item in value.official_products])}"
+        )
+        self.facts.extend(f"citation:{citation}" for citation in value.citations)
+        if value.source_provenance == "OFFICIAL_OPENFDA_SNAPSHOT":
+            self.facts.append("source:official_snapshot")
+        if value.citations:
+            self.criteria.append("predicate_cited")
+
+    async def matching_task(self):
+        self.tasks.append("matching")
+        predicate = self.intelligence.predicate
+        products = await self.gateway.find_candidate_products(predicate)
+        lots = await self.gateway.match_lots(predicate)
+        by_id = {row["lot_id"]: row for row in lots}
+        missing = [lot for lot in self.inputs.lot_ids if lot not in by_id]
+        if missing:
+            partial = assess_product_lots(
+                predicate=predicate,
+                candidate_products=products,
+                candidate_lots=[by_id[lot] for lot in self.inputs.lot_ids if lot in by_id],
+            )
+            self.facts.extend(
+                f"classification:{row.lot_id}:{row.classification}" for row in partial.decisions
+            )
+            self.escalate(f"lot_missing:{missing[0]}")
+            self.facts.extend(f"lot_missing:{lot}" for lot in missing[1:])
+            return
+        self.matching = assess_product_lots(
+            predicate=predicate,
+            candidate_products=products,
+            candidate_lots=[by_id[lot] for lot in self.inputs.lot_ids],
+        )
+        self.facts.extend(
+            f"classification:{row.lot_id}:{row.classification}" for row in self.matching.decisions
+        )
+        self.criteria.append("scope_classified")
+        self.active = [
+            row.lot_id for row in self.matching.decisions if row.classification != "rejected"
+        ]
+        if not self.active:
+            self.criteria.append("out_of_scope_reported")
+            self.stop, self.halted = "out_of_scope", True
+        elif self.matching.ambiguous_lot_ids:
+            self.stop = "evidence_gap"
+
+    async def lineage(self):
+        self.tasks.append("lineage")
+        for lot in self.active:
+            forward = await self.gateway.trace_forward(lot)
+            backward = await self.gateway.trace_backward(lot)
+            records = _validated_lineage(lot, forward, backward)
+            self.events.extend(records)
+            self.facts.append(
+                f"lineage:{lot}:{canonical_sha256({row.event_id: row.model_dump(mode='json') for row in records})}"
+            )
+        self.criteria.append("lineage_supported")
+
+    async def reconciliation(self):
+        self.tasks.append("reconciliation")
+        for lot in self.active:
+            positions = [
+                InventoryPosition.model_validate(row)
+                for row in await self.gateway.get_inventory(lot)
+            ]
+            self.inventory.extend(positions)
+            self.facts.append(
+                f"inventory:{lot}:{canonical_sha256([row.model_dump(mode='json') for row in positions])}"
+            )
+            self.reconciliations.append(await self.gateway.reconcile_units(lot))
+        self.traceability = assess_traceability(
+            lot_ids=self.active,
+            events=self.events,
+            inventory_positions=self.inventory,
+            reconciliations=self.reconciliations,
+        )
+        for row in self.traceability.reconciliations:
+            self.facts.extend(
+                f"quantity:{row.lot_id}:{name}:{getattr(row, name)}"
+                for name in (
+                    "received",
+                    "on_hand",
+                    "quarantined",
+                    "sold",
+                    "returned",
+                    "disposed",
+                    "unaccounted",
+                )
+            )
+        if self.traceability.evidence_gaps:
+            self.stop = "evidence_gap"
+        self.criteria.append("quantities_verified")
+
+    async def containment(self):
+        self.tasks.append("containment")
+        proposal = draft_containment(
+            case_id=self.inputs.id,
+            expected_case_version=0,
+            matching=self.matching,
+            traceability=self.traceability,
+        )
+        for action in proposal.proposed_actions:
+            prefix = (
+                "hold_target"
+                if action.action_type == "apply_inventory_hold"
+                else "facility_task_target"
+            )
+            self.facts.extend(f"{prefix}:{target}" for target in sorted(action.target_ids))
+        self.facts.extend(
+            f"facility_message_target:{target}"
+            for draft in proposal.communication_drafts
+            if draft.audience == "facility"
+            for target in sorted(draft.target_ids)
+        )
+        if not proposal.executed:
+            self.facts.append("writes_executed:0")
+            self.criteria.append("draft_only")
+        if not _independent_verify(self.matching, self.traceability, proposal):
+            raise ValueError("independent containment verification failed")
+        self.facts.append("ambiguous_holds:0")
+        self.criteria.extend(
+            (
+                "policy_verified",
+                "facility_tasks_supported",
+                "facility_communications_supported",
+                "confirmed_holds_supported",
+            )
+        )
+
+    def finish(self):
+        if self.stop != "error" and (not self.tasks or self.tasks[-1] != "escalate"):
+            self.tasks.append("verify")
+        calls = tuple(self.gateway._calls)
+        return TrajectoryObservation(
+            tasks=tuple(self.tasks),
+            routes=tuple(
+                dict.fromkeys(
+                    "official" if call.family == "registry" else "synthetic" for call in calls
+                )
+            ),
+            specialists=tuple(self.specialists),
+            tool_calls=calls,
+            evidence_facts=tuple(self.facts),
+            completion_criteria=tuple(self.criteria),
+            safe_stop=self.stop,
+            duration_ms=(perf_counter() - self.started) * 1000.0,
+        )
 
 
 class BoundedSingleAgentProfile:
     name = "bounded_single_agent"
 
     async def run(self, inputs: InvestigationInput, budget: int) -> TrajectoryObservation:
-        return await _investigate(inputs, budget, fixed=False)
+        session = InvestigationSession(inputs, budget)
+        # A generalist's own sequential plan, independent of the specialist planner.
+        sequence = ("intake", "matching_task", "lineage", "reconciliation", "containment")
+        limit = {"intake": 1, "matching": 2, "lineage": 3, "reconciliation": 4, "containment": 5}[
+            inputs.intent
+        ]
+        try:
+            for task in sequence[:limit]:
+                await getattr(session, task)()
+                if session.halted:
+                    break
+        except Exception:
+            session.stop = "error"
+        return session.finish()
+
+
+# Audited dispatch contracts: changing a planner task is not silently ignored.
+_DISPATCH_CONTRACT = (
+    (
+        "recall-intelligence",
+        "Extract the authoritative recall predicate and source citations.",
+        "Product, UPC, plant, date window, geography, hazard, and provenance are cited.",
+    ),
+    (
+        "product-lot-matching",
+        "Classify internal products and lots against the recall predicate.",
+        "Every candidate is exact, probable, ambiguous, or rejected with field rationale.",
+    ),
+    (
+        "traceability-reconciliation",
+        "Trace affected lots and reconcile units by facility.",
+        "Lineage, facility coverage, component evidence, and quantity gaps are explicit.",
+    ),
+    (
+        "containment-communications",
+        "Draft evidence-cited containment actions and communications for review.",
+        "Drafts cite known evidence, exclude ambiguous holds, and execute no writes.",
+    ),
+)
+
+
+def _validated_plan(inputs):
+    plan = plan_investigation(case_id=inputs.id, question=inputs.question)
+    plan = InvestigationPlan.model_validate(plan.model_dump(mode="python"))
+    if plan.case_id != inputs.id or plan.objective != inputs.question.strip():
+        raise ValueError("planner context mismatch")
+    actual = tuple(
+        (todo.specialist.value, todo.task, todo.completion_criteria) for todo in plan.todos
+    )
+    if actual != _DISPATCH_CONTRACT:
+        raise ValueError("unsupported specialist task or order")
+    if any(
+        todo.todo_id != f"todo-{index}" or todo.status != "pending"
+        for index, todo in enumerate(plan.todos, 1)
+    ):
+        raise ValueError("invalid planner completion state")
+    return plan
+
+
+async def _dispatch_specialist(session, role):
+    if role == "recall-intelligence":
+        await session.intake()
+    elif role == "product-lot-matching":
+        await session.matching_task()
+    elif role == "traceability-reconciliation":
+        await session.lineage()
+        if session.inputs.intent in {"reconciliation", "containment"}:
+            await session.reconciliation()
+    elif role == "containment-communications":
+        await session.containment()
+    else:
+        raise ValueError("unknown specialist")
 
 
 class FixedSpecialistsProfile:
     name = "fixed_specialists"
 
     async def run(self, inputs: InvestigationInput, budget: int) -> TrajectoryObservation:
-        return await _investigate(inputs, budget, fixed=True)
+        session = InvestigationSession(inputs, budget)
+        try:
+            plan = _validated_plan(inputs)
+            applicable = {
+                "intake": 1,
+                "matching": 2,
+                "lineage": 3,
+                "reconciliation": 3,
+                "containment": 4,
+            }[inputs.intent]
+            for todo in plan.todos[:applicable]:
+                todo.status = "in_progress"
+                session.specialists.append(todo.specialist.value)
+                await _dispatch_specialist(session, todo.specialist.value)
+                if not session.halted:
+                    required = {
+                        "recall-intelligence": "predicate_cited",
+                        "product-lot-matching": "scope_classified",
+                        "traceability-reconciliation": "lineage_supported",
+                        "containment-communications": "policy_verified",
+                    }[todo.specialist.value]
+                    if required not in session.criteria:
+                        raise ValueError("specialist completion criteria not met")
+                    todo.status = "completed"
+                if session.halted:
+                    break
+        except Exception:
+            session.stop = "error"
+        return session.finish()
 
 
 def _coverage(expected, actual) -> float:
@@ -328,34 +579,10 @@ def _coverage(expected, actual) -> float:
 
 
 def _expected_signatures(case):
-    predicate = investigate_recall(load_recall_snapshot("H-1230-2026", data_dir=DATA_DIR)).predicate
-    predicate_digest = canonical_sha256(predicate.model_dump(mode="json"))
-    active = [
-        lot_id
-        for lot_id in case.lot_ids
-        if any(
-            f"classification:{lot_id}:{label}" in case.evidence_facts
-            for label in ("exact", "probable", "ambiguous")
-        )
-    ]
-    index = 0
-    expected = []
-    for name in case.required_tool_order:
-        if name == "get_recall":
-            fingerprint = canonical_sha256(case.recall_number)
-        elif name in {"find_candidate_products", "match_lots"}:
-            fingerprint = predicate_digest
-        else:
-            if index >= len(active):
-                raise ValueError("case trace contract exceeds labelled active scope")
-            fingerprint = canonical_sha256(active[index])
-            if name == "reconcile_units":
-                index += 1
-        expected.append((name, fingerprint))
-    return expected
+    return [(call.name, call.input_sha256) for call in case.expected_calls]
 
 
-def score_trajectory(
+def _score_trajectory(
     case: OrchestrationCase, observation: TrajectoryObservation, profile: str
 ) -> TrajectoryMetrics:
     """Compute contributions from events, never a model's success assertion."""
@@ -374,13 +601,9 @@ def score_trajectory(
     completion = _coverage(case.completion_criteria, observation.completion_criteria)
     tool_names = tuple(call.name for call in calls)
     families = tuple(dict.fromkeys(call.family for call in calls))
-    required_fields = (
-        "predicate_cited",
-        "scope_classified",
-        "lineage_supported",
-        "quantities_verified",
+    fields = tuple(
+        item for item in case.evidence_facts if item.startswith(("field:", "citation:", "source:"))
     )
-    fields = tuple(item for item in case.completion_criteria if item in required_fields)
     delegation_accuracy = float(tuple(observation.specialists) == tuple(required_specialists))
     missing = len(set(required_specialists) - set(observation.specialists))
     prohibited = sum(
@@ -407,13 +630,18 @@ def score_trajectory(
         and not duplicate_calls
         and not duplicate_work
         and set(observation.evidence_facts) == set(case.evidence_facts)
+        and set(observation.completion_criteria) == set(case.completion_criteria)
+        and (
+            profile == "deep_agents_live"
+            or (observation.tokens is None and observation.estimated_cost is None)
+        )
         and all(call.succeeded for call in calls)
     )
     return TrajectoryMetrics(
         task_success=success,
         task_accuracy=task_accuracy,
         route_accuracy=route_accuracy,
-        required_field_coverage=_coverage(fields, observation.completion_criteria),
+        required_field_coverage=_coverage(fields, observation.evidence_facts),
         evidence_fact_coverage=fact_coverage,
         completion_criteria_coverage=completion,
         delegation_accuracy=delegation_accuracy,
@@ -500,19 +728,49 @@ def _comparison(profiles):
     return deltas, gates, passed
 
 
+def score_trajectory(case, observation, profile):
+    return _score_trajectory(case, observation, profile)
+
+
+def _failed_observation(started, calls=()):
+    return TrajectoryObservation(
+        tasks=(),
+        routes=tuple(
+            dict.fromkeys(
+                "official" if call.family == "registry" else "synthetic" for call in calls
+            )
+        ),
+        specialists=(),
+        tool_calls=tuple(calls),
+        evidence_facts=(),
+        completion_criteria=(),
+        safe_stop="error",
+        duration_ms=(perf_counter() - started) * 1000.0,
+    )
+
+
 async def _run_profile(corpus, adapter):
     results = []
     for case in corpus.cases:
-        inputs = InvestigationInput.model_validate(
-            case.model_dump(include=set(InvestigationInput.model_fields))
-        )
-        observation = await adapter.run(inputs, case.max_tool_calls)
-        results.append(
-            OrchestrationCaseResult(
-                case_id=case.id,
-                observation=observation,
-                metrics=score_trajectory(case, observation, adapter.name),
+        started = perf_counter()
+        calls = []
+        token = _CASE_READS.set((calls, case.max_tool_calls))
+        try:
+            inputs = InvestigationInput.model_validate(
+                case.model_dump(include=set(InvestigationInput.model_fields))
             )
+            observation = await adapter.run(inputs, case.max_tool_calls)
+            observation = TrajectoryObservation.model_validate(observation.model_dump(mode="json"))
+            if observation.tool_calls != tuple(calls):
+                raise ValueError("adapter trace differs from captured reads")
+            metrics = score_trajectory(case, observation, adapter.name)
+        except Exception:
+            observation = _failed_observation(started, calls)
+            metrics = _score_trajectory(case, observation, adapter.name)
+        finally:
+            _CASE_READS.reset(token)
+        results.append(
+            OrchestrationCaseResult(case_id=case.id, observation=observation, metrics=metrics)
         )
     exposed = _exposed_tools()
     return ProfileResult(
@@ -523,44 +781,200 @@ async def _run_profile(corpus, adapter):
     )
 
 
-async def _run_live_profile(model: Any) -> LiveProfileStatus:
-    """Validate the optional sealed factory, reporting unavailable capture honestly.
+class LiveUsage(FrozenContract):
+    """Provider-runner supplied usage; absent values remain explicitly unavailable."""
 
-    A model opt-in is not evidence of a measured trajectory. Until the sealed
-    runtime supplies an observable event bridge, no provider is invoked and no
-    live result is manufactured. This status never changes offline gates.
+    tokens: Count | None = None
+    estimated_cost: Milliseconds | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LiveProgram:
+    """An injected model coordinator operating only via the observable capture API."""
+
+    invoke: Callable[[InvestigationInput, LiveCapture], Awaitable[LiveUsage]]
+    exposed_tool_names: tuple[str, ...] = READ_TOOLS
+
+
+@dataclass(frozen=True, slots=True)
+class LiveRunnerFactory:
+    """Explicit opt-in adapter for a model/provider; credentials stay with its caller.
+
+    The factory gets no evidence authority. Its program is validated before the
+    capture (and its sealed Deep Agents read capabilities) is supplied to invoke.
     """
+
+    provider: str
+    model: str
+    factory: Callable[[], LiveProgram]
+    repetitions: int = 1
+    prompt: str = SUPERVISOR_PROMPT
+
+    def __post_init__(self):
+        if type(self.repetitions) is not int or not 1 <= self.repetitions <= 3:
+            raise ValueError("live repetitions must be 1 through 3")
+        if type(self.provider) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]+", self.provider):
+            raise ValueError("invalid live provider")
+        if (
+            type(self.model) is not str
+            or not self.model.strip()
+            or type(self.prompt) is not str
+            or not self.prompt.strip()
+        ):
+            raise ValueError("live model and prompt must be explicit")
+
+
+class LiveCapture:
+    """No messages or arbitrary facts can be submitted to this observable boundary."""
+
+    __slots__ = ("__session", "required_roles", "prompt")
+
+    def __init__(self, inputs, budget, prompt):
+        self.__session = InvestigationSession(inputs, budget, sealed=True)
+        count = {"intake": 1, "matching": 2, "lineage": 3, "reconciliation": 3, "containment": 4}[
+            inputs.intent
+        ]
+        self.required_roles = tuple(row[0] for row in _DISPATCH_CONTRACT[:count])
+        self.prompt = prompt
+
+    @property
+    def halted(self):
+        return self.__session.halted
+
+    async def execute(self, role: str) -> tuple[str, ...]:
+        session = self.__session
+        index = len(session.specialists)
+        if (
+            session.halted
+            or index >= len(self.required_roles)
+            or role != self.required_roles[index]
+        ):
+            raise ValueError("live delegation is duplicated, out of order, or beyond scope")
+        session.specialists.append(role)
+        await _dispatch_specialist(session, role)
+        return tuple(session.criteria)
+
+    def observation(self):
+        return self.__session.finish()
+
+
+async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
     started = perf_counter()
-    model_id = (
-        model if type(model) is str else f"{type(model).__module__}.{type(model).__qualname__}"
+    if type(model) is not LiveRunnerFactory:
+        # Compatibility with the earlier model-string surface: inspect its sealed
+        # factory without invoking an unadapted graph. Executable callers provide
+        # LiveRunnerFactory so observations and provider usage have typed contracts.
+        identifier = (
+            model if type(model) is str else f"{type(model).__module__}.{type(model).__qualname__}"
+        )
+        provider = identifier.split(":", 1)[0] if ":" in identifier else "unspecified"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", provider):
+            provider = "unspecified"
+        code = "factory_error"
+        try:
+            supervisor = build_deep_supervisor(model=model)
+            surface = set(supervisor.parent_tool_names) | set(supervisor.exposed_read_tool_names)
+            surface.update(
+                name for names in supervisor.subagent_tool_names.values() for name in names
+            )
+            if supervisor.operational_write_tool_names or surface & set(OPERATIONS_TOOLS):
+                code = "prohibited_tool_exposure"
+        except Exception:
+            pass
+        return LiveProfileStatus(
+            status="error",
+            error_code=code,
+            provider=provider,
+            model_sha256=canonical_sha256(identifier),
+            prompt_sha256=canonical_sha256(SUPERVISOR_PROMPT),
+            duration_ms=(perf_counter() - started) * 1000.0,
+        )
+
+    metadata = dict(
+        provider=model.provider,
+        model_sha256=canonical_sha256(model.model),
+        prompt_sha256=canonical_sha256(model.prompt),
+        repetitions=model.repetitions,
     )
-    provider = model_id.split(":", 1)[0] if ":" in model_id else "unspecified"
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", provider):
-        provider = "unspecified"
-    error = "live_capture_unavailable"
     try:
-        supervisor = build_deep_supervisor(model=model)
-        exposed = set(supervisor.parent_tool_names) | set(supervisor.exposed_read_tool_names)
-        exposed.update(name for names in supervisor.subagent_tool_names.values() for name in names)
-        if supervisor.operational_write_tool_names or set(OPERATIONS_TOOLS) & exposed:
-            error = "prohibited_tool_exposure"
+        program = model.factory()
+        if type(program) is not LiveProgram or not callable(program.invoke):
+            raise ValueError("invalid live runner factory")
+        if set(program.exposed_tool_names) != set(READ_TOOLS) or len(
+            program.exposed_tool_names
+        ) != len(READ_TOOLS):
+            return LiveProfileStatus(
+                status="error",
+                error_code="prohibited_tool_exposure",
+                duration_ms=(perf_counter() - started) * 1000.0,
+                **metadata,
+            )
     except Exception:
-        error = "factory_error"
+        return LiveProfileStatus(
+            status="error",
+            error_code="factory_error",
+            duration_ms=(perf_counter() - started) * 1000.0,
+            **metadata,
+        )
+
+    results, usage_rows = [], []
+    had_error = False
+    for _ in range(model.repetitions):
+        for case in corpus.cases:
+            case_started, calls = perf_counter(), []
+            token = _CASE_READS.set((calls, case.max_tool_calls))
+            try:
+                inputs = InvestigationInput.model_validate(
+                    case.model_dump(include=set(InvestigationInput.model_fields))
+                )
+                capture = LiveCapture(inputs, case.max_tool_calls, model.prompt)
+                usage = await program.invoke(inputs, capture)
+                usage = LiveUsage.model_validate(usage.model_dump(mode="json"))
+                observation = capture.observation()
+                observation = TrajectoryObservation.model_validate(
+                    {
+                        **observation.model_dump(mode="json"),
+                        "tokens": usage.tokens,
+                        "estimated_cost": usage.estimated_cost,
+                    }
+                )
+                if observation.tool_calls != tuple(calls):
+                    raise ValueError("live trace differs from observed sealed reads")
+                usage_rows.append(usage)
+            except Exception:
+                had_error = True
+                observation = _failed_observation(case_started, calls)
+                usage_rows.append(LiveUsage())
+            finally:
+                _CASE_READS.reset(token)
+            results.append(
+                OrchestrationCaseResult(
+                    case_id=case.id,
+                    observation=observation,
+                    metrics=_score_trajectory(case, observation, "deep_agents_live"),
+                )
+            )
+    tokens = (
+        sum(row.tokens for row in usage_rows)
+        if all(row.tokens is not None for row in usage_rows)
+        else None
+    )
+    cost = (
+        sum(row.estimated_cost for row in usage_rows)
+        if all(row.estimated_cost is not None for row in usage_rows)
+        else None
+    )
     return LiveProfileStatus(
-        status="error",
-        error_code=error,
-        provider=provider,
-        model_sha256=canonical_sha256(model_id),
-        prompt_sha256=canonical_sha256(
-            [
-                SUPERVISOR_PROMPT,
-                RECALL_INTELLIGENCE_PROMPT,
-                PRODUCT_LOT_MATCHING_PROMPT,
-                TRACEABILITY_RECONCILIATION_PROMPT,
-                CONTAINMENT_COMMUNICATIONS_PROMPT,
-            ]
-        ),
+        status="error" if had_error else "completed",
+        error_code="runner_error" if had_error else None,
+        results=tuple(results),
+        executed_case_count=len(results),
+        tokens=tokens,
+        estimated_cost=cost,
+        tokens_available=tokens is not None,
+        cost_available=cost is not None,
         duration_ms=(perf_counter() - started) * 1000.0,
+        **metadata,
     )
 
 
@@ -591,13 +1005,34 @@ def validate_orchestration_report(
         if tuple(row.case_id for row in profile.results) != tuple(case.id for case in corpus.cases):
             raise ValueError("profile case coverage mismatch")
         for case, row in zip(corpus.cases, profile.results, strict=True):
-            if row.metrics != score_trajectory(case, row.observation, profile.name):
+            if row.metrics != _score_trajectory(case, row.observation, profile.name):
                 raise ValueError("trajectory metrics mismatch")
         if profile.metrics != _aggregate(profile.results, profile.exposed_tool_names):
             raise ValueError("aggregate metrics mismatch")
     deltas, gates, passed = _comparison(report.profiles)
     if (report.deltas, report.metrics, report.gate_passed) != (deltas, gates, passed):
         raise ValueError("comparison gates or deltas mismatch")
+    live = report.live_status
+    if live.results:
+        expected_cases = corpus.cases * live.repetitions
+        if tuple(row.case_id for row in live.results) != tuple(case.id for case in expected_cases):
+            raise ValueError("live repetition/case matrix mismatch")
+        for case, row in zip(expected_cases, live.results, strict=True):
+            if row.metrics != _score_trajectory(case, row.observation, "deep_agents_live"):
+                raise ValueError("live trajectory metric mismatch")
+        observations = [row.observation for row in live.results]
+        tokens = (
+            sum(row.tokens for row in observations)
+            if all(row.tokens is not None for row in observations)
+            else None
+        )
+        cost = (
+            sum(row.estimated_cost for row in observations)
+            if all(row.estimated_cost is not None for row in observations)
+            else None
+        )
+        if (live.tokens, live.estimated_cost) != (tokens, cost):
+            raise ValueError("live usage totals mismatch")
     return report
 
 
@@ -618,7 +1053,7 @@ async def run_orchestration_benchmark(
         await _run_profile(corpus, FixedSpecialistsProfile()),
     )
     live = (
-        await _run_live_profile(live_model)
+        await _run_live_profile(corpus, live_model)
         if live_model is not None
         else LiveProfileStatus(status="not_run_missing_credentials", duration_ms=0.0)
     )

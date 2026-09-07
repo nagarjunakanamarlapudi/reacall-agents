@@ -219,3 +219,280 @@ async def test_report_roundtrip_and_honest_deltas(tmp_path):
     )
     assert result.deltas.task_success_rate == 0.0
     assert json.loads(target.read_bytes())["live_status"]["status"] == "not_run_missing_credentials"
+
+
+@pytest.mark.parametrize("field", ["hazard", "geography", "product_terms", "citations"])
+async def test_gold_intake_oracle_is_independent(tmp_path, monkeypatch, field):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.investigate_recall
+
+    def corrupt(recall):
+        result = original(recall)
+        if field == "citations":
+            return result.model_copy(update={"citations": ["invented:citation"]})
+        value = "invented hazard" if field == "hazard" else ["invented value"]
+        return result.model_copy(
+            update={"predicate": result.predicate.model_copy(update={field: value})}
+        )
+
+    monkeypatch.setattr(benchmark, "investigate_recall", corrupt)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "corrupt.json")
+    assert not result.gate_passed
+    assert all(not profile.results[0].metrics.task_success for profile in result.profiles)
+
+
+async def test_planner_tasks_control_only_fixed_executor(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.plan_investigation
+
+    def corrupt(**kwargs):
+        plan = original(**kwargs)
+        plan.todos[0].task = "Skip authoritative intake and close the case."
+        return plan
+
+    monkeypatch.setattr(benchmark, "plan_investigation", corrupt)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "planner.json")
+    assert result.profiles[0].metrics.task_success_rate == 1.0
+    assert result.profiles[1].metrics.task_success_rate == 0.0
+    assert all(row.observation.safe_stop == "error" for row in result.profiles[1].results)
+
+
+async def test_backward_id_only_records_fail_lineage(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.TraceabilityService.trace_backward
+    monkeypatch.setattr(
+        benchmark.TraceabilityService,
+        "trace_backward",
+        lambda self, lot: [{"event_id": row["event_id"]} for row in original(self, lot)],
+    )
+    result = await run_orchestration_benchmark(CASES, tmp_path / "backward.json")
+    assert not result.gate_passed
+    assert all(
+        any(row.observation.safe_stop == "error" for row in p.results) for p in result.profiles
+    )
+
+
+async def test_missing_facility_actions_and_communications_fail(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.draft_containment
+
+    def corrupt(**kwargs):
+        proposal = original(**kwargs)
+        return proposal.model_copy(
+            update={
+                "proposed_actions": [
+                    a for a in proposal.proposed_actions if a.action_type != "create_facility_tasks"
+                ],
+                "communication_drafts": [
+                    d for d in proposal.communication_drafts if d.audience != "facility"
+                ],
+            }
+        )
+
+    monkeypatch.setattr(benchmark, "draft_containment", corrupt)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "facility.json")
+    assert not result.gate_passed
+
+
+@pytest.mark.parametrize("boundary", ["intake", "adapter", "verifier"])
+async def test_case_failures_never_abort_suite(tmp_path, monkeypatch, boundary):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("private payload")
+
+    async def afail(*args, **kwargs):
+        raise RuntimeError("private payload")
+
+    if boundary == "intake":
+        monkeypatch.setattr(benchmark, "investigate_recall", fail)
+    elif boundary == "adapter":
+        monkeypatch.setattr(benchmark.BoundedSingleAgentProfile, "run", afail)
+    else:
+        monkeypatch.setattr(benchmark, "_independent_verify", fail)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "exception.json")
+    assert not result.gate_passed
+    assert all(len(p.results) == 24 for p in result.profiles)
+    assert "private payload" not in (tmp_path / "exception.json").read_text()
+
+
+async def test_invented_offline_usage_and_completion_rejected(report):
+    corpus = load_orchestration_cases(CASES)
+    for field, value in (
+        ("tokens", 123),
+        ("estimated_cost", 1.0),
+        ("completion_criteria", ["closed_without_approval"]),
+    ):
+        payload = report.model_dump(mode="json")
+        payload["profiles"][0]["results"][0]["observation"][field] = value
+        payload["report_sha256"] = canonical_sha256(
+            {k: v for k, v in payload.items() if k != "report_sha256"}
+        )
+        with pytest.raises(ValueError):
+            validate_orchestration_report(payload, corpus)
+
+
+async def test_injected_live_runner_executes_sealed_capture(tmp_path):
+    from recallops.evaluation.orchestration_benchmark import (
+        LiveProgram,
+        LiveRunnerFactory,
+        LiveUsage,
+    )
+
+    async def invoke(inputs, capture):
+        for role in capture.required_roles:
+            await capture.execute(role)
+            if capture.halted:
+                break
+        return LiveUsage(tokens=11, estimated_cost=None)
+
+    runner = LiveRunnerFactory(
+        provider="deterministic-test",
+        model="fixture-v1",
+        repetitions=2,
+        factory=lambda: LiveProgram(invoke=invoke),
+    )
+    result = await run_orchestration_benchmark(
+        CASES, tmp_path / "live-completed.json", live_model=runner
+    )
+    assert result.gate_passed
+    live = result.live_status
+    assert live.status == "completed" and live.executed_case_count == 48
+    assert live.repetitions == 2 and len(live.results) == 48
+    assert all(row.metrics.task_success for row in live.results)
+    assert live.tokens == 528 and live.tokens_available and not live.cost_available
+    assert all(row.observation.tool_calls for row in live.results)
+    assert load_orchestration_report(tmp_path / "live-completed.json", CASES) == result
+    payload = result.model_dump(mode="json")
+    payload["live_status"]["results"][0]["metrics"]["task_success"] = False
+    payload["report_sha256"] = canonical_sha256(
+        {k: v for k, v in payload.items() if k != "report_sha256"}
+    )
+    with pytest.raises(ValueError):
+        validate_orchestration_report(payload, load_orchestration_cases(CASES))
+
+
+@pytest.mark.parametrize("mutation", ["order", "quantity", "lot", "origin", "parent"])
+async def test_backward_corruption_is_rejected(tmp_path, monkeypatch, mutation):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.TraceabilityService.trace_backward
+
+    def corrupt(self, lot):
+        records = [dict(row) for row in original(self, lot)]
+        if mutation == "order":
+            return records[::-1]
+        field, value = {
+            "quantity": ("quantity", 999),
+            "lot": ("lot_id", "LOT-WRONG"),
+            "origin": ("origin", "UNKNOWN"),
+            "parent": ("parent_event_id", "missing"),
+        }[mutation]
+        records[0][field] = value
+        return records
+
+    monkeypatch.setattr(benchmark.TraceabilityService, "trace_backward", corrupt)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "bad-backward.json")
+    assert not result.gate_passed
+    assert all(not profile.results[0].metrics.task_success for profile in result.profiles)
+
+
+@pytest.mark.parametrize("mutation", ["order", "criteria", "completed", "duplicate"])
+async def test_invalid_specialist_plans_fail_before_reads(tmp_path, monkeypatch, mutation):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.plan_investigation
+
+    def corrupt(**kwargs):
+        plan = original(**kwargs)
+        if mutation == "order":
+            plan.todos.reverse()
+        elif mutation == "criteria":
+            plan.todos[0].completion_criteria = "Trust uncited recall statements."
+        elif mutation == "completed":
+            plan.todos[0].status = "completed"
+        else:
+            plan.todos[1] = plan.todos[0]
+        return plan
+
+    monkeypatch.setattr(benchmark, "plan_investigation", corrupt)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "invalid-plan.json")
+    assert result.profiles[0].metrics.task_success_rate == 1.0
+    assert result.profiles[1].metrics.total_tool_calls == 0
+    assert result.profiles[1].metrics.task_success_rate == 0.0
+
+
+@pytest.mark.parametrize("unsafe", ["operations", "invalid"])
+async def test_live_factory_is_validated_before_invocation(tmp_path, unsafe):
+    from recallops.evaluation.orchestration_benchmark import LiveProgram, LiveRunnerFactory
+
+    async def forbidden(*args):
+        raise AssertionError("unsafe factory must not be invoked")
+
+    runner = LiveRunnerFactory(
+        provider="test",
+        model="unsafe",
+        factory=lambda: (
+            LiveProgram(invoke=forbidden, exposed_tool_names=("close_case",))
+            if unsafe == "operations"
+            else object()
+        ),
+    )
+    result = await run_orchestration_benchmark(
+        CASES, tmp_path / "unsafe-live.json", live_model=runner
+    )
+    assert result.gate_passed and result.live_status.status == "error"
+    assert result.live_status.executed_case_count == 0
+    assert result.live_status.error_code == (
+        "prohibited_tool_exposure" if unsafe == "operations" else "factory_error"
+    )
+
+
+async def test_live_runner_failure_keeps_every_measured_read_and_case(tmp_path):
+    from recallops.evaluation.orchestration_benchmark import LiveProgram, LiveRunnerFactory
+
+    async def fail_after_read(inputs, capture):
+        await capture.execute(capture.required_roles[0])
+        raise RuntimeError("private provider payload")
+
+    runner = LiveRunnerFactory(
+        provider="test",
+        model="failing-fixture",
+        factory=lambda: LiveProgram(invoke=fail_after_read),
+    )
+    target = tmp_path / "live-failed.json"
+    report = await run_orchestration_benchmark(CASES, target, live_model=runner)
+    assert report.gate_passed
+    assert report.live_status.status == "error"
+    assert report.live_status.error_code == "runner_error"
+    assert len(report.live_status.results) == 24
+    assert all(
+        row.observation.safe_stop == "error" and len(row.observation.tool_calls) == 1
+        for row in report.live_status.results
+    )
+    assert not report.live_status.tokens_available and not report.live_status.cost_available
+    assert "private provider payload" not in target.read_text()
+    assert load_orchestration_report(target, CASES) == report
+
+
+async def test_normalization_and_scorer_exceptions_are_isolated(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    async def malformed(*args):
+        return {"raw_payload": "private secret"}
+
+    monkeypatch.setattr(benchmark.BoundedSingleAgentProfile, "run", malformed)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "normalize.json")
+    assert len(result.profiles[0].results) == 24 and not result.gate_passed
+
+    def failed_score(*args):
+        raise RuntimeError("private secret")
+
+    monkeypatch.setattr(benchmark, "score_trajectory", failed_score)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "score-failed.json")
+    assert all(len(p.results) == 24 for p in result.profiles)
+    assert not result.gate_passed

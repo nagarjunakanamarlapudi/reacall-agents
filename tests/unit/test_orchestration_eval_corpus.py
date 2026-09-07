@@ -86,3 +86,14 @@ def test_metric_schema_rejects_impossible_values(key, value):
     metrics[key] = value
     with pytest.raises(ValidationError):
         ProfileMetrics.model_validate(metrics)
+
+
+def test_questions_do_not_leak_labels_and_cases_have_distinct_contracts():
+    corpus = load_orchestration_cases(CASES)
+    assert all(case.rationale not in case.question for case in corpus.cases)
+    signatures = [
+        (case.expected_tasks, case.completion_criteria, case.evidence_facts)
+        for case in corpus.cases
+    ]
+    assert len(set(signatures)) == 24
+    assert len({case.expected_tasks for case in corpus.cases}) >= 5
