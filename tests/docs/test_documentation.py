@@ -164,6 +164,22 @@ POLISHED_VISUALS = (
     "recallops-five-minute-demo.png",
 )
 
+EVALUATION_ARCHITECTURE_ROOTS = (
+    "CORPORA",
+    "RUNNERS",
+    "MEASURES",
+    "AUTHORITY",
+    "OPTIONAL",
+    "OUTPUTS",
+    "SCORECARD",
+    "EVAL_BOUNDARY",
+    "LIVE",
+    "JUDGE",
+    "ADVISORY",
+)
+SYSTEM_ARCHITECTURE_EVALUATION_ROOTS = ("EVALUATION", "EV", "SUITES", "SCORE", "EVALSAFE")
+WRITE_AUTHORITY_NODES = ("GN", "W", "OM", "OP", "OPERATIONS", "SQLITE_WRITE")
+
 
 _EDGE_OPERATOR = re.compile(
     r"(?<![-.=~<>])(?:"
@@ -189,8 +205,12 @@ def _mermaid_node_id(segment: str) -> str | None:
 def _mermaid_directions(operator: str) -> tuple[bool, bool]:
     """Return forward/reverse direction flags for one validated operator."""
     without_pipe_label = re.sub(r"\s*\|[^|\n]*\|\s*$", "", operator).strip()
+    if re.fullmatch(r"~~+", without_pipe_label):
+        return False, False
     forward = without_pipe_label[-1:] in {">", "o", "x"}
     reverse = without_pipe_label[:1] in {"<", "o", "x"}
+    if not forward and not reverse:
+        return True, True
     return forward, reverse
 
 
@@ -271,6 +291,15 @@ class DocumentationContractTests(unittest.TestCase):
                     path,
                     f"{source} reaches {target} through {' -> '.join(path or ())}",
                 )
+
+    def assert_mermaid_sets_isolated(
+        self,
+        diagram: str,
+        first: tuple[str, ...],
+        second: tuple[str, ...],
+    ) -> None:
+        self.assert_no_mermaid_path(diagram, first, second)
+        self.assert_no_mermaid_path(diagram, second, first)
 
     def assert_demo_artifact_contract(
         self, path: Path, contract: dict, text: str | None = None
@@ -395,10 +424,10 @@ class DocumentationContractTests(unittest.TestCase):
             ("LIVE", "JUDGE", "ADVISORY"),
             ("SCORECARD",),
         )
-        self.assert_no_mermaid_path(
+        self.assert_mermaid_sets_isolated(
             diagram,
-            ("SCORECARD", "EVAL_BOUNDARY", "LIVE", "JUDGE", "ADVISORY"),
-            ("GN", "W", "OM", "OP", "OPERATIONS", "SQLITE_WRITE"),
+            EVALUATION_ARCHITECTURE_ROOTS,
+            WRITE_AUTHORITY_NODES,
         )
 
     def test_mermaid_directed_edge_extractor_handles_supported_labels_and_chains(self) -> None:
@@ -414,6 +443,10 @@ flowchart LR
   CIRCLE --o REVIEW
   CROSS --x BLOCK
   OM <--> JUDGE
+  OPEN --- PEER
+  DOTTED -. visible .- NOTE
+  THICK_OPEN === VAULT
+  LAYOUT ~~~ ONLY
 """
         self.assertEqual(
             mermaid_directed_edges(fixture),
@@ -431,6 +464,12 @@ flowchart LR
                 ("CROSS", "BLOCK"),
                 ("OM", "JUDGE"),
                 ("JUDGE", "OM"),
+                ("OPEN", "PEER"),
+                ("PEER", "OPEN"),
+                ("DOTTED", "NOTE"),
+                ("NOTE", "DOTTED"),
+                ("THICK_OPEN", "VAULT"),
+                ("VAULT", "THICK_OPEN"),
             },
         )
 
@@ -451,6 +490,56 @@ flowchart LR
                         ("JUDGE",),
                         ("GN", "W", "OM", "OP"),
                     )
+
+    def test_full_authority_guard_covers_subgraphs_open_edges_and_reverse_paths(self) -> None:
+        evaluation = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
+
+        mutations = (
+            (
+                evaluation,
+                EVALUATION_ARCHITECTURE_ROOTS,
+                "OPTIONAL --> OM",
+                r"OPTIONAL.*OM",
+            ),
+            (
+                architecture,
+                SYSTEM_ARCHITECTURE_EVALUATION_ROOTS,
+                "EVALUATION --> OM",
+                r"EVALUATION.*OM",
+            ),
+            (
+                evaluation,
+                EVALUATION_ARCHITECTURE_ROOTS,
+                "JUDGE --- OM",
+                r"JUDGE.*OM",
+            ),
+            (
+                evaluation,
+                EVALUATION_ARCHITECTURE_ROOTS,
+                "OM --> JUDGE",
+                r"OM.*JUDGE",
+            ),
+        )
+        for diagram, roots, mutation, error in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(AssertionError, error):
+                    self.assert_mermaid_sets_isolated(
+                        f"{diagram}\n{mutation}\n",
+                        roots,
+                        WRITE_AUTHORITY_NODES,
+                    )
+
+        self.assert_mermaid_sets_isolated(
+            f"{evaluation}\nOPTIONAL ~~~ OM\n",
+            EVALUATION_ARCHITECTURE_ROOTS,
+            WRITE_AUTHORITY_NODES,
+        )
+        self.assert_mermaid_sets_isolated(
+            f"{architecture}\nEVALUATION ~~~ OM\n",
+            SYSTEM_ARCHITECTURE_EVALUATION_ROOTS,
+            WRITE_AUTHORITY_NODES,
+        )
 
     def test_authority_path_guard_rejects_direct_labelled_and_transitive_leaks(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
@@ -509,12 +598,10 @@ flowchart LR
         architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
         self.assertIn("G -. read-only traces .-> EV", architecture)
         self.assertIn("RAG -. read-only retrieval report .-> EV", architecture)
-        evaluation_nodes = ("EV", "SUITES", "SCORE", "EVALSAFE")
-        operations_nodes = ("GN", "OM", "OP")
-        self.assert_no_mermaid_path(
+        self.assert_mermaid_sets_isolated(
             architecture,
-            evaluation_nodes,
-            operations_nodes,
+            SYSTEM_ARCHITECTURE_EVALUATION_ROOTS,
+            ("GN", "OM", "OP"),
         )
 
         orchestration = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
