@@ -70,9 +70,11 @@ def ndcg_at_k(relevance: Mapping[str, int], ranked_ids: Sequence[str], k: int) -
     ideal = sorted(relevance.values(), reverse=True)[:k]
     if not ideal:
         return 0.0
-    ideal_dcg = _dcg(ideal) if ideal and ideal[0] < 1024 else _scaled_dcg(ideal, ideal[0])
+    # Scale both sums by the largest ideal gain so even several grade-1023
+    # documents cannot overflow while preserving their exact ratio.
+    ideal_dcg = _scaled_dcg(ideal, ideal[0])
     if ideal_dcg == 0.0:
         return 0.0
-    observed_dcg = _dcg(observed) if ideal[0] < 1024 else _scaled_dcg(observed, ideal[0])
+    observed_dcg = _scaled_dcg(observed, ideal[0])
     result = observed_dcg / ideal_dcg
     return float(result) if math.isfinite(result) else 0.0

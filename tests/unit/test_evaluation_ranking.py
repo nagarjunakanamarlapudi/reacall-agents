@@ -75,3 +75,14 @@ def test_canonical_digest_rejects_non_json_values() -> None:
 
 def test_ndcg_remains_finite_for_large_integer_grades() -> None:
     assert ndcg_at_k({"A": 10_000}, ["A"], 1) == 1.0
+
+
+def test_ndcg_perfect_multi_document_grade_1023_ranking_is_one() -> None:
+    relevance = {"A": 1023, "B": 1023, "C": 1023, "D": 1023}
+    assert ndcg_at_k(relevance, ["A", "B", "C", "D"], 4) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("expected", ["é" + "0" * 63, "g" * 64, "0" * 63, "0" * 65])
+def test_digest_verification_rejects_malformed_expected_digest(expected: str) -> None:
+    with pytest.raises(ValueError, match="digest mismatch"):
+        verify_sha256({"a": 1}, expected)

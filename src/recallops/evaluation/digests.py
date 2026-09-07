@@ -31,5 +31,10 @@ def canonical_sha256(value: Any) -> str:
 def verify_sha256(value: Any, expected: str) -> None:
     """Raise ``ValueError`` unless ``expected`` matches the canonical digest."""
     actual = canonical_sha256(value)
-    if not isinstance(expected, str) or not hmac.compare_digest(actual, expected):
+    valid_shape = (
+        isinstance(expected, str)
+        and len(expected) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in expected)
+    )
+    if not valid_shape or not hmac.compare_digest(actual, expected.lower()):
         raise ValueError("digest mismatch")
