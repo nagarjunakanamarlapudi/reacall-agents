@@ -33,7 +33,7 @@ No You.com or general web search is used. A public recall does not establish tha
 - **Agents:** deterministic planner; Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, Containment; independent verifier; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
 - **MCP:** Recall Registry, Traceability, and Recall Operations FastMCP servers; direct and stdio parity.
 - **Middleware:** context, structured output, retry, circuit breaker, budgets, provenance, masking, approval, version, idempotency, receipt validation, progress watchdog, telemetry, checkpoint-owner/head/request fencing.
-- **Product:** five Streamlit views, CLI, failure injection, 21-scenario evaluator, six notebooks, nine source-controlled diagrams.
+- **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, nine source-controlled diagrams.
 
 There is no A2A. LangGraph coordinates all agents; MCP is the vertical data/action interface.
 

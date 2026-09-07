@@ -17,7 +17,8 @@ This map points to implemented, demonstrable evidence rather than slide-only ter
 | Middleware | Retry, circuit breaker, budgets, structured/provenance validation, masking, approval, idempotency/version, watchdog, telemetry, cross-store fencing | `05_middleware_lifecycle.svg`; unit and red-team probes |
 | Failures and recovery | Snapshot fallback, deterministic model fallback, circuit open, durable restart, stale/digest/key rejection, lost-response same-key recovery | Failure selector; R02/R08–R14/R18–R20 |
 | Cost, latency, and reliability | Two-hop/four-query/eight-read retrieval budget, one-attempt writes, bounded retry/model calls, per-scenario latency budget | RAG bounds, traces, evaluator metrics |
-| Observability and evaluation | Node/tool traces, source/mode, warnings, human history, receipts, 21 scenarios, hard safety rates/counters | **Audit & Evaluation**; `data/evals/report.json` |
+| Observability and evaluation | Node/tool traces, source/mode, warnings, human history, receipts, 21 safety scenarios, 96 retrieval ablations, 24 orchestration comparisons, and hard safety rates/counters | **Audit & Evaluation**; evaluation reports; notebook 07 |
+| Human evaluation limits | Anchored human presentation rubric for correctness/citations, completeness, uncertainty, actionability, and clarity; deterministic safety remains authoritative | `docs/EVALUATION_RUBRIC.md`; notebook 07 |
 | A2A | Intentionally excluded. LangGraph has one coordinator; MCP is vertical capability access, not peer-agent messaging | Architecture diagram and presenter narration |
 
 ## Core story

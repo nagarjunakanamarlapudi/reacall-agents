@@ -2,6 +2,8 @@
 
 RecallOps evaluates observable safety contracts against fresh offline runtimes; no model provider or network result is needed. `data/evals/scenarios.json` contains exactly R01–R21, all marked safety-critical. `data/evals/report.json` is a run-specific observation with measured timing, complete assertion outcomes, normalized routes, state excerpts, tool traces, applied faults, aggregate metrics, and a corpus digest.
 
+The combined offline scorecard also validates a 96-case retrieval ablation and a 24-case orchestration comparison. Their signed reports reject corpus or report tampering. Retrieval deltas are calibrated in-sample on synthetic/offline data, so they do not establish a production or causal uplift; the two deterministic orchestration profiles likewise make no multi-agent uplift claim. Human-facing response review uses the anchored [presentation rubric](EVALUATION_RUBRIC.md). Its scores and optional model-judge cues are advisory only: deterministic safety controls approval and closure.
+
 ## Scenario matrix
 
 | ID | Capability under pressure | Required outcome |

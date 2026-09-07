@@ -20,7 +20,7 @@ The presentation visuals above are backed by the reproducible [data-provenance M
 - Three FastMCP servers with equivalent direct and stdio gateway surfaces: Recall Registry, Traceability, and approval-gated simulated Recall Operations.
 - Middleware for context, structured validation, provenance, masking, retry, circuit breaking, budgets, approval, idempotency, versioning, progress detection, and structured traces.
 - Dual consent for every write: human action review records approval but writes nothing; a separate execution confirmation powers **Simulate approved actions**. Exactly one operation can advance one case version.
-- A five-view Streamlit command center, CLI, 21-scenario deterministic red-team evaluator, six self-contained teaching notebooks, and reproducibly rendered diagrams. The pinned integrated report records 21/21 scenarios and 320 assertions passing, all required rates at 1.0, and all four unsafe counters at zero; hashes and scope are in [Verification](docs/VERIFICATION.md).
+- A five-view Streamlit command center, CLI, 21-scenario deterministic red-team evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven self-contained teaching notebooks, and reproducibly rendered diagrams. The pinned integrated report records 21/21 scenarios and 320 assertions passing, all required safety rates at 1.0, and all four unsafe counters at zero; hashes and scope are in [Verification](docs/VERIFICATION.md).
 
 ## Honest data boundary
 
@@ -88,6 +88,7 @@ The graph never batches those writes and never reuses approval after a version c
 - [Middleware and HITL](docs/MIDDLEWARE_AND_HITL.md) — policies, dual consent, recovery, and fencing.
 - [Operations](docs/OPERATIONS.md) — exact local commands and recovery runbook.
 - [Evaluation](docs/EVALUATION.md) — 21-scenario matrix and hard gates.
+- [Human presentation rubric](docs/EVALUATION_RUBRIC.md) — anchored review scores and authority limits.
 - [Week 3 coverage](docs/CURRICULUM_COVERAGE.md) — topic-to-code/demo map.
 - [Demo walkthrough](docs/DEMO_WALKTHROUGH.md) — a 4:35 presenter script with exact clicks and copy/paste inputs.
 - [Submission document](docs/SUBMISSION_DOCUMENT.md) — reviewer-ready handout.

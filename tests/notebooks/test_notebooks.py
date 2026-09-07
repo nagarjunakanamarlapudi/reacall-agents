@@ -1,4 +1,4 @@
-"""Contract and execution tests for the six Week 3 teaching notebooks."""
+"""Contract and execution tests for the seven Week 3 teaching notebooks."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ EXPECTED = [
     "04_supervisor_specialists.ipynb",
     "05_durable_hitl.ipynb",
     "06_end_to_end_evaluation.ipynb",
+    "07_evaluation_ablation_and_orchestration.ipynb",
 ]
 MARKER = "EDUCATIONAL — SELF-CONTAINED"
 TOPIC_TERMS = {
@@ -29,6 +30,7 @@ TOPIC_TERMS = {
     EXPECTED[3]: ("supervisor", "specialist", "Deep Agents", "write_todos"),
     EXPECTED[4]: ("interrupt", "resume", "idempot", "human"),
     EXPECTED[5]: ("investigation", "evaluation", "reconciliation", "assert"),
+    EXPECTED[6]: ("RRF", "single-agent", "fixed-specialists", "tamper"),
 }
 FORBIDDEN_SOURCE = re.compile(
     r"(?:%|!)pip\s+install|conda\s+install|\brecallops\b|\bhttpx\b|"
@@ -42,9 +44,41 @@ def _sources(notebook: dict) -> str:
     return "\n".join(cell.get("source", "") for cell in notebook.cells)
 
 
-def test_exactly_six_numbered_notebooks_exist() -> None:
+def test_exactly_seven_numbered_notebooks_exist() -> None:
     actual = sorted(path.name for path in NOTEBOOKS.glob("*.ipynb"))
     assert actual == EXPECTED
+
+
+def test_evaluation_notebook_is_self_contained_and_emits_ablation_markers() -> None:
+    notebook = nbformat.read(NOTEBOOKS / "07_evaluation_ablation_and_orchestration.ipynb", 4)
+    source = _sources(notebook)
+    assert "import recallops" not in source
+    assert "RRF uplift" in source
+    assert "single-agent" in source
+    assert "fixed-specialists" in source
+    assert "96 retrieval" in source
+    assert "24 orchestration" in source
+    assert "zero rewrite uplift" in source
+    assert "in-sample" in source
+    assert "tamper rejection" in source
+    assert "deterministic safety" in source
+
+
+def test_evaluation_rubric_has_anchored_human_scores_and_authority_limits() -> None:
+    rubric = (ROOT / "docs" / "EVALUATION_RUBRIC.md").read_text(encoding="utf-8")
+    for dimension in (
+        "Correctness and citation alignment",
+        "Completeness",
+        "Uncertainty and abstention",
+        "Actionability",
+        "Clarity",
+    ):
+        assert dimension in rubric
+    for score in ("Score 1", "Score 2", "Score 3", "Score 4", "Score 5"):
+        assert score in rubric
+    assert "deterministic-only" in rubric
+    assert "must not approve" in rubric
+    assert "must not close" in rubric
 
 
 def test_builder_is_byte_deterministic_in_separate_directories() -> None:

@@ -149,7 +149,7 @@ uv run pytest -q tests/notebooks/test_notebooks.py
 ./scripts/render_diagrams.sh --verify
 ```
 
-Observed: all six notebooks rebuilt deterministically and their focused suite finished `6 passed`; no notebook diff remained. Diagram verification exited 0, double-rendered all nine Mermaid sources byte-identically, and matched every committed SVG. The three primary presentation visuals are opaque-white 1672×941 PNGs; their generation prompts and refinements are committed in `docs/images/submission-visual-prompts.md`.
+Observed: all seven notebooks rebuilt deterministically and their focused suite finished `8 passed`; no notebook diff remained. Diagram verification exited 0, double-rendered all nine Mermaid sources byte-identically, and matched every committed SVG. The three primary presentation visuals are opaque-white 1672×941 PNGs; their generation prompts and refinements are committed in `docs/images/submission-visual-prompts.md`.
 
 ### Dependency and security audit
 

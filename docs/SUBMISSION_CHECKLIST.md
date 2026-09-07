@@ -33,7 +33,7 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 - [x] All five UI views and exact controls/fields/statuses in `demo_contract.json` are visible.
 - [x] CLI data validation/demo/MCP config/eval summary and Streamlit startup exit successfully.
 - [x] The generated evaluator report contains R01–R21, all safety-critical, `gate_passed=true`, perfect required rates, and zero unsafe counters.
-- [x] Six self-contained notebooks rebuild and execute without product imports, network, install cells, or credentials.
+- [x] Seven self-contained notebooks rebuild and execute without product imports, network, install cells, or credentials.
 - [x] The full test suite, Ruff, lock, dependency, Bandit, pip-audit, Streamlit smoke, MCP stdio smoke, and data checks are recorded.
 
 ## Documentation and recording

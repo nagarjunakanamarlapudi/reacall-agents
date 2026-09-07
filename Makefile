@@ -41,7 +41,7 @@ help:
 		'  make eval-summary       Validate and summarize the combined scorecard' \
 		'  make eval-model         Opt in to a configured read-only live model adapter' \
 		'  make demo-data          Regenerate the deterministic synthetic dataset' \
-		'  make notebooks          Rebuild and execute all six teaching notebooks' \
+		'  make notebooks          Rebuild and execute all seven teaching notebooks' \
 		'  make diagrams           Verify Mermaid double-render and SVG parity' \
 		'' \
 		'Quality gates:' \
