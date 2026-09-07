@@ -1,50 +1,51 @@
-flowchart LR
-  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+%%{init: {"flowchart": {"rankSpacing": 52, "nodeSpacing": 28, "subGraphTitleMargin": {"top": 0, "bottom": 58}}}}%%
+flowchart TB
+  classDef evaldata fill:#e2e8f0,stroke:#475569,color:#111827
   classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
   classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
   classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
   classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
 
-  subgraph CORPORA["LABELLED CORPORA"]
-    direction TB
-    SAFETY["21 safety scenarios<br/>R01–R21"]:::official
-    RETRIEVAL["96 retrieval cases<br/>labelled relevance + policy"]:::official
-    ORCHESTRATION["24 orchestration cases<br/>shared gold evidence"]:::official
+  subgraph CORPORA["1 • LABELLED CORPORA<br/>AUTHORED + LABELLED + DIGEST-BOUND<br/>OFFLINE EVALUATION DATA • not official source evidence"]
+    direction LR
+    SAFETY["21 safety scenarios<br/>R01–R21"]:::evaldata
+    RETRIEVAL["96 retrieval cases<br/>labelled relevance + policy"]:::evaldata
+    ORCHESTRATION["24 orchestration cases<br/>shared gold evidence"]:::evaldata
   end
 
-  subgraph RUNNERS["SUITE RUNNERS"]
-    direction TB
+  subgraph RUNNERS["2 • SUITE RUNNERS"]
+    direction LR
     SAFETY_RUN["Deterministic safety suite<br/>hard-gated offline"]:::reason
     RETRIEVAL_RUN["Six retrieval ablations<br/>BM25 • LSA • hybrid • RRF<br/>rerank • AgenticRetriever"]:::reason
     ORCHESTRATION_RUN["Two orchestration profiles<br/>bounded single agent • fixed specialists"]:::reason
   end
 
-  subgraph MEASURES["METRICS + GATES"]
-    direction TB
+  subgraph MEASURES["3 • METRICS + GATES"]
+    direction LR
     SAFETY_GATE["Safety gates<br/>21/21 • unsafe counters = 0"]:::verify
     RETRIEVAL_METRICS["Retrieval metrics<br/>Recall@5 • nDCG@5 • MRR<br/>fusion • rerank • rewrite deltas"]:::verify
     ORCHESTRATION_METRICS["Orchestration metrics<br/>coverage • duplicate work<br/>tool calls • latency"]:::verify
   end
 
-  subgraph AUTHORITY["DETERMINISTIC AUTHORITY"]
+  subgraph AUTHORITY["4 • DETERMINISTIC AUTHORITY"]
     direction TB
     SCORECARD["digest-bound scorecard<br/>verified inputs + aggregate gates"]:::state
     EVAL_BOUNDARY["READ-ONLY EVALUATION PLANE<br/>No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
-    EVAL_BOUNDARY --- SCORECARD
+    SCORECARD --- EVAL_BOUNDARY
   end
 
-  subgraph OUTPUTS["VERIFIED CONSUMERS"]
-    direction TB
-    UI["Verified UI"]:::verify
-    DEMO["Demo evidence"]:::verify
-    CI["CI / make verify"]:::verify
-  end
-
-  subgraph OPTIONAL["OPTIONAL ADVISORY LANE"]
+  subgraph OPTIONAL["OPTIONAL ADVISORY LANE<br/>EXCLUDED FROM DETERMINISTIC AUTHORITY"]
     direction TB
     LIVE["Optional live Deep Agents run<br/>nondeterministic observation"]:::reason
     JUDGE["Optional human / model judge<br/>blinded presentation review"]:::reason
     ADVISORY["Advisory appendix<br/>excluded from deterministic authority"]:::human
+  end
+
+  subgraph OUTPUTS["5 • VERIFIED CONSUMERS"]
+    direction LR
+    UI["Verified UI"]:::verify
+    DEMO["Demo evidence"]:::verify
+    CI["CI / make verify"]:::verify
   end
 
   SAFETY --> SAFETY_RUN --> SAFETY_GATE
@@ -57,9 +58,9 @@ flowchart LR
   SCORECARD --> DEMO
   SCORECARD --> CI
 
-  ORCHESTRATION -. optional same-case run .-> LIVE
-  SCORECARD -. read-only presentation copy .-> JUDGE
+  EVAL_BOUNDARY ~~~ UI
+  CI ~~~ LIVE
+  ORCHESTRATION -.-> LIVE
+  DEMO -.-> JUDGE
   LIVE -. advisory observation .-> ADVISORY
   JUDGE -. presentation feedback .-> ADVISORY
-  ADVISORY -. labelled optional context .-> UI
-  ADVISORY -. labelled optional context .-> DEMO

@@ -27,7 +27,7 @@ The supporting technical diagrams are Mermaid sources rendered to SVG through `s
 
 ## Visual truth rules
 
-- Blue means official public data or control flow; orange denotes synthetic academic data/actions; purple denotes reasoning; green denotes verified outcomes; red denotes human review/risk/blocking; gray denotes durable state/audit.
+- Blue means official public data or control flow; orange denotes synthetic academic data/actions; purple denotes reasoning; green denotes verified outcomes; red denotes human review/risk/blocking; gray denotes durable state or authored audit/evaluation data.
 - `official openFDA H-1230-2026` and `SYNTHETIC — ACADEMIC DEMO` must remain exact labels in provenance diagrams.
 - No diagram depicts A2A or a direct agent-to-database/action write.
 - The evaluation plane is read-only: it has no Operations MCP credentials, SQLite write edge, or action authority. Optional live runs and human/model presentation judging remain visibly excluded from deterministic scorecard authority.

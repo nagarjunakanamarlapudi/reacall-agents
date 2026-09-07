@@ -139,6 +139,9 @@ DIAGRAM_LABELS = {
         "Internal closure decision",
     ),
     "10_evaluation_architecture": (
+        "AUTHORED + LABELLED + DIGEST-BOUND",
+        "OFFLINE EVALUATION DATA",
+        "not official source evidence",
         "21 safety scenarios",
         "R01–R21",
         "96 retrieval cases",
@@ -162,15 +165,75 @@ POLISHED_VISUALS = (
 )
 
 
-def mermaid_edge_pattern(sources: tuple[str, ...], targets: tuple[str, ...]) -> str:
-    """Match a Mermaid edge from one named node set to another on a source line."""
-    source_pattern = "|".join(re.escape(value) for value in sources)
-    target_pattern = "|".join(re.escape(value) for value in targets)
-    edge = r"(?:-->|---|-\.[^\n]*\.->)"
-    return rf"(?m)^\s*(?:{source_pattern})\s+{edge}[^\n]*\b(?:{target_pattern})\b"
+_DIRECTED_EDGE = re.compile(
+    r'--\s+(?:"[^"\n]*"|\'[^\'\n]*\'|.*?)\s+-->\s*(?:\|[^|\n]*\|)?\s*'
+    r"|-->\s*(?:\|[^|\n]*\|)?\s*"
+    r"|-\.->\s*"
+    r"|-\.(?:(?!\.->)[^\n])*\.->\s*"
+)
+_UNDIRECTED_EDGE = re.compile(r"---|-\.(?:(?!\.->)[^\n])*\.\-(?!>)")
+
+
+def _mermaid_node_id(segment: str) -> str | None:
+    """Return the node adjacent to an edge in the Mermaid subset used here."""
+    adjacent = _UNDIRECTED_EDGE.split(segment)[-1].strip()
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", adjacent)
+    return match.group(1) if match else None
+
+
+def mermaid_directed_edges(source: str) -> set[tuple[str, str]]:
+    """Extract solid, labelled, dotted, and chained directed Mermaid edges."""
+    edges: set[tuple[str, str]] = set()
+    for line in source.splitlines():
+        arrows = list(_DIRECTED_EDGE.finditer(line))
+        for index, arrow in enumerate(arrows):
+            left = arrows[index - 1].end() if index else 0
+            right = arrows[index + 1].start() if index + 1 < len(arrows) else len(line)
+            source_id = _mermaid_node_id(line[left : arrow.start()])
+            target_id = _mermaid_node_id(line[arrow.end() : right])
+            if source_id is not None and target_id is not None:
+                edges.add((source_id, target_id))
+    return edges
+
+
+def mermaid_directed_path(
+    edges: set[tuple[str, str]], start: str, target: str
+) -> tuple[str, ...] | None:
+    """Return one deterministic directed path, if reachable."""
+    adjacency: dict[str, set[str]] = {}
+    for source, destination in edges:
+        adjacency.setdefault(source, set()).add(destination)
+    pending = [start]
+    paths: dict[str, tuple[str, ...]] = {start: (start,)}
+    while pending:
+        current = pending.pop(0)
+        for destination in sorted(adjacency.get(current, set())):
+            if destination in paths:
+                continue
+            path = (*paths[current], destination)
+            if destination == target:
+                return path
+            paths[destination] = path
+            pending.append(destination)
+    return None
 
 
 class DocumentationContractTests(unittest.TestCase):
+    def assert_no_mermaid_path(
+        self,
+        diagram: str,
+        sources: tuple[str, ...],
+        targets: tuple[str, ...],
+    ) -> None:
+        edges = mermaid_directed_edges(diagram)
+        for source in sources:
+            for target in targets:
+                path = mermaid_directed_path(edges, source, target)
+                self.assertIsNone(
+                    path,
+                    f"{source} reaches {target} through {' -> '.join(path or ())}",
+                )
+
     def assert_demo_artifact_contract(
         self, path: Path, contract: dict, text: str | None = None
     ) -> None:
@@ -289,33 +352,93 @@ class DocumentationContractTests(unittest.TestCase):
             self.assertIn(edge, diagram)
         self.assertIn("LIVE -. advisory observation .-> ADVISORY", diagram)
         self.assertIn("JUDGE -. presentation feedback .-> ADVISORY", diagram)
-        self.assertNotRegex(
+        self.assert_no_mermaid_path(
             diagram,
-            mermaid_edge_pattern(("LIVE", "JUDGE", "ADVISORY"), ("SCORECARD",)),
+            ("LIVE", "JUDGE", "ADVISORY"),
+            ("SCORECARD",),
         )
-        self.assertNotRegex(diagram, r"(?m)^\s*(?:OPERATIONS|SQLITE_WRITE)\s*\[")
+        self.assert_no_mermaid_path(
+            diagram,
+            ("SCORECARD", "EVAL_BOUNDARY", "LIVE", "JUDGE", "ADVISORY"),
+            ("GN", "W", "OM", "OP", "OPERATIONS", "SQLITE_WRITE"),
+        )
+
+    def test_mermaid_directed_edge_extractor_handles_supported_labels_and_chains(self) -> None:
+        fixture = """\
+flowchart LR
+  EVAL["Evaluation"] -->|verified report| MID["Middle"] --> SCORE["Score"]
+  SCORE -- "labelled solid" --> VIEW["View"]
+  LIVE -. advisory observation .-> ADVISORY --> UI
+  VIEW -.-> END
+"""
+        self.assertEqual(
+            mermaid_directed_edges(fixture),
+            {
+                ("EVAL", "MID"),
+                ("MID", "SCORE"),
+                ("SCORE", "VIEW"),
+                ("LIVE", "ADVISORY"),
+                ("ADVISORY", "UI"),
+                ("VIEW", "END"),
+            },
+        )
+
+    def test_authority_path_guard_rejects_direct_labelled_and_transitive_leaks(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        writes = ("GN", "W", "OM", "OP")
+
+        with self.assertRaisesRegex(AssertionError, r"ADVISORY.*OM"):
+            self.assert_no_mermaid_path(
+                diagram + '\nADVISORY -- "forged approval" --> OM["Operations MCP"]\n',
+                ("ADVISORY",),
+                writes,
+            )
+
+        with self.assertRaisesRegex(AssertionError, r"SCORECARD.*OP"):
+            self.assert_no_mermaid_path(
+                diagram
+                + '\nSCORECARD -. bad bridge .-> LEAK["bridge"] --> OP["Operations SQLite"]\n',
+                ("SCORECARD",),
+                writes,
+            )
+
+    def test_evaluation_corpora_are_authored_audit_data_not_official_evidence(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        normalized = diagram.replace("<br/>", " ")
+        self.assertIn("AUTHORED + LABELLED + DIGEST-BOUND OFFLINE EVALUATION DATA", normalized)
+        self.assertIn("not official source evidence", diagram)
+        for node in ("SAFETY", "RETRIEVAL", "ORCHESTRATION"):
+            declaration = next(
+                line.strip() for line in diagram.splitlines() if line.strip().startswith(f"{node}[")
+            )
+            self.assertTrue(declaration.endswith(":::evaldata"), declaration)
+            self.assertNotIn(":::official", declaration)
+
+    def test_evaluation_architecture_is_legible_at_markdown_width(self) -> None:
+        root = ElementTree.parse(IMAGES / "10_evaluation_architecture.svg").getroot()
+        _, _, width, height = (float(value) for value in root.attrib["viewBox"].split())
+        self.assertLessEqual(width, 1400, "evaluation SVG is too wide for a 700px Markdown column")
+        self.assertLessEqual(height / width, 2, "evaluation SVG is too tall to scan as one system")
 
     def test_runtime_diagrams_keep_evaluation_read_only_and_before_closure(self) -> None:
         architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
         self.assertIn("G -. read-only traces .-> EV", architecture)
         self.assertIn("RAG -. read-only retrieval report .-> EV", architecture)
         evaluation_nodes = ("EV", "SUITES", "SCORE", "EVALSAFE")
-        operations_nodes = ("OM", "OP")
-        self.assertNotRegex(
+        operations_nodes = ("GN", "OM", "OP")
+        self.assert_no_mermaid_path(
             architecture,
-            mermaid_edge_pattern(evaluation_nodes, operations_nodes),
-        )
-        self.assertNotRegex(
-            architecture,
-            mermaid_edge_pattern(operations_nodes, evaluation_nodes),
+            evaluation_nodes,
+            operations_nodes,
         )
 
         orchestration = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
         self.assertIn("VC -. read-only typed events .-> TC", orchestration)
         self.assertIn("TC --> OE", orchestration)
-        self.assertNotRegex(
+        self.assert_no_mermaid_path(
             orchestration,
-            mermaid_edge_pattern(("TC", "OE", "ER"), ("W",)),
+            ("TC", "OE", "ER"),
+            ("W",),
         )
 
         demo = (IMAGES / "07_demo_story.mmd").read_text(encoding="utf-8")
