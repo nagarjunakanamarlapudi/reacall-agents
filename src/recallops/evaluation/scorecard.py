@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +23,12 @@ from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256,
 from recallops.evaluation.metrics import calculate_metrics, safety_gate_passes
 from recallops.evaluation.orchestration_benchmark import load_orchestration_report
 from recallops.evaluation.retrieval_benchmark import load_retrieval_report
-from recallops.evaluation.runner import STATE_EXCERPT_FIELDS, load_scenarios, normalize_route
+from recallops.evaluation.runner import (
+    STATE_EXCERPT_FIELDS,
+    load_scenarios,
+    normalize_route,
+    validate_persisted_safety_counters,
+)
 from recallops.evaluation.schema import EvaluationReport
 from recallops.paths import EvaluationArtifactPaths
 
@@ -180,8 +187,12 @@ def _check_persisted_observation(assertion, row) -> None:
             else:
                 current = current[token]
     except (KeyError, IndexError, TypeError, StopIteration) as exc:
+        if assertion.actual is None and not assertion.passed and not row.passed:
+            return
         raise ValueError("safety persisted observation is missing") from exc
     if canonical_json_bytes(current) != canonical_json_bytes(assertion.actual):
+        if assertion.actual is None and not assertion.passed and not row.passed:
+            return
         raise ValueError("safety persisted observation mismatch")
 
 
@@ -260,6 +271,16 @@ def load_safety_report(path: Path, case_path: Path) -> EvaluationReport:
         )
         if [item.id for item in row.assertions] != list(contracts):
             raise ValueError("safety assertion matrix mismatch")
+        if row.error is None:
+            validate_persisted_safety_counters(
+                case,
+                row.state_excerpt,
+                {
+                    item.path.removeprefix("/counters/"): item.actual
+                    for item in row.assertions
+                    if item.id.startswith("global_")
+                },
+            )
         for assertion in row.assertions:
             if (assertion.path, assertion.operator, assertion.expected) != contracts[assertion.id]:
                 raise ValueError("safety assertion contract mismatch")
@@ -269,6 +290,10 @@ def load_safety_report(path: Path, case_path: Path) -> EvaluationReport:
                 if actual != row.route_actual:
                     raise ValueError("safety route observation mismatch")
                 passed = row.error is None and _route_passes(actual, expected_route)
+            elif actual is None and not assertion.passed and not row.passed:
+                # The unchanged runner records failed path/operator evaluation as
+                # actual=None. It is a complete failed measurement, never a pass.
+                passed = False
             else:
                 try:
                     passed = _assertion_passes(actual, assertion.operator, assertion.expected)
@@ -292,17 +317,30 @@ def load_safety_report(path: Path, case_path: Path) -> EvaluationReport:
     return report
 
 
-def _artifact_digests(paths: EvaluationArtifactPaths) -> dict[str, str]:
-    digests = {}
+def _capture_artifacts(paths: EvaluationArtifactPaths) -> dict[str, bytes]:
+    """Read each input once; all digests and semantic checks use these same bytes."""
+    snapshots = {}
     for suite in SUITES:
         for kind in ("report", "corpus"):
             name = f"{suite}_{kind}"
             path = getattr(paths, name)
             try:
-                digests[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+                snapshots[name] = path.read_bytes()
             except OSError as exc:
                 raise ValueError(f"missing or unreadable {suite} {kind}") from exc
-    return digests
+    return snapshots
+
+
+def _verified_snapshots(snapshots: dict[str, bytes]):
+    # Existing public path loaders read private copies, never mutable originals.
+    # The files retain report/corpus adjacency but input names never choose paths.
+    with tempfile.TemporaryDirectory(prefix="recallops-scorecard-") as directory:
+        locations = {}
+        for name, raw in snapshots.items():
+            target = Path(directory) / f"{name}.json"
+            target.write_bytes(raw)
+            locations[name] = target
+        return _verified_inputs(EvaluationArtifactPaths(**locations))
 
 
 def _verified_inputs(paths: EvaluationArtifactPaths):
@@ -357,6 +395,28 @@ def _offline_gate(summaries: tuple[SuiteSummary, ...]) -> bool:
     )
 
 
+def _write_scorecard(output_path: Path, raw: bytes, paths: EvaluationArtifactPaths) -> None:
+    output_path = output_path.expanduser().absolute()
+    for name in paths.__dataclass_fields__:
+        source = getattr(paths, name)
+        if output_path.resolve() == source or (
+            output_path.exists() and output_path.samefile(source)
+        ):
+            raise ValueError("scorecard output must not overwrite or alias an input artifact")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # A fresh inode also protects inputs if an alias appears after the check.
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".scorecard-", dir=output_path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, output_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def build_scorecard(
     safety_path: Path,
     retrieval_path: Path,
@@ -365,10 +425,9 @@ def build_scorecard(
 ) -> EvaluationScorecard:
     """Build a canonical scorecard from complete, independently verified inputs."""
     paths = EvaluationArtifactPaths(safety_path, retrieval_path, orchestration_path)
-    digests = _artifact_digests(paths)
-    summaries, live = _verified_inputs(paths)
-    if digests != _artifact_digests(paths):
-        raise ValueError("evaluation artifacts changed during validation")
+    snapshots = _capture_artifacts(paths)
+    digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshots.items()}
+    summaries, live = _verified_snapshots(snapshots)
     payload = {
         "schema_version": "1.0",
         "execution_mode": "offline_deterministic",
@@ -380,13 +439,9 @@ def build_scorecard(
     }
     payload["scorecard_sha256"] = canonical_sha256(payload)
     scorecard = EvaluationScorecard.model_validate(payload)
-    output_path = Path(output_path).expanduser().resolve()
-    if output_path in {
-        getattr(paths, f"{suite}_{kind}") for suite in SUITES for kind in ("report", "corpus")
-    }:
-        raise ValueError("scorecard output must not overwrite an input artifact")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(canonical_json_bytes(scorecard.model_dump(mode="json")))
+    _write_scorecard(
+        Path(output_path), canonical_json_bytes(scorecard.model_dump(mode="json")), paths
+    )
     return scorecard
 
 
@@ -402,13 +457,14 @@ def validate_scorecard(path: Path, expected_paths: EvaluationArtifactPaths) -> E
     )
     if raw != canonical_json_bytes(scorecard.model_dump(mode="json")):
         raise ValueError("scorecard must contain the complete canonical schema")
-    digests = _artifact_digests(expected_paths)
+    snapshots = _capture_artifacts(expected_paths)
+    digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshots.items()}
     if set(scorecard.artifact_digests) != set(digests):
         raise ValueError("scorecard artifact digest matrix mismatch")
     for name, digest in digests.items():
         if scorecard.artifact_digests[name] != digest:
             raise ValueError(f"{name.replace('_', ' ')} digest mismatch")
-    summaries, live = _verified_inputs(expected_paths)
+    summaries, live = _verified_snapshots(snapshots)
     if canonical_json_bytes(
         [item.model_dump(mode="json") for item in scorecard.suite_summaries]
     ) != canonical_json_bytes([item.model_dump(mode="json") for item in summaries]):
@@ -417,6 +473,4 @@ def validate_scorecard(path: Path, expected_paths: EvaluationArtifactPaths) -> E
         raise ValueError("scorecard offline gate mismatch")
     if scorecard.optional_live_status != live:
         raise ValueError("scorecard optional live status mismatch")
-    if digests != _artifact_digests(expected_paths):
-        raise ValueError("evaluation artifacts changed during validation")
     return scorecard

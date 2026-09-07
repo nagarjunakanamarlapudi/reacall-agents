@@ -609,7 +609,9 @@ def validate_retrieval_report(
                     or row.cited_document_ids != row.ranked_document_ids
                 ):
                     raise ValueError("inconsistent single-pass baseline observation")
-            if dict(row.metric_contributions) != _contributions(case, row):
+            if canonical_json_bytes(dict(row.metric_contributions)) != canonical_json_bytes(
+                _contributions(case, row)
+            ):
                 raise ValueError("forged metric contribution")
         rebuilt = _configuration(
             configuration.name,
@@ -630,7 +632,15 @@ def load_retrieval_report(
     payload = json.loads(raw)
     if raw != canonical_json_bytes(payload):
         raise ValueError("retrieval report must use canonical JSON")
+    if not isinstance(payload, dict):
+        raise ValueError("retrieval report must be a JSON object")
+    verify_sha256(
+        {key: value for key, value in payload.items() if key != "report_sha256"},
+        payload.get("report_sha256"),
+    )
     report = RetrievalEvalReport.model_validate(payload)
+    if raw != canonical_json_bytes(report.model_dump(mode="json")):
+        raise ValueError("retrieval report must contain the complete typed schema")
     corpus = load_retrieval_cases(case_path, data_dir=data_dir)
     validate_retrieval_report(report, corpus, KnowledgeCorpus.load(data_dir=data_dir))
     return report

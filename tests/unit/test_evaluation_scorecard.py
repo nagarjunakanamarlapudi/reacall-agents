@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -385,3 +386,259 @@ async def test_real_execution_failure_in_either_new_suite_blocks_offline_gate(
     resign(output, payload)
     with pytest.raises(ValueError, match="offline gate"):
         validate_scorecard(output, paths)
+
+
+@pytest.mark.parametrize(
+    "kind", ["runtime", "ledger", "nested", "duplicate", "version", "confirmation"]
+)
+def test_fix_persisted_receipt_invariants_cannot_be_resigned_away(paths, tmp_path, kind):
+    payload = json.loads(paths.safety_report.read_bytes())
+    state = payload["results"][1]["state_excerpt"]
+    if kind in {"runtime", "ledger", "nested"}:
+        receipt = {"action_type": "close_case"}
+        if kind == "runtime":
+            state["write_receipts"].append(receipt)
+        elif kind == "ledger":
+            state["receipt_ledger"].append(
+                {"context": "runtime", "contexts": ["runtime"], "receipt": receipt}
+            )
+        else:
+            state["service_probe"] = {"status": "closed", "write_receipts": [receipt]}
+    else:
+        state = payload["results"][11]["state_excerpt"]
+        if kind == "duplicate":
+            state["write_receipts"].append(state["write_receipts"][0])
+        elif kind == "version":
+            state["case_version"] += 1
+        else:
+            state["execution_confirmation_history"] = []
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError, match="counter|receipt"):
+        build(paths, tmp_path)
+
+
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+@pytest.mark.parametrize("kind", ["report", "corpus"])
+@pytest.mark.parametrize("link", ["hard", "symbolic"])
+def test_fix_output_alias_preserves_every_input(paths, tmp_path, suite, kind, link):
+    source = getattr(paths, f"{suite}_{kind}")
+    output = tmp_path / "alias.json"
+    before = {name: getattr(paths, name).read_bytes() for name in paths.__dataclass_fields__}
+    if link == "hard":
+        os.link(source, output)
+    else:
+        output.symlink_to(source)
+    with pytest.raises(ValueError, match="overwrite|alias"):
+        build_scorecard(
+            paths.safety_report, paths.retrieval_report, paths.orchestration_report, output
+        )
+    assert {name: getattr(paths, name).read_bytes() for name in before} == before
+
+
+@pytest.mark.parametrize("operation", ["build", "validate"])
+@pytest.mark.parametrize("suite", ["safety", "retrieval", "orchestration"])
+@pytest.mark.parametrize("kind", ["report", "corpus"])
+def test_fix_aba_swap_cannot_bind_failed_bytes_to_passing_verdict(
+    paths, tmp_path, monkeypatch, operation, suite, kind
+):
+    from recallops.evaluation import scorecard as module
+
+    build(paths, tmp_path)
+    output = tmp_path / "scorecard.json"
+    source = getattr(paths, f"{suite}_{kind}")
+    passing = source.read_bytes()
+    payload = json.loads(passing)
+    if kind == "report":
+        payload["gate_passed"] = False
+    else:
+        payload["scenarios" if suite == "safety" else "cases"].pop()
+    failed = canonical_json_bytes(payload)
+    source.write_bytes(failed)
+    if operation == "validate":
+        scorecard = json.loads(output.read_bytes())
+        scorecard["artifact_digests"][f"{suite}_{kind}"] = hashlib.sha256(failed).hexdigest()
+        resign(output, scorecard)
+    name = f"load_{suite}_report"
+    original_loader = getattr(module, name)
+
+    def swap_around_loader(path, case_path):
+        source.write_bytes(passing)
+        try:
+            return original_loader(path, case_path)
+        finally:
+            source.write_bytes(failed)
+
+    monkeypatch.setattr(module, name, swap_around_loader)
+    with pytest.raises(ValueError):
+        if operation == "build":
+            build(paths, tmp_path)
+        else:
+            validate_scorecard(output, paths)
+
+
+@pytest.mark.parametrize("scenario", ["R01", "R03", "crash"])
+async def test_fix_coherent_failed_legacy_run_is_a_false_scorecard(paths, tmp_path, scenario):
+    from recallops.evaluation.runner import EvaluationObservation, load_scenarios, run_evaluations
+
+    corpus = load_scenarios(paths.safety_corpus)
+    selected = corpus.scenarios[2 if scenario == "R03" else 0]
+
+    class EmptyExecutor:
+        async def execute(self, case):
+            if scenario == "crash":
+                raise RuntimeError("injected execution failure")
+            return EvaluationObservation(state={}, route_actual=[], tool_trace=[])
+
+    failed = await run_evaluations([selected], EmptyExecutor(), strict=False)
+    assert (failed.results[0].error is not None) == (scenario == "crash")
+    payload = json.loads(paths.safety_report.read_bytes())
+    payload["results"][2 if scenario == "R03" else 0] = failed.results[0].model_dump(mode="json")
+    from recallops.evaluation.metrics import calculate_metrics, safety_gate_passes
+    from recallops.evaluation.schema import EvaluationReport
+
+    metrics = calculate_metrics(corpus.scenarios, EvaluationReport.model_validate(payload).results)
+    payload.update(metrics=metrics.model_dump(mode="json"), gate_passed=safety_gate_passes(metrics))
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+    scorecard = build(paths, tmp_path)
+    assert scorecard.offline_gate_passed is False
+    assert scorecard.suite_summaries[0].gate_passed is False
+    assert validate_scorecard(tmp_path / "scorecard.json", paths) == scorecard
+
+
+@pytest.mark.parametrize("suite", ["retrieval", "orchestration"])
+@pytest.mark.parametrize(
+    "field", ["schema_version", "execution_mode", "calibration", "nested_default"]
+)
+@pytest.mark.parametrize("signed", [False, True])
+def test_fix_public_loaders_reject_omitted_persisted_fields(paths, suite, field, signed):
+    from recallops.evaluation.orchestration_benchmark import load_orchestration_report
+    from recallops.evaluation.retrieval_benchmark import load_retrieval_report
+
+    path = getattr(paths, f"{suite}_report")
+    payload = json.loads(path.read_bytes())
+    if field == "nested_default":
+        if suite == "retrieval":
+            payload["configurations"][0]["metrics"].pop("rewrite_win_count")
+        else:
+            payload["live_status"].pop("excluded_from_offline_gates")
+    else:
+        payload.pop(field)
+    if signed:
+        resign(path, payload, "report_sha256")
+    else:
+        path.write_bytes(canonical_json_bytes(payload))
+    loader = load_retrieval_report if suite == "retrieval" else load_orchestration_report
+    with pytest.raises(ValueError):
+        loader(path, getattr(paths, f"{suite}_corpus"))
+
+
+@pytest.mark.parametrize(
+    "key,replacement",
+    [
+        ("abstention_accuracy", True),
+        ("abstention_accuracy", 1),
+        ("route_accuracy", True),
+        ("route_accuracy", 1),
+        ("ranking_denominator", True),
+        ("ranking_denominator", 1.0),
+        ("error_count", False),
+        ("error_count", 0.0),
+        ("unsupported_answer_count", False),
+        ("unsupported_answer_count", 0.0),
+    ],
+)
+def test_fix_retrieval_contribution_types_cannot_be_resigned(paths, key, replacement):
+    from recallops.evaluation.retrieval_benchmark import load_retrieval_report
+
+    payload = json.loads(paths.retrieval_report.read_bytes())
+    payload["configurations"][0]["results"][0]["metric_contributions"][key] = replacement
+    resign(paths.retrieval_report, payload, "report_sha256")
+    with pytest.raises(ValueError):
+        load_retrieval_report(paths.retrieval_report, paths.retrieval_corpus)
+
+
+@pytest.mark.parametrize("operation", ["build", "validate"])
+def test_fix_each_original_input_is_read_exactly_once(paths, tmp_path, monkeypatch, operation):
+    build(paths, tmp_path)
+    expected = {getattr(paths, name): 0 for name in paths.__dataclass_fields__}
+    original_read = Path.read_bytes
+
+    def counted_read(path):
+        if path in expected:
+            expected[path] += 1
+            assert expected[path] == 1, "reopened mutable original input"
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    if operation == "build":
+        build(paths, tmp_path)
+    else:
+        validate_scorecard(tmp_path / "scorecard.json", paths)
+    assert list(expected.values()) == [1, 1, 1, 1, 1, 1]
+
+
+def test_fix_failed_atomic_replace_preserves_existing_output(paths, tmp_path, monkeypatch):
+    from recallops.evaluation import scorecard as module
+
+    build(paths, tmp_path)
+    output = tmp_path / "scorecard.json"
+    before = output.read_bytes()
+
+    def fail_replace(source, destination):
+        assert Path(source).read_bytes() != b""
+        assert output.read_bytes() == before
+        raise OSError("injected atomic replacement failure")
+
+    monkeypatch.setattr(module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="atomic replacement"):
+        build(paths, tmp_path)
+    assert output.read_bytes() == before
+    assert not list(tmp_path.glob(".scorecard-*"))
+
+
+def test_fix_alias_appearing_at_replace_cannot_modify_input(paths, tmp_path, monkeypatch):
+    from recallops.evaluation import scorecard as module
+
+    output = tmp_path / "scorecard.json"
+    before = paths.safety_report.read_bytes()
+    original_replace = module.os.replace
+
+    def alias_then_replace(source, destination):
+        os.link(paths.safety_report, destination)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", alias_then_replace)
+    scorecard = build(paths, tmp_path)
+    assert paths.safety_report.read_bytes() == before
+    assert not output.samefile(paths.safety_report)
+    assert validate_scorecard(output, paths) == scorecard
+
+
+def test_fix_r02_receipt_reveals_all_decidable_counter_lower_bounds(paths):
+    from recallops.evaluation.runner import load_scenarios, observed_safety_counters
+
+    payload = json.loads(paths.safety_report.read_bytes())
+    state = payload["results"][1]["state_excerpt"]
+    state["write_receipts"].append({"action_type": "close_case"})
+    counters = observed_safety_counters(
+        load_scenarios(paths.safety_corpus).scenarios[1], state, persisted=True
+    )
+    assert counters["unauthorized_write_count"] >= 1
+    assert counters["false_close_count"] >= 1
+    assert counters["receipt_integrity_violation_count"] >= 1
+
+
+@pytest.mark.parametrize("target", ["source_version", "ledger_version"])
+def test_fix_persisted_receipt_type_coercion_is_rejected(paths, tmp_path, target):
+    payload = json.loads(paths.safety_report.read_bytes())
+    state = payload["results"][11]["state_excerpt"]
+    if target == "source_version":
+        state["case_version"] = float(state["case_version"])
+        for assertion in payload["results"][11]["assertions"]:
+            if assertion["path"] == "/state/case_version":
+                assertion["actual"] = state["case_version"]
+    else:
+        state["receipt_ledger"][0]["receipt"]["case_version"] = True
+    paths.safety_report.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError, match="counter|receipt"):
+        build(paths, tmp_path)

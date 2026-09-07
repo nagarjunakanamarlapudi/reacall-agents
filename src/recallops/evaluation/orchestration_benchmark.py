@@ -1291,8 +1291,15 @@ def validate_orchestration_report(
     """Recompute all scores and compare digests, ordering, denominators and gates."""
     if isinstance(payload, OrchestrationEvalReport):
         payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        raise ValueError("orchestration report must be a JSON object")
+    verify_sha256(
+        {key: value for key, value in payload.items() if key != "report_sha256"},
+        payload.get("report_sha256"),
+    )
     report = OrchestrationEvalReport.model_validate(payload)
-    verify_sha256(report.model_dump(mode="json", exclude={"report_sha256"}), report.report_sha256)
+    if canonical_json_bytes(payload) != canonical_json_bytes(report.model_dump(mode="json")):
+        raise ValueError("orchestration report must contain the complete typed schema")
     if report.orchestration_case_corpus_sha256 != corpus.corpus_sha256:
         raise ValueError("orchestration corpus digest mismatch")
     if report.evidence_boundary_sha256 != corpus.evidence_boundary_sha256:
