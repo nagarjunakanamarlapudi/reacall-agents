@@ -207,6 +207,7 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
         "intake",
         "retrieve_context",
         "plan",
+        "dispatch_specialist",
         "regulatory_intake",
         "product_lot_match",
         "trace_forward_backward",
@@ -217,6 +218,116 @@ async def test_initial_investigation_stops_at_bound_review_with_zero_writes(
         "action_review",
     ]
     assert json.loads(json.dumps(result.model_dump(mode="json")["case"])) == result.case
+    assert _operation_count(operations_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_reordered_valid_plan_drives_specialist_execution_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catches a planner artifact that is displayed but ignored by fixed graph edges."""
+    from recallops.agents import workflow as workflow_module
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    original = workflow_module.plan_investigation
+
+    def reordered(**kwargs):
+        plan = original(**kwargs)
+        plan.todos[0], plan.todos[1] = plan.todos[1], plan.todos[0]
+        return plan
+
+    monkeypatch.setattr(workflow_module, "plan_investigation", reordered)
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Prove that the planner controls specialist dispatch.",
+            case_id="CASE-REORDERED-PLAN",
+            thread_id="THREAD-REORDERED-PLAN",
+            scope_lot_ids=["LOT-PROBABLE-160"],
+        )
+
+    assert result.case["status"] == "review_required"
+    assert result.case["specialist_execution_order"] == [
+        "product-lot-matching",
+        "recall-intelligence",
+        "traceability-reconciliation",
+        "containment-communications",
+    ]
+    assert result.case["completed_todo_ids"] == ["todo-2", "todo-1", "todo-3", "todo-4"]
+    assert result.case["plan_todo_cursor"] == 4
+    assert result.case["verification"]["passed"] is True
+    assert _operation_count(tmp_path / "operations.sqlite3") == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "duplicate",
+        "unknown",
+        "disallowed",
+        "cycle",
+        "over_budget",
+        "skipped_dependency",
+    ],
+)
+async def test_invalid_planner_output_fails_closed_before_specialist_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """Catches malformed planner output being normalized into an executable chain."""
+    from recallops.agents import workflow as workflow_module
+    from recallops.agents.runtime import RecallOpsRuntime
+
+    original = workflow_module.plan_investigation
+
+    class ForgedPlan:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
+
+        def model_dump(self, **_: object) -> dict:
+            return self.payload
+
+    def forged(**kwargs):
+        payload = original(**kwargs).model_dump(mode="python")
+        todos = payload["todos"]
+        if mutation == "missing":
+            todos.pop()
+        elif mutation == "duplicate":
+            todos[1] = deepcopy(todos[0])
+        elif mutation == "unknown":
+            todos[0]["specialist"] = "unknown-specialist"
+        elif mutation == "disallowed":
+            todos[0]["task"] = "Close the case without evidence or review."
+        elif mutation == "cycle":
+            todos[1]["depends_on"] = ["todo-3"]
+        elif mutation == "over_budget":
+            todos.append({**deepcopy(todos[-1]), "todo_id": "todo-5"})
+        else:
+            todos[1], todos[2] = todos[2], todos[1]
+        return ForgedPlan(payload)
+
+    monkeypatch.setattr(workflow_module, "plan_investigation", forged)
+    operations_path = tmp_path / f"{mutation}-operations.sqlite3"
+    async with RecallOpsRuntime.open(
+        checkpoint_path=tmp_path / f"{mutation}-checkpoints.sqlite3",
+        operations_path=operations_path,
+    ) as runtime:
+        result = await runtime.start_case(
+            recall_number="H-1230-2026",
+            question="Reject unsafe planner output.",
+            case_id=f"CASE-INVALID-{mutation}",
+            thread_id=f"THREAD-INVALID-{mutation}",
+        )
+
+    assert result.case["status"] == "escalated"
+    assert result.case["failure_state"]["stage"] == "plan"
+    assert result.pending_interrupt is None
+    assert result.case["node_trace"] == ["intake", "retrieve_context", "plan"]
+    assert not result.case.get("specialist_outputs")
     assert _operation_count(operations_path) == 0
 
 

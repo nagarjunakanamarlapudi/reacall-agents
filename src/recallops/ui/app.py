@@ -287,7 +287,7 @@ def _render_command_center() -> None:
         )
     st.markdown("### Lifecycle map")
     st.markdown(
-        '<div class="lifecycle">intake → plan → specialist fan-out → reconcile → verify → human review → execute approved writes → monitor → close or escalate</div>',
+        '<div class="lifecycle">intake → plan → plan-driven sequential specialists → verify → human review → execute approved writes → monitor → close or escalate</div>',
         unsafe_allow_html=True,
     )
     st.caption("Explanatory map only; the returned current node is shown in the header.")
@@ -328,9 +328,9 @@ def _render_investigation() -> None:
         )
         return
 
-    st.markdown("### Plan and specialist fan-out")
+    st.markdown("### Plan-driven sequential specialist pipeline")
     st.caption(
-        "Deterministic offline planner · bounded four-specialist plan · independent verifier"
+        "Todo order drives one bounded specialist at a time · independent verifier runs only after all four complete"
     )
     st.dataframe(case.raw.get("specialists", []), width="stretch", hide_index=True)
 

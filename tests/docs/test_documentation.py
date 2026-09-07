@@ -604,9 +604,13 @@ class DocumentationContractTests(unittest.TestCase):
         diagram = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
         self.assertIn("Deterministic default planner", diagram)
         self.assertIn("Optional live Deep Agent supervisor", diagram)
-        self.assertIn("DS --> RI", diagram)
-        self.assertIn("DA --> RI", diagram)
-        self.assertIn("Verification / Critic<br/>outside supervisor context", diagram)
+        self.assertIn("DS --> CURSOR", diagram)
+        self.assertIn("CURSOR --> RI", diagram)
+        self.assertIn("ADV --> CURSOR", diagram)
+        self.assertNotIn("DS --> RI", diagram)
+        self.assertIn("DA -. separate optional live path .-> RI", diagram)
+        self.assertIn("Independent Verification / Critic", diagram)
+        self.assertIn("all four complete", diagram)
 
     def test_evaluation_architecture_separates_deterministic_authority_from_advice(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")

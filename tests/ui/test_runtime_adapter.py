@@ -352,6 +352,19 @@ async def test_durable_adapter_projects_runtime_and_survives_reopen(tmp_path: Pa
     assert reviewed["pending_interrupt"]["kind"] == "action_review"
     assert reviewed["pending_interrupt"]["scope"] == "create_case"
     assert reviewed["status"] == "review_required"
+    assert [row["specialist"] for row in reviewed["specialists"]] == [
+        "Regulatory Intake",
+        "Product & Lot Matching",
+        "Traceability",
+        "Containment",
+        "Independent Verification/Critic",
+    ]
+    assert reviewed["specialist_execution_order"] == [
+        "recall-intelligence",
+        "product-lot-matching",
+        "traceability-reconciliation",
+        "containment-communications",
+    ]
     assert len(build_match_rows(reduce_case_snapshot(reviewed))) == 144
     retrieval = build_retrieval_rows(reduce_case_snapshot(reviewed))
     assert retrieval and retrieval[0].query

@@ -41,6 +41,11 @@ class RecallOpsGraphState(TypedDict, total=False):
     case_version: int
     source_mode: str
     plan: dict[str, Any]
+    plan_todo_cursor: int
+    completed_todo_ids: list[str]
+    specialist_execution_order: list[str]
+    current_todo_id: str
+    current_specialist: str
     specialist_outputs: Annotated[dict[str, dict[str, Any]], merge_specialists]
     rag_result: dict[str, Any]
     rag_state: dict[str, Any]

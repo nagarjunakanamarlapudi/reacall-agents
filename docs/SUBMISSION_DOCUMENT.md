@@ -30,7 +30,7 @@ No You.com or general web search is used. A public recall does not establish tha
 
 - **Control:** LangGraph `StateGraph`, immutable public results, JSON-only typed state, conditional routes, `interrupt()`, `Command(resume=...)`, SQLite checkpointing.
 - **Retrieval:** BM25 sparse + local TF-IDF/SVD LSA dense → reciprocal-rank fusion → deterministic rerank → evidence critic; source routing and 2-hop/4-query/8-read bounds.
-- **Agents:** deterministic planner; Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, Containment; independent verifier; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
+- **Agents:** deterministic planner plus conditional task dispatcher; a plan-driven sequential pipeline of Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, and Containment; independent verifier after exact completion; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
 - **MCP:** Recall Registry, Traceability, and Recall Operations FastMCP servers; direct and stdio parity.
 - **Middleware:** context, structured output, retry, circuit breaker, budgets, provenance, masking, approval, version, idempotency, receipt validation, progress watchdog, telemetry, checkpoint-owner/head/request fencing.
 - **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, ten source-controlled diagrams.
@@ -72,7 +72,7 @@ Tool/model attribution is documented in [AI Coding Log](AI_CODING_LOG.md). **Cod
 1. Business-domain-first scope: separate official recall scope, fictional retailer operations, internal closure, and FDA termination.
 2. Larger deterministic twin: expand beyond six anchors while preserving exact/probable/ambiguous/rejected and gap/zero-gap controls.
 3. Hybrid-to-agentic RAG: add BM25 + LSA, RRF/reranking, then source routing, critic, rewrite, citations, and restartable budgets.
-4. Multi-agent boundary hardening: fixed specialists, context quarantine, optional Deep Agents, independent verifier, no Operations capability.
+4. Multi-agent boundary hardening: make validated tasks drive one specialist at a time, persist cursor/completion/order, quarantine context, keep optional Deep Agents separate, verify independently, and expose no Operations capability.
 5. Durable two-stage consent: split approve from execute, one action/version, exact pending binding, cross-store head/request fencing, same-key recovery.
 6. Product/evaluation closure: implement five UI views and pressure-test 21 safety-critical routes including restart and concurrency.
 7. Documentation/diagram contract: derive commands, labels, data counts, and demo from machine-readable artifacts and render SVGs twice.
@@ -105,7 +105,7 @@ The visual is the presentation overview. [`demo_contract.json`](demo_contract.js
 | Time | Presenter narration | Screen/action |
 |---|---|---|
 | 00:00 | “Official scope and fictional operations are visibly separate; no public record proves Northstar involvement.” | **Command Center** → **Open case** for `H-1230-2026`. |
-| 00:35 | “Bounded agentic RAG and four specialists return cited evidence; the independent critic verifies it.” | **Investigation** → **Run investigation**; retrieval/specialist/tool trace. |
+| 00:35 | “Bounded agentic RAG returns cited context; validated task order drives one specialist at a time, and the independent critic runs only after all four complete.” | **Investigation** → **Run investigation**; retrieval, plan-driven sequential specialist, and tool traces. |
 | 01:20 | “The seven-part equation retains 50 unaccounted exact-lot units and ambiguity.” | **Reconciliation** → equation, rows, gaps. |
 | 02:00 | “The first packet proposes only `create_case` at version zero.” | **Human Review** → **Review required**; exact form values. |
 | 02:35 | “Approve writes nothing; separate confirmation records one case receipt.” | **Approve** → **Simulate approved actions** → **Simulated action recorded**, v1. |

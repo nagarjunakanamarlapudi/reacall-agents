@@ -438,3 +438,54 @@ reported every offline suite passing. The regenerated bindings are safety corpus
 `483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`, safety
 report `76dad415cc0c18e79942ce82ca3db6050a559e47e4b2276e2471539dac96a8ad`, and
 scorecard `b11edb68db8783d26812434b7e6f5b119ee551195d25aa15e522fd17137d8346`.
+
+## 2026-09-07 Plan-consumption and sequential-dispatch follow-up
+
+This follow-up was executed in the working tree based on `125188a`. The default
+runtime now validates the four-role plan, dispatches exactly the next ordered
+specialist through a bounded conditional loop, persists cursor/completion/order,
+and permits independent verification only after all four typed outputs exist.
+The optional Deep Agents integration remains a separate live path; the default
+runtime does not claim parallel fan-out.
+
+Fresh observed results:
+
+```text
+planner contracts                                      10 passed
+new reorder and malformed-plan workflow contracts       9 passed
+complete durable workflow integration                   99 passed
+durable projection plus Streamlit smoke                 17 passed
+documentation contract                                  40 passed
+Mermaid stable double-render/parity              10/10 diagrams
+safety evaluation                               21/21, 320/320
+orchestration evaluation                    24 cases, 48 results
+combined offline evaluation gate                        PASSED
+```
+
+The malformed-plan matrix covers missing, duplicate, unknown, disallowed,
+cyclic, dependency-invalid, and over-budget plans. Every case ended escalated
+before specialist dispatch with zero Operations receipts. A valid reorder of
+the two dependency-independent roles changed `specialist_execution_order`,
+then completed traceability, containment, independent verification, and the
+first human-review interrupt without a write. The full 99-test workflow suite
+also exercises durable restarts across action, execution, recovery, and closure
+interrupts.
+
+Fresh raw artifact SHA-256 bindings are safety report
+`1635714574f3471e97b193fe9b91de8fa6f250c6c08bcfb7f8ee511912ccd0e1`,
+orchestration report
+`95254d8b647a51a7e3c4893bbddbd78a0a90c34e8de9731f34ff0bb4241cf220`,
+and scorecard
+`506c57a919d7b8f1d420849fe0a80dee10c8fcdbe9933268610c8bccecf9d302`.
+The scorecard self-digest is
+`bda0d18521f1d5b875c41dc2273b9fbfbf5114292b62382a22f87a26a0b12035`.
+
+One broader unit command was also run and not represented as a pass: it found
+40 existing `tests/unit/test_specialists.py` failures rooted in
+`deep_supervisor._exact_state()` calling `vars()` on the newly slotted
+`OperationsService`, plus tests that directly mutate that former instance
+dictionary. One broader UI command likewise retained the existing
+`test_product_adapter_routes_exact_lot_through_required_disposition` expectation
+that a final `close_case` receipt is absent, while the current hardened service
+records that safe close. Neither unrelated result was hidden or changed in this
+planner-focused follow-up.

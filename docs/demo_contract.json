@@ -241,7 +241,7 @@
   },
   "timeline": {
     "00:00": "Open official notice and state the source boundary",
-    "00:35": "Run the bounded investigation and show agentic RAG/specialists",
+    "00:35": "Run the bounded investigation and show agentic RAG plus plan-driven sequential specialists",
     "01:20": "Show the unit equation and unresolved evidence",
     "02:00": "Review the create_case proposal at version zero",
     "02:35": "Approve, separately confirm, and record create_case version one",

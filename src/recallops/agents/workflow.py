@@ -19,7 +19,7 @@ from langgraph.types import Command, Overwrite, interrupt
 from pydantic import ValidationError
 
 from recallops.agents.middleware import CallBudget, CircuitBreaker, TransientCallError, with_retry
-from recallops.agents.planner import plan_investigation
+from recallops.agents.planner import InvestigationPlan, SpecialistName, plan_investigation
 from recallops.agents.policies import ApprovalGuard, strict_json_value
 from recallops.agents.specialists import (
     ProductLotAssessment,
@@ -552,6 +552,11 @@ def build_workflow(
             case_version=0,
             source_mode="snapshot",
             specialist_outputs={},
+            plan_todo_cursor=0,
+            completed_todo_ids=[],
+            specialist_execution_order=[],
+            current_todo_id="",
+            current_specialist="",
             evidence_gaps=[],
             warnings=[],
             review_history=[],
@@ -623,8 +628,30 @@ def build_workflow(
         return "end" if state.get("status") == "escalated" else "continue"
 
     async def plan(state: RecallOpsGraphState) -> dict[str, Any]:
-        value = plan_investigation(case_id=state["case_id"], question=state["question"])
-        updates: dict[str, Any] = {"plan": value.model_dump(mode="json")}
+        try:
+            proposed = plan_investigation(case_id=state["case_id"], question=state["question"])
+            raw = proposed.model_dump(mode="json") if hasattr(proposed, "model_dump") else proposed
+            value = InvestigationPlan.model_validate(raw)
+            expected_objective = state["question"].strip() or (
+                "Investigate the recall and prepare safe containment review."
+            )
+            if value.case_id != state["case_id"] or value.objective != expected_objective:
+                raise ValueError("planner case/objective binding mismatch")
+        except Exception as error:
+            return _node(
+                "plan",
+                status="escalated",
+                failure_state={"stage": "plan", "error": str(error)},
+                warnings=["Planner output failed the bounded dispatch contract; stopped closed."],
+            )
+        updates: dict[str, Any] = {
+            "plan": value.model_dump(mode="json"),
+            "plan_todo_cursor": 0,
+            "completed_todo_ids": [],
+            "specialist_execution_order": [],
+            "current_todo_id": "",
+            "current_specialist": "",
+        }
         if failure_controller.consume("model_failure"):
             updates.update(
                 warnings=["Model unavailable; deterministic four-specialist plan used."],
@@ -637,6 +664,93 @@ def build_workflow(
                 ],
             )
         return _node("plan", **updates)
+
+    def route_after_plan(state: RecallOpsGraphState) -> str:
+        return "end" if state.get("status") == "escalated" else "dispatch"
+
+    def validated_dispatch_state(
+        state: RecallOpsGraphState,
+    ) -> tuple[InvestigationPlan, int, list[str], list[str]]:
+        value = InvestigationPlan.model_validate(state.get("plan"))
+        expected_objective = state["question"].strip() or (
+            "Investigate the recall and prepare safe containment review."
+        )
+        if value.case_id != state["case_id"] or value.objective != expected_objective:
+            raise ValueError("durable planner binding changed")
+        cursor = state.get("plan_todo_cursor")
+        completed = state.get("completed_todo_ids")
+        order = state.get("specialist_execution_order")
+        if type(cursor) is not int or not 0 <= cursor <= len(value.todos):
+            raise ValueError("planner cursor is invalid")
+        if type(completed) is not list or any(type(item) is not str for item in completed):
+            raise ValueError("completed todo ledger is invalid")
+        if type(order) is not list or any(type(item) is not str for item in order):
+            raise ValueError("specialist execution ledger is invalid")
+        expected_completed = [todo.todo_id for todo in value.todos[:cursor]]
+        expected_order = [todo.specialist.value for todo in value.todos[:cursor]]
+        if completed != expected_completed or order != expected_order:
+            raise ValueError("planner progress does not match the completed todo prefix")
+        return value, cursor, completed, order
+
+    async def dispatch_specialist(state: RecallOpsGraphState) -> dict[str, Any]:
+        try:
+            value, cursor, completed, _ = validated_dispatch_state(state)
+            if cursor == len(value.todos):
+                expected_outputs = {todo.specialist.value for todo in value.todos}
+                if set(state.get("specialist_outputs", {})) != expected_outputs:
+                    raise ValueError("required specialist outputs are incomplete")
+                return _node(
+                    "dispatch_specialist",
+                    current_todo_id="",
+                    current_specialist="",
+                )
+            todo = value.todos[cursor]
+            if not set(todo.depends_on).issubset(completed):
+                raise ValueError("next specialist has an incomplete dependency")
+            return _node(
+                "dispatch_specialist",
+                current_todo_id=todo.todo_id,
+                current_specialist=todo.specialist.value,
+            )
+        except Exception as error:
+            return _node(
+                "dispatch_specialist",
+                status="escalated",
+                failure_state={"stage": "dispatch_specialist", "error": str(error)},
+                warnings=["Specialist dispatch state failed validation; stopped closed."],
+            )
+
+    def route_dispatch(state: RecallOpsGraphState) -> str:
+        if state.get("status") == "escalated":
+            return "end"
+        value, cursor, _, _ = validated_dispatch_state(state)
+        if cursor == len(value.todos):
+            return "verify"
+        return value.todos[cursor].specialist.value
+
+    def complete_current_todo(
+        state: RecallOpsGraphState,
+        specialist: SpecialistName,
+        **updates: Any,
+    ) -> dict[str, Any]:
+        value, cursor, completed, order = validated_dispatch_state(state)
+        if cursor >= len(value.todos):
+            raise ValueError("no specialist todo is pending")
+        todo = value.todos[cursor]
+        if (
+            todo.specialist != specialist
+            or state.get("current_todo_id") != todo.todo_id
+            or state.get("current_specialist") != specialist.value
+        ):
+            raise ValueError("specialist execution does not match the dispatched todo")
+        if specialist.value not in updates.get("specialist_outputs", {}):
+            raise ValueError("specialist did not produce its required typed output")
+        return {
+            **updates,
+            "plan_todo_cursor": cursor + 1,
+            "completed_todo_ids": [*completed, todo.todo_id],
+            "specialist_execution_order": [*order, specialist.value],
+        }
 
     async def regulatory_intake(state: RecallOpsGraphState) -> dict[str, Any]:
         recorder = TraceRecorder(case_id=state["case_id"], thread_id=state["thread_id"])
@@ -680,20 +794,26 @@ def build_workflow(
         intelligence = investigate_recall(recall)
         return _node(
             "regulatory_intake",
-            recall=recall.model_dump(mode="json"),
-            recall_predicate=intelligence.predicate.model_dump(mode="json"),
-            official_evidence={
-                "provenance": recall.provenance,
-                "recall_number": recall.recall_number,
-                "citations": intelligence.citations,
-                "source_url": recall.source_url,
-                "sha256": recall.sha256,
-            },
-            specialist_outputs={"recall-intelligence": intelligence.model_dump(mode="json")},
-            warnings=warnings,
-            tool_trace=recorder.to_dicts(),
-            retry_state=(
-                {**state["retry_state"], "read_attempts": 2} if warnings else state["retry_state"]
+            **complete_current_todo(
+                state,
+                SpecialistName.RECALL_INTELLIGENCE,
+                recall=recall.model_dump(mode="json"),
+                recall_predicate=intelligence.predicate.model_dump(mode="json"),
+                official_evidence={
+                    "provenance": recall.provenance,
+                    "recall_number": recall.recall_number,
+                    "citations": intelligence.citations,
+                    "source_url": recall.source_url,
+                    "sha256": recall.sha256,
+                },
+                specialist_outputs={"recall-intelligence": intelligence.model_dump(mode="json")},
+                warnings=warnings,
+                tool_trace=recorder.to_dicts(),
+                retry_state=(
+                    {**state["retry_state"], "read_attempts": 2}
+                    if warnings
+                    else state["retry_state"]
+                ),
             ),
         )
 
@@ -703,7 +823,31 @@ def build_workflow(
     async def product_lot_match(state: RecallOpsGraphState) -> dict[str, Any]:
         recorder = TraceRecorder(case_id=state["case_id"], thread_id=state["thread_id"])
         try:
-            predicate = RecallPredicate.model_validate(state["recall_predicate"])
+            prerequisite_updates: dict[str, Any] = {}
+            if state.get("recall_predicate"):
+                predicate = RecallPredicate.model_validate(state["recall_predicate"])
+            else:
+                raw_recall = await _read(
+                    operation=trusted_gateway.get_recall,
+                    name="get_recall",
+                    recorder=recorder,
+                    args=(state["recall_number"],),
+                    failures=failure_controller,
+                )
+                recall = RecallRecord.model_validate(raw_recall)
+                intelligence = investigate_recall(recall)
+                predicate = intelligence.predicate
+                prerequisite_updates = {
+                    "recall": recall.model_dump(mode="json"),
+                    "recall_predicate": predicate.model_dump(mode="json"),
+                    "official_evidence": {
+                        "provenance": recall.provenance,
+                        "recall_number": recall.recall_number,
+                        "citations": intelligence.citations,
+                        "source_url": recall.source_url,
+                        "sha256": recall.sha256,
+                    },
+                }
             products = await _read(
                 operation=trusted_gateway.find_candidate_products,
                 name="find_candidate_products",
@@ -741,13 +885,18 @@ def build_workflow(
             )
         return _node(
             "product_lot_match",
-            candidate_products=products,
-            candidate_lots=lots,
-            match_decisions=[item.model_dump(mode="json") for item in assessment.decisions],
-            confirmed_lot_ids=assessment.confirmed_lot_ids,
-            ambiguous_lot_ids=assessment.ambiguous_lot_ids,
-            specialist_outputs={"product-lot-matching": assessment.model_dump(mode="json")},
-            tool_trace=recorder.to_dicts(),
+            **complete_current_todo(
+                state,
+                SpecialistName.PRODUCT_LOT_MATCHING,
+                **prerequisite_updates,
+                candidate_products=products,
+                candidate_lots=lots,
+                match_decisions=[item.model_dump(mode="json") for item in assessment.decisions],
+                confirmed_lot_ids=assessment.confirmed_lot_ids,
+                ambiguous_lot_ids=assessment.ambiguous_lot_ids,
+                specialist_outputs={"product-lot-matching": assessment.model_dump(mode="json")},
+                tool_trace=recorder.to_dicts(),
+            ),
         )
 
     async def trace_forward_backward(state: RecallOpsGraphState) -> dict[str, Any]:
@@ -839,11 +988,17 @@ def build_workflow(
         required = sorted(evidence_by_facility)
         return _node(
             "reconcile",
-            required_facilities=required,
-            evidence_by_lot=evidence_by_lot,
-            evidence_by_facility=evidence_by_facility,
-            evidence_gaps=assessment.evidence_gaps,
-            specialist_outputs={"traceability-reconciliation": assessment.model_dump(mode="json")},
+            **complete_current_todo(
+                state,
+                SpecialistName.TRACEABILITY_RECONCILIATION,
+                required_facilities=required,
+                evidence_by_lot=evidence_by_lot,
+                evidence_by_facility=evidence_by_facility,
+                evidence_gaps=assessment.evidence_gaps,
+                specialist_outputs={
+                    "traceability-reconciliation": assessment.model_dump(mode="json")
+                },
+            ),
         )
 
     async def containment_draft(state: RecallOpsGraphState) -> dict[str, Any]:
@@ -861,19 +1016,35 @@ def build_workflow(
         )
         return _node(
             "containment_draft",
-            specialist_outputs={"containment-communications": proposal.model_dump(mode="json")},
-            synthetic_evidence={
-                "origin": SYNTHETIC_ORIGIN,
-                "lot_ids": [*state["confirmed_lot_ids"], *state["ambiguous_lot_ids"]],
-                "facility_ids": state["required_facilities"],
-                "evidence_ids": _ordered(
-                    [item for values in state["evidence_by_lot"].values() for item in values]
-                ),
-            },
+            **complete_current_todo(
+                state,
+                SpecialistName.CONTAINMENT_COMMUNICATIONS,
+                specialist_outputs={"containment-communications": proposal.model_dump(mode="json")},
+                synthetic_evidence={
+                    "origin": SYNTHETIC_ORIGIN,
+                    "lot_ids": [*state["confirmed_lot_ids"], *state["ambiguous_lot_ids"]],
+                    "facility_ids": state["required_facilities"],
+                    "evidence_ids": _ordered(
+                        [item for values in state["evidence_by_lot"].values() for item in values]
+                    ),
+                },
+            ),
         )
 
     async def verify(state: RecallOpsGraphState) -> dict[str, Any]:
         violations: list[str] = []
+        try:
+            value, cursor, completed, order = validated_dispatch_state(state)
+            expected_completed = [todo.todo_id for todo in value.todos]
+            expected_order = [todo.specialist.value for todo in value.todos]
+            if cursor != len(value.todos) or completed != expected_completed:
+                violations.append("not every planned specialist todo completed")
+            if order != expected_order:
+                violations.append("specialist execution order differs from the accepted plan")
+            if set(state.get("specialist_outputs", {})) != set(expected_order):
+                violations.append("required specialist outputs are incomplete")
+        except Exception:
+            violations.append("planner progress failed independent verification")
         if failure_controller.consume("independent_verifier_failure"):
             violations.append("independent verifier rejected the proposed evidence packet")
         if set(state["confirmed_lot_ids"]) & set(state["ambiguous_lot_ids"]):
@@ -1484,6 +1655,7 @@ def build_workflow(
     graph.add_node("intake", intake)
     graph.add_node("retrieve_context", retrieve_context)
     graph.add_node("plan", plan)
+    graph.add_node("dispatch_specialist", dispatch_specialist)
     graph.add_node("regulatory_intake", regulatory_intake)
     graph.add_node("product_lot_match", product_lot_match)
     graph.add_node("trace_forward_backward", trace_forward_backward)
@@ -1507,16 +1679,30 @@ def build_workflow(
     graph.add_conditional_edges(
         "retrieve_context", route_after_retrieval, {"continue": "plan", "end": END}
     )
-    graph.add_edge("plan", "regulatory_intake")
+    graph.add_conditional_edges(
+        "plan", route_after_plan, {"dispatch": "dispatch_specialist", "end": END}
+    )
+    graph.add_conditional_edges(
+        "dispatch_specialist",
+        route_dispatch,
+        {
+            SpecialistName.RECALL_INTELLIGENCE.value: "regulatory_intake",
+            SpecialistName.PRODUCT_LOT_MATCHING.value: "product_lot_match",
+            SpecialistName.TRACEABILITY_RECONCILIATION.value: "trace_forward_backward",
+            SpecialistName.CONTAINMENT_COMMUNICATIONS.value: "containment_draft",
+            "verify": "verify",
+            "end": END,
+        },
+    )
     graph.add_conditional_edges(
         "regulatory_intake",
         route_after_regulatory,
-        {"continue": "product_lot_match", "end": END},
+        {"continue": "dispatch_specialist", "end": END},
     )
     graph.add_conditional_edges(
         "product_lot_match",
         route_after_regulatory,
-        {"continue": "trace_forward_backward", "end": END},
+        {"continue": "dispatch_specialist", "end": END},
     )
     graph.add_conditional_edges(
         "trace_forward_backward",
@@ -1526,9 +1712,13 @@ def build_workflow(
     graph.add_conditional_edges(
         "reconcile",
         route_after_regulatory,
-        {"continue": "containment_draft", "end": END},
+        {"continue": "dispatch_specialist", "end": END},
     )
-    graph.add_edge("containment_draft", "verify")
+    graph.add_conditional_edges(
+        "containment_draft",
+        route_after_regulatory,
+        {"continue": "dispatch_specialist", "end": END},
+    )
     graph.add_conditional_edges(
         "verify",
         lambda state: "review" if state.get("verification", {}).get("passed") is True else "end",

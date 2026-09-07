@@ -57,6 +57,12 @@ def test_planner_returns_four_bounded_todos_with_completion_criteria() -> None:
     assert [todo.todo_id for todo in plan.todos] == ["todo-1", "todo-2", "todo-3", "todo-4"]
     assert all(todo.status == "pending" for todo in plan.todos)
     assert all(todo.completion_criteria for todo in plan.todos)
+    assert [todo.depends_on for todo in plan.todos] == [
+        [],
+        [],
+        ["todo-2"],
+        ["todo-3"],
+    ]
     payload = plan.write_todos_payload()
     assert set(payload) == {"todos"}
     assert [item["status"] for item in payload["todos"]] == ["pending"] * 4
@@ -69,6 +75,50 @@ def test_planner_returns_four_bounded_todos_with_completion_criteria() -> None:
 
     with pytest.raises(ValueError, match="requires four specialist todos"):
         plan_investigation(case_id="CASE-001", question="Investigate", max_todos=3)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("missing", "at least 4"),
+        ("over_budget", "at most 4"),
+        ("duplicate_id", "todo IDs must be unique"),
+        ("duplicate_role", "specialist roles must be unique"),
+        ("unknown_dependency", "unknown todo"),
+        ("cycle", "dependency cycle"),
+        ("dependency_order", "dependency must precede"),
+        ("completed", "must begin pending"),
+    ],
+)
+def test_planner_contract_rejects_unbounded_or_unsafe_dispatch_plans(
+    mutation: str, message: str
+) -> None:
+    """Catches a malformed todo graph reaching the runtime dispatcher."""
+    from recallops.agents.planner import InvestigationPlan, plan_investigation
+
+    payload = plan_investigation(case_id="CASE-001", question="Investigate").model_dump(
+        mode="python"
+    )
+    todos = payload["todos"]
+    if mutation == "missing":
+        todos.pop()
+    elif mutation == "over_budget":
+        todos.append({**todos[-1], "todo_id": "todo-5"})
+    elif mutation == "duplicate_id":
+        todos[1]["todo_id"] = todos[0]["todo_id"]
+    elif mutation == "duplicate_role":
+        todos[1]["specialist"] = todos[0]["specialist"]
+    elif mutation == "unknown_dependency":
+        todos[2]["depends_on"] = ["todo-unknown"]
+    elif mutation == "cycle":
+        todos[1]["depends_on"] = ["todo-3"]
+    elif mutation == "dependency_order":
+        todos[1], todos[2] = todos[2], todos[1]
+    else:
+        todos[0]["status"] = "completed"
+
+    with pytest.raises(ValidationError, match=message):
+        InvestigationPlan.model_validate(payload)
 
 
 def test_planner_payload_executes_through_the_compiled_write_todos_tool() -> None:

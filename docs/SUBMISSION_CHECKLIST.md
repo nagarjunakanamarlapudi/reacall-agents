@@ -14,7 +14,7 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 
 - [x] LangGraph node order, JSON state, SQLite checkpoint, persistent checkpoint ID, `thread_id`, interrupt, and resume are visible.
 - [x] Agentic RAG visibly includes BM25 sparse, local LSA dense, RRF, reranking, critic/rewrite, citations/gaps, and 2-hop/4-query/8-read limits.
-- [x] The deterministic planner, four specialists, optional Deep Agents factory, and independent verifier are accurately distinguished.
+- [x] The deterministic task-driven sequential dispatcher, four specialists, optional Deep Agents factory, and independent verifier are accurately distinguished.
 - [x] Recall Registry, Traceability, and Recall Operations FastMCP servers plus direct/stdio transports are demonstrated.
 - [x] Middleware covers reads, model fallback, retrieval, masking, tracing, approvals, versions, idempotency, watchdog, and cross-store fencing.
 - [x] “No A2A” and “agents never write directly” appear in architecture/narration.

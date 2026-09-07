@@ -847,6 +847,9 @@ class DeterministicDemoAdapter:
                 "facilities": facility_rows,
                 "specialists": specialists,
                 "plan": plan.model_dump(mode="json"),
+                "plan_todo_cursor": 4,
+                "completed_todo_ids": [todo.todo_id for todo in plan.todos],
+                "specialist_execution_order": [todo.specialist.value for todo in plan.todos],
                 "retrieval": {
                     "mode": "agentic_rag",
                     "label": "Deterministic offline agentic RAG trace",
@@ -1202,6 +1205,7 @@ class DeterministicDemoAdapter:
             "intake",
             "retrieve_context",
             "plan",
+            "dispatch_specialist",
             "regulatory_intake",
             "product_lot_match",
             "trace_forward_backward",
@@ -1726,8 +1730,8 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     matching = outputs.get("product-lot-matching", {})
     trace = outputs.get("traceability-reconciliation", {})
     containment = outputs.get("containment-communications", {})
-    rows = [
-        {
+    rows_by_role = {
+        "recall-intelligence": {
             "specialist": "Regulatory Intake",
             "purpose": purpose_by_specialist.get(
                 "recall-intelligence", "Extract official recall predicate."
@@ -1737,7 +1741,7 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "citations": state.get("official_evidence", {}).get("citations", []),
             "sources": ["OFFICIAL — openFDA snapshot"],
         },
-        {
+        "product-lot-matching": {
             "specialist": "Product & Lot Matching",
             "purpose": purpose_by_specialist.get(
                 "product-lot-matching", "Classify products and lots."
@@ -1747,7 +1751,7 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "citations": [item.get("lot_id") for item in matching.get("decisions", [])[:4]],
             "sources": ["OFFICIAL — openFDA snapshot", "SYNTHETIC — ACADEMIC DEMO"],
         },
-        {
+        "traceability-reconciliation": {
             "specialist": "Traceability",
             "purpose": purpose_by_specialist.get(
                 "traceability-reconciliation", "Trace and reconcile lots."
@@ -1757,7 +1761,7 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "citations": trace.get("evidence_ids", [])[:4],
             "sources": ["SYNTHETIC — ACADEMIC DEMO"],
         },
-        {
+        "containment-communications": {
             "specialist": "Containment",
             "purpose": purpose_by_specialist.get(
                 "containment-communications", "Draft containment actions."
@@ -1767,6 +1771,18 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "citations": containment.get("all_cited_evidence_ids", [])[:4],
             "sources": ["SYNTHETIC — ACADEMIC DEMO"],
         },
+    }
+    planned_order = [
+        role for role in state.get("specialist_execution_order", []) if role in rows_by_role
+    ]
+    if not planned_order:
+        planned_order = [
+            item.get("specialist")
+            for item in plan.get("todos", [])
+            if isinstance(item, Mapping) and item.get("specialist") in rows_by_role
+        ]
+    rows = [rows_by_role[role] for role in planned_order]
+    rows.append(
         {
             "specialist": "Independent Verification/Critic",
             "purpose": "Verify citations, policy controls, contradictions and closure posture.",
@@ -1776,6 +1792,6 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
             "summary": "Structured controls are authoritative; RAG remains advisory.",
             "citations": state.get("evidence_gaps", []),
             "sources": ["OFFICIAL — openFDA snapshot", "SYNTHETIC — ACADEMIC DEMO"],
-        },
-    ]
+        }
+    )
     return rows

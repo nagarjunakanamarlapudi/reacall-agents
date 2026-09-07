@@ -26,7 +26,7 @@ No agent, retrieved document, UI callback, or MCP transport can skip those layer
 |---|---|---|
 | Data | Frozen openFDA snapshot, five policy references, seeded Northstar twin, manifests/checksums | Defines evidence and provenance; never authorizes a write |
 | Retrieval | BM25, TF-IDF/SVD LSA, RRF, deterministic rerank, source routing, evidence critic, bounded rewrite | Advisory cited context only |
-| Reasoning | Deterministic planner, four specialists, optional Deep Agents factory, independent verifier | Produces typed facts, assessments, and proposals |
+| Reasoning | Task-driven sequential dispatcher, four specialists, optional Deep Agents factory, independent verifier | Produces typed facts, assessments, and proposals |
 | Control | LangGraph `StateGraph`, conditional edges, JSON-only state, `interrupt()`, `Command(resume=...)` | Owns lifecycle, side-effect order, and human pauses |
 | Tool | Three FastMCP servers; direct and stdio gateways | Exposes narrow typed reads and simulated writes |
 | Durable state | LangGraph checkpoint SQLite plus Operations SQLite | Persists graph state, case versions, approvals, holds, dispositions, tasks, acknowledgements, receipts, grants, and fences |
@@ -48,14 +48,16 @@ The agentic retrieval graph has two sealed capabilities: regulatory search route
 
 ## Planning and agents
 
-The credential-free runtime calls a deterministic bounded planner, then the four fixed specialists in sequence:
+The credential-free runtime calls a deterministic bounded planner, validates its four-role task graph, and stores a cursor, completed-task ledger, and specialist execution order in the checkpoint. A LangGraph conditional dispatcher selects the next role from the ordered plan; after that role completes, control returns to the dispatcher. This is a **plan-driven sequential specialist pipeline**, not parallel fan-out. Dependency-valid reordering changes execution order; missing, duplicate, unknown, disallowed, cyclic, dependency-invalid, and over-budget plans escalate before specialist work.
+
+The default task order is:
 
 1. Regulatory Intake extracts the recall predicate and citations.
 2. Product & Lot Matching classifies exact, probable, ambiguous, and rejected candidates.
 3. Traceability/Reconciliation follows forward/backward lineage, inventory, and unit evidence.
 4. Containment drafts a scoped proposal without executing it.
 
-The independent verifier sits outside the specialist context and checks overlap, facility coverage, and authoritative-control ownership. A failed verifier routes directly to an escalated terminal state, and action preparation/execution independently require `verification.passed == true`. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
+Product & Lot Matching and Regulatory Intake are independently schedulable because the matching specialist can acquire the same read-only official predicate context; Traceability/Reconciliation depends on matching, and Containment depends on traceability. The independent verifier sits outside the specialist context and rechecks the accepted plan, exact completion prefix/order, all four typed outputs, scope overlap, facility coverage, and authoritative-control ownership. A failed verifier routes directly to an escalated terminal state, and action preparation/execution independently require `verification.passed == true`. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
 
 ![Orchestration and action loop](images/03_orchestration.svg)
 
@@ -74,7 +76,7 @@ These evaluation records are authored, labelled, digest-bound offline audit data
 
 The investigation sequence is:
 
-`START → intake → retrieve_context → plan → regulatory_intake → product_lot_match → trace_forward_backward → reconcile → containment_draft → verify → prepare_action_review → action_review`
+`START → intake → retrieve_context → plan → dispatch_specialist → selected specialist → record completion/advance cursor → dispatch_specialist … → verify → prepare_action_review → action_review`
 
 After that, the graph repeats a versioned action loop:
 

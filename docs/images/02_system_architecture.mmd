@@ -26,10 +26,10 @@ flowchart TB
   subgraph CONTROL["LANGGRAPH CONTROL + REASONING"]
     direction LR
     G["LangGraph StateGraph<br/>JSON state • routes • interrupt/resume"]:::official
-    DP["Deterministic default planner"]:::official
+    DP["Deterministic bounded planner<br/>validated four-role todo graph"]:::official
     DA["Optional Deep Agent supervisor<br/>fixed read-only specialists"]:::reason
-    SP["Intake • Match • Trace • Containment"]:::reason
-    VC["Independent Verification / Critic<br/>structured controls authoritative"]:::verify
+    SP["Plan-driven sequential dispatcher<br/>one specialist per todo • durable cursor<br/>Intake • Match • Trace • Containment"]:::reason
+    VC["Independent Verification / Critic<br/>only after all four outputs<br/>structured controls authoritative"]:::verify
     G --> DP --> SP --> VC
     G -. optional live reasoning .-> DA --> SP
   end

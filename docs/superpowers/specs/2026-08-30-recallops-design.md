@@ -72,7 +72,7 @@ The generator is seeded, idempotent, checksummed, and validated for referential 
 
 An explicit outer `StateGraph` owns the operational lifecycle:
 
-`intake → plan → specialist fan-out → reconcile → verify → human review → execute approved writes → monitor → close or escalate`
+`intake → plan → plan-driven sequential specialist dispatcher → verify → human review → execute approved writes → monitor → close or escalate`
 
 The graph is the authority for state, branch decisions, retry bounds, interrupt/resume, and side effects. Each node returns typed state updates. A SQLite checkpointer preserves case state by `thread_id` so review can resume after process restart.
 
