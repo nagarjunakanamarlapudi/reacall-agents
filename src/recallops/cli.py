@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import os
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot, validate_manifest
-from recallops.paths import DATA_DIR
+from recallops.paths import DATA_DIR, EvaluationArtifactPaths
 from recallops.ui.adapter import DurableRuntimeAdapter
 from recallops.ui.presenters import APPROVAL_JUSTIFICATION
 
@@ -26,6 +27,34 @@ def _parser() -> argparse.ArgumentParser:
     demo.add_argument("--recall-number", required=True)
     evaluate = subcommands.add_parser("eval", help="Summarize an evaluation report")
     evaluate.add_argument("--report", type=Path, default=DATA_DIR / "evals" / "report.json")
+    retrieval = subcommands.add_parser(
+        "eval-retrieval", help="Run or verify the deterministic retrieval benchmark"
+    )
+    retrieval.add_argument(
+        "--report", type=Path, default=DATA_DIR / "evals" / "retrieval_report.json"
+    )
+    retrieval.add_argument("--cases", type=Path)
+    retrieval.add_argument("--run", action="store_true", help="Regenerate before summarizing")
+    orchestration = subcommands.add_parser(
+        "eval-orchestration", help="Run or verify the read-only orchestration benchmark"
+    )
+    orchestration.add_argument(
+        "--report", type=Path, default=DATA_DIR / "evals" / "orchestration_report.json"
+    )
+    orchestration.add_argument("--cases", type=Path)
+    orchestration.add_argument("--run", action="store_true", help="Regenerate before summarizing")
+    orchestration.add_argument(
+        "--live-adapter",
+        metavar="MODULE:ATTRIBUTE",
+        help="Explicit LiveRunnerFactory object or zero-argument factory (opt-in only)",
+    )
+    scorecard = subcommands.add_parser(
+        "eval-scorecard", help="Verify and summarize the combined offline scorecard"
+    )
+    scorecard.add_argument("--scorecard", type=Path, default=DATA_DIR / "evals" / "scorecard.json")
+    scorecard.add_argument("--safety-report", type=Path)
+    scorecard.add_argument("--retrieval-report", type=Path)
+    scorecard.add_argument("--orchestration-report", type=Path)
     subcommands.add_parser("mcp-config", help="Print safe stdio MCP configuration")
     return parser
 
@@ -119,6 +148,178 @@ def _eval(report_path: Path) -> int:
     return 0 if gate_passed and len(passed) == len(critical) and bool(critical) else 1
 
 
+def _unverified(label: str, error: BaseException) -> int:
+    detail = str(error).splitlines()[0][:200] or error.__class__.__name__
+    print(f"{label}: UNVERIFIED — {detail}")
+    return 1
+
+
+def _case_path(report_path: Path, configured: Path | None, filename: str) -> Path:
+    return configured if configured is not None else report_path.with_name(filename)
+
+
+async def _atomic_benchmark[Report: Any](
+    output_path: Path,
+    run: Callable[[Path], Awaitable[Report]],
+    validate: Callable[[Path], Report],
+) -> Report:
+    """Build beside the destination, verify exact bytes, then replace atomically."""
+    destination = output_path.expanduser().absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        await run(temporary)
+        report = validate(temporary)
+        if report.gate_passed:
+            os.replace(temporary, destination)
+            directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        return report
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _eval_retrieval(report_path: Path, case_path: Path | None, *, run: bool) -> int:
+    from recallops.evaluation.retrieval_benchmark import (
+        load_retrieval_report,
+        run_retrieval_benchmark,
+    )
+
+    cases = _case_path(report_path, case_path, "retrieval_cases.json")
+    try:
+        if run:
+            report = asyncio.run(
+                _atomic_benchmark(
+                    report_path,
+                    lambda output: run_retrieval_benchmark(cases, output),
+                    lambda output: load_retrieval_report(output, cases),
+                )
+            )
+        else:
+            report = load_retrieval_report(report_path, cases)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return _unverified("Retrieval evaluation", exc)
+    except Exception:
+        return _unverified("Retrieval evaluation", RuntimeError("evaluation runner failed"))
+    agentic = next(item for item in report.configurations if item.name == "agentic_rag")
+    print(f"Retrieval cases: {len(agentic.results)}")
+    print(f"Persisted results: {sum(len(item.results) for item in report.configurations)}")
+    print(f"Agentic RAG Recall@5: {agentic.metrics.recall_at_5:.6f}")
+    print(f"Agentic RAG nDCG@5: {agentic.metrics.ndcg_at_5:.6f}")
+    print(f"Fusion Recall@5 delta: {report.gates.fusion_recall_delta:+.6f}")
+    print(f"Rerank nDCG@5 delta: {report.gates.rerank_ndcg_delta:+.6f}")
+    print(f"Case corpus SHA-256: {report.retrieval_case_corpus_sha256}")
+    print(f"Knowledge corpus SHA-256: {report.knowledge_corpus_sha256}")
+    print(f"Report SHA-256: {report.report_sha256}")
+    print(f"Retrieval gate: {'PASSED' if report.gate_passed else 'FAILED'}")
+    return 0 if report.gate_passed else 1
+
+
+def _load_live_adapter(specification: str):
+    from recallops.evaluation.orchestration_benchmark import LiveRunnerFactory
+
+    module_name, separator, attribute_name = specification.partition(":")
+    if not separator or not module_name or not attribute_name:
+        raise ValueError("live adapter must use MODULE:ATTRIBUTE syntax")
+    try:
+        candidate = getattr(importlib.import_module(module_name), attribute_name)
+    except (AttributeError, ImportError) as exc:
+        raise ValueError("configured live adapter is unavailable") from exc
+    try:
+        adapter = (
+            candidate()
+            if callable(candidate) and type(candidate) is not LiveRunnerFactory
+            else candidate
+        )
+    except Exception as exc:
+        raise ValueError("configured live adapter or provider credentials are unavailable") from exc
+    if type(adapter) is not LiveRunnerFactory:
+        raise ValueError("configured live adapter must provide LiveRunnerFactory")
+    return adapter
+
+
+def _eval_orchestration(
+    report_path: Path,
+    case_path: Path | None,
+    *,
+    run: bool,
+    live_adapter: str | None,
+) -> int:
+    from recallops.evaluation.orchestration_benchmark import (
+        load_orchestration_report,
+        run_orchestration_benchmark,
+    )
+
+    cases = _case_path(report_path, case_path, "orchestration_cases.json")
+    if live_adapter is not None and not run:
+        return _unverified("Orchestration evaluation", ValueError("--live-adapter requires --run"))
+    try:
+        adapter = _load_live_adapter(live_adapter) if live_adapter is not None else None
+        if run:
+            report = asyncio.run(
+                _atomic_benchmark(
+                    report_path,
+                    lambda output: run_orchestration_benchmark(cases, output, adapter),
+                    lambda output: load_orchestration_report(output, cases),
+                )
+            )
+        else:
+            report = load_orchestration_report(report_path, cases)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return _unverified("Orchestration evaluation", exc)
+    except Exception:
+        return _unverified("Orchestration evaluation", RuntimeError("evaluation runner failed"))
+    single, specialists = report.profiles
+    print(f"Orchestration cases: {len(single.results)}")
+    print(f"Persisted offline results: {sum(len(item.results) for item in report.profiles)}")
+    print(f"Single-agent task success: {single.metrics.task_success_rate:.6f}")
+    print(f"Fixed-specialist task success: {specialists.metrics.task_success_rate:.6f}")
+    print(f"Optional live: {report.live_status.status} (excluded from offline gate)")
+    if report.live_status.error_code is not None:
+        print(f"Optional live error: {report.live_status.error_code}")
+    print(f"Case corpus SHA-256: {report.orchestration_case_corpus_sha256}")
+    print(f"Evidence boundary SHA-256: {report.evidence_boundary_sha256}")
+    print(f"Report SHA-256: {report.report_sha256}")
+    print(f"Orchestration gate: {'PASSED' if report.gate_passed else 'FAILED'}")
+    return 0 if report.gate_passed else 1
+
+
+def _eval_scorecard(
+    scorecard_path: Path,
+    safety_report: Path | None,
+    retrieval_report: Path | None,
+    orchestration_report: Path | None,
+) -> int:
+    from recallops.evaluation.scorecard import validate_scorecard
+
+    parent = scorecard_path.parent
+    paths = EvaluationArtifactPaths(
+        safety_report=safety_report or parent / "report.json",
+        retrieval_report=retrieval_report or parent / "retrieval_report.json",
+        orchestration_report=orchestration_report or parent / "orchestration_report.json",
+    )
+    try:
+        scorecard = validate_scorecard(scorecard_path, paths)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        return _unverified("Combined evaluation", exc)
+    for suite in scorecard.suite_summaries:
+        verdict = "PASSED" if suite.gate_passed else "FAILED"
+        print(f"{suite.name}: {suite.case_count} cases · {suite.result_count} results · {verdict}")
+    print(f"Optional live: {scorecard.optional_live_status.status} (excluded from offline gate)")
+    for name, digest in sorted(scorecard.artifact_digests.items()):
+        print(f"{name.replace('_', ' ').title()} SHA-256: {digest}")
+    print(f"Scorecard SHA-256: {scorecard.scorecard_sha256}")
+    print(f"Offline evaluation gate: {'PASSED' if scorecard.offline_gate_passed else 'FAILED'}")
+    return 0 if scorecard.offline_gate_passed else 1
+
+
 def _mcp_config() -> int:
     module_by_name = {
         "recall-registry": "recallops.mcp.recall_registry_server",
@@ -144,6 +345,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _demo(args.recall_number)
         if args.command == "eval":
             return _eval(args.report)
+        if args.command == "eval-retrieval":
+            return _eval_retrieval(args.report, args.cases, run=args.run)
+        if args.command == "eval-orchestration":
+            return _eval_orchestration(
+                args.report,
+                args.cases,
+                run=args.run,
+                live_adapter=args.live_adapter,
+            )
+        if args.command == "eval-scorecard":
+            return _eval_scorecard(
+                args.scorecard,
+                args.safety_report,
+                args.retrieval_report,
+                args.orchestration_report,
+            )
         if args.command == "mcp-config":
             return _mcp_config()
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:

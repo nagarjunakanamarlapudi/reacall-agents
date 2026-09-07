@@ -1,9 +1,34 @@
 from __future__ import annotations
 
 import json
+import shutil
+import sys
 from pathlib import Path
+from types import ModuleType
 
 from recallops.cli import main
+from recallops.paths import DATA_DIR, EvaluationArtifactPaths
+
+
+def copy_verified_artifacts(destination: Path) -> tuple[EvaluationArtifactPaths, Path]:
+    for name in (
+        "report.json",
+        "retrieval_report.json",
+        "orchestration_report.json",
+        "scorecard.json",
+        "scenarios.json",
+        "retrieval_cases.json",
+        "orchestration_cases.json",
+    ):
+        shutil.copyfile(DATA_DIR / "evals" / name, destination / name)
+    return (
+        EvaluationArtifactPaths(
+            safety_report=destination / "report.json",
+            retrieval_report=destination / "retrieval_report.json",
+            orchestration_report=destination / "orchestration_report.json",
+        ),
+        destination / "scorecard.json",
+    )
 
 
 def test_eval_command_summarizes_committed_report_schema(capsys, tmp_path: Path) -> None:
@@ -39,6 +64,226 @@ def test_eval_command_fails_when_report_gate_is_not_passed(capsys, tmp_path: Pat
 
     assert main(["eval", "--report", str(report_path)]) == 1
     assert "Evaluation gate: FAILED" in capsys.readouterr().out
+
+
+def test_eval_retrieval_validates_and_summarizes_verified_report(capsys, tmp_path: Path) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+
+    assert main(["eval-retrieval", "--report", str(paths.retrieval_report)]) == 0
+    output = capsys.readouterr().out
+    assert "Retrieval cases: 96" in output
+    assert "Persisted results: 576" in output
+    assert "Agentic RAG Recall@5:" in output
+    assert "Report SHA-256:" in output
+    assert "Retrieval gate: PASSED" in output
+
+
+def test_eval_retrieval_fails_closed_on_unverified_report(capsys, tmp_path: Path) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+    paths.retrieval_report.write_text("{}")
+
+    assert main(["eval-retrieval", "--report", str(paths.retrieval_report)]) == 1
+    output = capsys.readouterr().out
+    assert "Retrieval evaluation: UNVERIFIED" in output
+    assert "PASSED" not in output
+
+
+def test_eval_retrieval_run_atomically_builds_a_verified_report(capsys, tmp_path: Path) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+    paths.retrieval_report.unlink()
+
+    assert (
+        main(
+            [
+                "eval-retrieval",
+                "--run",
+                "--cases",
+                str(paths.retrieval_corpus),
+                "--report",
+                str(paths.retrieval_report),
+            ]
+        )
+        == 0
+    )
+    assert paths.retrieval_report.is_file()
+    assert "Retrieval gate: PASSED" in capsys.readouterr().out
+
+
+def test_eval_retrieval_failed_run_preserves_previous_report(capsys, tmp_path: Path) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+    previous = paths.retrieval_report.read_bytes()
+    paths.retrieval_corpus.write_text("{}")
+
+    assert (
+        main(
+            [
+                "eval-retrieval",
+                "--run",
+                "--cases",
+                str(paths.retrieval_corpus),
+                "--report",
+                str(paths.retrieval_report),
+            ]
+        )
+        == 1
+    )
+    assert paths.retrieval_report.read_bytes() == previous
+    assert "Retrieval evaluation: UNVERIFIED" in capsys.readouterr().out
+
+
+def test_eval_retrieval_unexpected_runner_failure_is_bounded(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    from recallops.evaluation import retrieval_benchmark
+
+    paths, _ = copy_verified_artifacts(tmp_path)
+    previous = paths.retrieval_report.read_bytes()
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("private runner failure")
+
+    monkeypatch.setattr(retrieval_benchmark, "run_retrieval_benchmark", fail)
+
+    assert (
+        main(
+            [
+                "eval-retrieval",
+                "--run",
+                "--cases",
+                str(paths.retrieval_corpus),
+                "--report",
+                str(paths.retrieval_report),
+            ]
+        )
+        == 1
+    )
+    assert paths.retrieval_report.read_bytes() == previous
+    assert "Retrieval evaluation: UNVERIFIED" in capsys.readouterr().out
+
+
+def test_eval_orchestration_validates_and_summarizes_verified_report(
+    capsys, tmp_path: Path
+) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+
+    assert main(["eval-orchestration", "--report", str(paths.orchestration_report)]) == 0
+    output = capsys.readouterr().out
+    assert "Orchestration cases: 24" in output
+    assert "Persisted offline results: 48" in output
+    assert "Optional live: not_run_missing_credentials (excluded from offline gate)" in output
+    assert "Report SHA-256:" in output
+    assert "Orchestration gate: PASSED" in output
+
+
+def test_eval_orchestration_run_atomically_builds_a_verified_report(capsys, tmp_path: Path) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+    paths.orchestration_report.unlink()
+
+    assert (
+        main(
+            [
+                "eval-orchestration",
+                "--run",
+                "--cases",
+                str(paths.orchestration_corpus),
+                "--report",
+                str(paths.orchestration_report),
+            ]
+        )
+        == 0
+    )
+    assert paths.orchestration_report.is_file()
+    assert "Orchestration gate: PASSED" in capsys.readouterr().out
+
+
+def test_eval_orchestration_live_error_never_changes_offline_exit_status(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    from recallops.evaluation.orchestration_benchmark import LiveRunnerFactory
+
+    paths, _ = copy_verified_artifacts(tmp_path)
+    module = ModuleType("test_live_adapter")
+    module.adapter = LiveRunnerFactory(
+        provider="test",
+        model="failing-model",
+        factory=lambda: (_ for _ in ()).throw(ValueError("credentials unavailable")),
+    )
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    assert (
+        main(
+            [
+                "eval-orchestration",
+                "--run",
+                "--live-adapter",
+                "test_live_adapter:adapter",
+                "--cases",
+                str(paths.orchestration_corpus),
+                "--report",
+                str(paths.orchestration_report),
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "Optional live: error (excluded from offline gate)" in output
+    assert "Optional live error: factory_error" in output
+    assert "Orchestration gate: PASSED" in output
+
+
+def test_eval_orchestration_reports_missing_live_adapter_without_traceback(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+    module = ModuleType("missing_credentials_adapter")
+
+    def unavailable():
+        raise RuntimeError("provider credentials are missing")
+
+    module.adapter = unavailable
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    assert (
+        main(
+            [
+                "eval-orchestration",
+                "--run",
+                "--live-adapter",
+                "missing_credentials_adapter:adapter",
+                "--cases",
+                str(paths.orchestration_corpus),
+                "--report",
+                str(paths.orchestration_report),
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "Orchestration evaluation: UNVERIFIED" in output
+    assert "Traceback" not in output
+
+
+def test_eval_scorecard_validates_and_summarizes_all_suites(capsys, tmp_path: Path) -> None:
+    _, scorecard = copy_verified_artifacts(tmp_path)
+
+    assert main(["eval-scorecard", "--scorecard", str(scorecard)]) == 0
+    output = capsys.readouterr().out
+    assert "safety: 21 cases · 21 results · PASSED" in output
+    assert "retrieval: 96 cases · 576 results · PASSED" in output
+    assert "orchestration: 24 cases · 48 results · PASSED" in output
+    assert "Optional live: not_run_missing_credentials (excluded from offline gate)" in output
+    assert "Scorecard SHA-256:" in output
+    assert "Offline evaluation gate: PASSED" in output
+
+
+def test_eval_scorecard_summary_fails_on_stale_artifact(capsys, tmp_path: Path) -> None:
+    paths, scorecard = copy_verified_artifacts(tmp_path)
+    paths.retrieval_report.write_text("{}")
+
+    assert main(["eval-scorecard", "--scorecard", str(scorecard)]) == 1
+    output = capsys.readouterr().out
+    assert "Combined evaluation: UNVERIFIED" in output
+    assert "PASSED" not in output
 
 
 def test_data_validate_command_reports_real_dataset_counts(capsys) -> None:

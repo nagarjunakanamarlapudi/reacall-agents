@@ -3,10 +3,16 @@
 RECALL_NUMBER ?= H-1230-2026
 PORT ?= 8501
 RUNTIME_DIR ?= .recallops-runtime-demo
+LIVE_MODEL_ADAPTER ?=
+
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+EVAL_DIR := $(PROJECT_ROOT)/data/evals
+UV_PROJECT := uv run --project "$(PROJECT_ROOT)"
 
 .PHONY: \
 	help setup data-validate demo ui ui-stdio \
-	mcp-config mcp-smoke eval eval-summary \
+	mcp-config mcp-smoke eval-fast eval-safety eval-retrieval \
+	eval-orchestration eval eval-summary eval-model \
 	demo-data notebooks diagrams \
 	test test-unit test-integration test-e2e test-product \
 	lint format security security-full verify
@@ -25,8 +31,13 @@ help:
 		'MCP, evaluation, and generated artifacts:' \
 		'  make mcp-config         Print the three-server MCP configuration' \
 		'  make mcp-smoke          Test direct and stdio MCP server behavior' \
-		'  make eval               Regenerate and summarize the 21-scenario report' \
-		'  make eval-summary       Summarize the committed evaluation report' \
+		'  make eval-fast          Verify artifacts plus the stable evaluation smoke subset' \
+		'  make eval-safety        Regenerate and verify the R01-R21 safety report' \
+		'  make eval-retrieval     Run and verify the 96-case retrieval ablation' \
+		'  make eval-orchestration Run and verify the 24-case offline comparison' \
+		'  make eval               Run all deterministic suites and build the scorecard' \
+		'  make eval-summary       Validate and summarize the combined scorecard' \
+		'  make eval-model         Opt in to a configured read-only live model adapter' \
 		'  make demo-data          Regenerate the deterministic synthetic dataset' \
 		'  make notebooks          Rebuild and execute all six teaching notebooks' \
 		'  make diagrams           Verify Mermaid double-render and SVG parity' \
@@ -46,7 +57,8 @@ help:
 		'Optional variables:' \
 		'  RECALL_NUMBER=$(RECALL_NUMBER)' \
 		'  PORT=$(PORT)' \
-		'  RUNTIME_DIR=$(RUNTIME_DIR)'
+		'  RUNTIME_DIR=$(RUNTIME_DIR)' \
+		'  LIVE_MODEL_ADAPTER=module:attribute (explicit live opt-in only)'
 
 setup:
 	uv sync --locked --all-groups
@@ -70,12 +82,55 @@ mcp-config:
 mcp-smoke:
 	uv run pytest -q tests/integration/test_mcp_servers.py
 
-eval:
-	uv run python -c 'import asyncio; from recallops.evaluation.runtime_executor import run_recallops_evaluations; asyncio.run(run_recallops_evaluations(scenario_path="data/evals/scenarios.json", output_path="data/evals/report.json"))'
-	uv run recallops eval --report data/evals/report.json
+eval-fast:
+	$(UV_PROJECT) recallops eval --report "$(EVAL_DIR)/report.json"
+	$(UV_PROJECT) recallops eval-retrieval --report "$(EVAL_DIR)/retrieval_report.json"
+	$(UV_PROJECT) recallops eval-orchestration --report "$(EVAL_DIR)/orchestration_report.json"
+	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
+	$(UV_PROJECT) pytest -q "$(PROJECT_ROOT)/tests/unit/test_evaluation_ranking.py"
+
+eval-safety:
+	@set -eu; \
+	temporary=$$(mktemp "$(EVAL_DIR)/.report.json.XXXXXX"); \
+	trap 'rm -f "$$temporary"' EXIT; \
+	$(UV_PROJECT) python -c 'import asyncio, sys; from pathlib import Path; from recallops.evaluation.runtime_executor import run_recallops_evaluations; from recallops.evaluation.scorecard import load_safety_report; report = asyncio.run(run_recallops_evaluations(scenario_path=sys.argv[1], output_path=sys.argv[2])); verified = load_safety_report(Path(sys.argv[2]), Path(sys.argv[1])); raise SystemExit(0 if report.gate_passed and verified.gate_passed else 1)' "$(EVAL_DIR)/scenarios.json" "$$temporary"; \
+	$(UV_PROJECT) recallops eval --report "$$temporary"; \
+	mv "$$temporary" "$(EVAL_DIR)/report.json"; \
+	trap - EXIT
+
+eval-retrieval:
+	@set -eu; \
+	temporary=$$(mktemp "$(EVAL_DIR)/.retrieval_report.json.XXXXXX"); \
+	trap 'rm -f "$$temporary"' EXIT; \
+	$(UV_PROJECT) python -c 'import asyncio, sys; from pathlib import Path; from recallops.evaluation.retrieval_benchmark import run_retrieval_benchmark; report = asyncio.run(run_retrieval_benchmark(Path(sys.argv[1]), Path(sys.argv[2]))); raise SystemExit(0 if report.gate_passed else 1)' "$(EVAL_DIR)/retrieval_cases.json" "$$temporary"; \
+	$(UV_PROJECT) recallops eval-retrieval --cases "$(EVAL_DIR)/retrieval_cases.json" --report "$$temporary"; \
+	mv "$$temporary" "$(EVAL_DIR)/retrieval_report.json"; \
+	trap - EXIT
+
+eval-orchestration:
+	@set -eu; \
+	temporary=$$(mktemp "$(EVAL_DIR)/.orchestration_report.json.XXXXXX"); \
+	trap 'rm -f "$$temporary"' EXIT; \
+	$(UV_PROJECT) python -c 'import asyncio, sys; from pathlib import Path; from recallops.evaluation.orchestration_benchmark import run_orchestration_benchmark; report = asyncio.run(run_orchestration_benchmark(Path(sys.argv[1]), Path(sys.argv[2]))); raise SystemExit(0 if report.gate_passed else 1)' "$(EVAL_DIR)/orchestration_cases.json" "$$temporary"; \
+	$(UV_PROJECT) recallops eval-orchestration --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$$temporary"; \
+	mv "$$temporary" "$(EVAL_DIR)/orchestration_report.json"; \
+	trap - EXIT
+
+eval: eval-safety eval-retrieval eval-orchestration
+	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"
+	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
 eval-summary:
-	uv run recallops eval --report data/evals/report.json
+	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
+
+eval-model:
+	@if [ -z "$(LIVE_MODEL_ADAPTER)" ]; then \
+		printf '%s\n' 'LIVE_MODEL_ADAPTER is required (MODULE:ATTRIBUTE for a configured LiveRunnerFactory with provider credentials).'; \
+		exit 2; \
+	fi; \
+	$(UV_PROJECT) recallops eval-orchestration --run --live-adapter "$(LIVE_MODEL_ADAPTER)" --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
+	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"; \
+	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
 demo-data:
 	uv run python scripts/generate_demo_data.py
@@ -124,4 +179,4 @@ security-full:
 	npm audit || status=1; \
 	exit $$status
 
-verify: data-validate lint test notebooks diagrams mcp-smoke eval-summary security
+verify: data-validate lint test notebooks diagrams mcp-smoke eval security

@@ -41,6 +41,15 @@ make ui
 
 Run `make help` to list the complete project interface. The Streamlit app defaults to the durable SQLite-backed runtime and direct MCP gateway. `RECALL_NUMBER`, `PORT`, and `RUNTIME_DIR` are configurable, for example `make ui PORT=8765 RUNTIME_DIR=.recording-runtime`.
 
+The complete credential-free evaluation workflow is `make eval`: it regenerates the 21-case safety
+suite, 96-case retrieval ablation, and 24-case orchestration comparison, then atomically builds and
+validates their digest-bound combined scorecard. Use `make eval-fast` for artifact validation plus
+stable metric smoke tests, or `make eval-summary` to validate the existing scorecard without
+regeneration. The legacy `uv run recallops eval --report data/evals/report.json` command remains the
+safety-only summary; `uv run recallops eval-scorecard` is the distinct combined summary. Optional
+live orchestration requires the explicit `make eval-model LIVE_MODEL_ADAPTER=module:attribute`
+opt-in and never contributes to the offline pass/fail verdict.
+
 To demonstrate actual stdio MCP subprocesses:
 
 ```bash

@@ -1,6 +1,8 @@
 # Local Operations and Reproducibility Runbook
 
-All default product paths are credential-free and offline. Commands below are run from the repository root.
+All default product paths are credential-free and offline. Evaluation commands resolve their
+project and artifact paths from the Makefile/package, so they also work when invoked through an
+absolute Makefile path from another directory.
 
 ## Make command interface
 
@@ -13,7 +15,12 @@ make demo
 make ui
 make ui-stdio
 make mcp-smoke
+make eval-fast
+make eval-safety
+make eval-retrieval
+make eval-orchestration
 make eval
+make eval-summary
 make notebooks
 make diagrams
 make test
@@ -21,6 +28,16 @@ make lint
 make security
 make verify
 ```
+
+`make eval-safety`, `make eval-retrieval`, and `make eval-orchestration` regenerate
+their deterministic reports through temporary same-directory files. A report replaces the prior
+artifact only after its strict loader verifies the complete result matrix, digests, recomputed
+metrics, and passing gate. `make eval` runs all three suites, builds the digest-bound scorecard,
+then validates and summarizes it. `make eval-summary` never repairs an artifact: missing,
+malformed, stale, failed, or digest-mismatched inputs return nonzero and print `UNVERIFIED` or
+`FAILED`. `make eval-fast` validates all committed artifacts and runs the stable ranking-metric
+smoke tests without regenerating the full suites. `make verify` includes the complete deterministic
+`make eval` workflow.
 
 `make ui` and `make ui-stdio` accept `PORT` and `RUNTIME_DIR`; `make demo` accepts `RECALL_NUMBER`. For example:
 
@@ -92,16 +109,59 @@ uv run pytest -q tests/notebooks/test_notebooks.py
 
 `build_notebooks.py` recreates six executed self-contained notebooks. Each notebook contains embedded teaching data, does not import the product package, and requires no network/key.
 
-## Run the evaluator
+## Run the evaluators
 
-Regenerate the complete report with the real offline runtime:
+Run the complete credential-free evaluation and verify the combined scorecard:
 
 ```bash
-uv run python -c 'import asyncio; from recallops.evaluation.runtime_executor import run_recallops_evaluations; asyncio.run(run_recallops_evaluations(scenario_path="data/evals/scenarios.json", output_path="data/evals/report.json"))'
-uv run recallops eval --report data/evals/report.json
+make eval
+make eval-summary
 ```
 
-The first command runs R01–R21 against fresh runtime/Operations workspaces and exits non-zero through an exception if the hard safety gate fails. The second command is a compact report summary; it does not regenerate the report.
+The individual workflows are:
+
+```bash
+make eval-safety
+make eval-retrieval
+make eval-orchestration
+make eval-fast
+```
+
+`eval-safety` runs R01–R21 against fresh runtime/Operations workspaces. The retrieval
+workflow runs 96 labelled cases through six ablations (576 persisted results). The orchestration
+workflow runs 24 cases through the bounded-single-agent and fixed-specialist profiles (48 offline
+results). Every default workflow is offline and supplies no model or provider credentials.
+
+The direct CLI validators are cwd-independent by default:
+
+```bash
+uv run recallops eval
+uv run recallops eval-retrieval
+uv run recallops eval-orchestration
+uv run recallops eval-scorecard
+```
+
+The first command intentionally retains the original safety-only summary semantics. The distinct
+`eval-scorecard` command validates all six bound report/corpus digests and recomputes all three
+suite summaries before reporting the combined offline verdict.
+
+### Explicit live-model opt-in
+
+Live orchestration is unavailable until an application-specific provider adapter and its provider
+credentials are configured. Supply a Python `MODULE:ATTRIBUTE` that resolves to a
+`LiveRunnerFactory` instance (or a zero-argument function returning one):
+
+```bash
+make eval-model LIVE_MODEL_ADAPTER=my_recallops_provider:live_factory
+```
+
+With no `LIVE_MODEL_ADAPTER`, `make eval-model` exits nonzero with an explicit configuration and
+credentials message; it never selects a provider implicitly. The adapter retains credentials and
+raw provider messages outside persisted artifacts, and its evaluated capability surface is the
+sealed read-only orchestration capture—never Operations tools. A completed or errored optional-live
+status is reported separately and is always excluded from `offline_gate_passed` and the command's
+offline exit decision. Factory/provider errors remain visible rather than being presented as a
+successful live run.
 
 ## Test and static checks
 
