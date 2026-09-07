@@ -14,6 +14,7 @@ from recallops.evaluation.retrieval_schema import (
     RetrievalConfigurationMetrics,
     RetrievalConfigurationResult,
     RetrievalEvalCorpus,
+    RetrievalEvalGates,
     RetrievalJudgment,
     load_retrieval_cases,
 )
@@ -91,6 +92,56 @@ def _zero_metrics() -> RetrievalConfigurationMetrics:
         latency_p50_ms=0.0,
         latency_p95_ms=0.0,
     )
+
+
+def _zero_gates() -> RetrievalEvalGates:
+    return RetrievalEvalGates(
+        route_accuracy=0.0,
+        abstention_accuracy=0.0,
+        provenance_label_accuracy=0.0,
+        budget_compliance=0.0,
+        prohibited_hit_count=0,
+        unsupported_answer_count=0,
+        agentic_recall_at_5=0.0,
+        agentic_ndcg_at_5=0.0,
+        fusion_recall_delta=0.0,
+        rerank_ndcg_delta=0.0,
+    )
+
+
+@pytest.mark.parametrize("invalid", [0, True, float("nan"), float("inf"), -float("inf")])
+def test_configuration_metrics_reject_non_exact_or_nonfinite_floats(
+    invalid: object,
+) -> None:
+    payload = _zero_metrics().model_dump(mode="python")
+    payload["recall_at_1"] = invalid
+
+    with pytest.raises(ValidationError, match="strict finite float"):
+        RetrievalConfigurationMetrics.model_validate(payload)
+
+
+@pytest.mark.parametrize("invalid", [0, True, float("nan"), float("inf"), -float("inf")])
+def test_evaluation_gates_reject_non_exact_or_nonfinite_floats(invalid: object) -> None:
+    payload = _zero_gates().model_dump(mode="python")
+    payload["route_accuracy"] = invalid
+
+    with pytest.raises(ValidationError, match="strict finite float"):
+        RetrievalEvalGates.model_validate(payload)
+
+
+def test_exact_float_metrics_and_gates_round_trip_through_json() -> None:
+    metrics = _zero_metrics().model_copy(update={"recall_at_1": 0.25})
+    gates = _zero_gates().model_copy(update={"route_accuracy": 1.0})
+
+    restored_metrics = RetrievalConfigurationMetrics.model_validate_json(
+        metrics.model_dump_json()
+    )
+    restored_gates = RetrievalEvalGates.model_validate_json(gates.model_dump_json())
+
+    assert restored_metrics == metrics
+    assert type(restored_metrics.recall_at_1) is float
+    assert restored_gates == gates
+    assert type(restored_gates.route_accuracy) is float
 
 
 def test_result_mapping_fields_are_deeply_immutable_and_serializable() -> None:

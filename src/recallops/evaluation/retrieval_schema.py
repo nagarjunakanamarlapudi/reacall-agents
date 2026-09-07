@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
-    StrictFloat,
     StrictInt,
     StrictStr,
     field_serializer,
@@ -61,6 +62,15 @@ def _freeze_mapping[Key, Value](
     """Copy a validated mapping behind a read-only runtime view."""
 
     return MappingProxyType(dict(value))
+
+
+def _strict_finite_float(value: Any) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError("value must be a strict finite float")
+    return value
+
+
+StrictFiniteFloat = Annotated[float, BeforeValidator(_strict_finite_float)]
 
 
 class RetrievalJudgment(BaseModel):
@@ -232,7 +242,7 @@ class RetrievalCaseResult(BaseModel):
     duration_ms: StrictInt = Field(default=0, ge=0)
     error_code: StrictStr | None = None
     metric_contributions: Mapping[
-        StrictStr, StrictFloat | StrictInt | StrictBool
+        StrictStr, StrictFiniteFloat | StrictInt | StrictBool
     ] = Field(default_factory=dict)
 
     @field_validator("metric_contributions")
@@ -255,22 +265,22 @@ class RetrievalConfigurationMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     case_count: StrictInt = Field(ge=0)
-    recall_at_1: StrictFloat = Field(ge=0, le=1)
-    recall_at_3: StrictFloat = Field(ge=0, le=1)
-    recall_at_5: StrictFloat = Field(ge=0, le=1)
-    precision_at_5: StrictFloat = Field(ge=0, le=1)
-    mean_reciprocal_rank: StrictFloat = Field(ge=0, le=1)
-    ndcg_at_5: StrictFloat = Field(ge=0, le=1)
-    citation_precision: StrictFloat = Field(ge=0, le=1)
-    required_fact_coverage: StrictFloat = Field(ge=0, le=1)
-    route_accuracy: StrictFloat = Field(ge=0, le=1)
-    abstention_accuracy: StrictFloat = Field(ge=0, le=1)
-    provenance_label_accuracy: StrictFloat = Field(ge=0, le=1)
-    budget_compliance: StrictFloat = Field(ge=0, le=1)
+    recall_at_1: StrictFiniteFloat = Field(ge=0, le=1)
+    recall_at_3: StrictFiniteFloat = Field(ge=0, le=1)
+    recall_at_5: StrictFiniteFloat = Field(ge=0, le=1)
+    precision_at_5: StrictFiniteFloat = Field(ge=0, le=1)
+    mean_reciprocal_rank: StrictFiniteFloat = Field(ge=0, le=1)
+    ndcg_at_5: StrictFiniteFloat = Field(ge=0, le=1)
+    citation_precision: StrictFiniteFloat = Field(ge=0, le=1)
+    required_fact_coverage: StrictFiniteFloat = Field(ge=0, le=1)
+    route_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    abstention_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    provenance_label_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    budget_compliance: StrictFiniteFloat = Field(ge=0, le=1)
     prohibited_hit_count: StrictInt = Field(ge=0)
     unsupported_answer_count: StrictInt = Field(ge=0)
-    latency_p50_ms: StrictFloat = Field(ge=0)
-    latency_p95_ms: StrictFloat = Field(ge=0)
+    latency_p50_ms: StrictFiniteFloat = Field(ge=0)
+    latency_p95_ms: StrictFiniteFloat = Field(ge=0)
     rewrite_win_count: StrictInt = Field(default=0, ge=0)
     rewrite_loss_count: StrictInt = Field(default=0, ge=0)
     rewrite_no_change_count: StrictInt = Field(default=0, ge=0)
@@ -301,16 +311,16 @@ class RetrievalConfigurationResult(BaseModel):
 class RetrievalEvalGates(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    route_accuracy: StrictFloat = Field(ge=0, le=1)
-    abstention_accuracy: StrictFloat = Field(ge=0, le=1)
-    provenance_label_accuracy: StrictFloat = Field(ge=0, le=1)
-    budget_compliance: StrictFloat = Field(ge=0, le=1)
+    route_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    abstention_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    provenance_label_accuracy: StrictFiniteFloat = Field(ge=0, le=1)
+    budget_compliance: StrictFiniteFloat = Field(ge=0, le=1)
     prohibited_hit_count: StrictInt = Field(ge=0)
     unsupported_answer_count: StrictInt = Field(ge=0)
-    agentic_recall_at_5: StrictFloat = Field(ge=0, le=1)
-    agentic_ndcg_at_5: StrictFloat = Field(ge=0, le=1)
-    fusion_recall_delta: StrictFloat
-    rerank_ndcg_delta: StrictFloat
+    agentic_recall_at_5: StrictFiniteFloat = Field(ge=0, le=1)
+    agentic_ndcg_at_5: StrictFiniteFloat = Field(ge=0, le=1)
+    fusion_recall_delta: StrictFiniteFloat
+    rerank_ndcg_delta: StrictFiniteFloat
 
 
 class RetrievalEvalReport(BaseModel):
