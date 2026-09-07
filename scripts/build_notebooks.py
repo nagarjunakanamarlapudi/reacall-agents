@@ -165,118 +165,6 @@ print("ASSERTION PASSED: {MARKER}")'''
     )
 
 
-def notebook_07_legacy() -> dict:
-    return make_notebook(
-        "7. Evaluation, ablations, and orchestration limits",
-        [
-            md(
-                f"""{MARKER}
-
-This credential-free lesson embeds a literal, local analogue of the implemented 21 safety, 96 retrieval, and 24 orchestration evaluation contracts. It imports no product package and reads no prior notebook or hidden state. The examples explain the architecture; they do not claim a live benchmark result.
-
-Sparse ranking, dense ranking, RRF, reranking, and agentic RAG are made visible. Digest-bound ablations explain the RRF uplift and the zero rewrite uplift result, with explicit in-sample limits. A two-profile trajectory comparison uses single-agent and fixed-specialists labels without a multi-agent uplift claim. Digests demonstrate tamper rejection. The response rubric is human-facing; deterministic safety remains authoritative for HITL approval and closure, while model judges are advisory only."""
-            ),
-            code(
-                """from hashlib import sha256
-from json import dumps
-from math import log2, sqrt
-
-
-architecture = {"safety_scenarios": 21, "retrieval_cases": 96, "orchestration_cases": 24, "authority": "deterministic safety"}
-documents = [
-    {"id": "D1", "terms": {"salmonella", "plant", "p1950", "julian"}, "vector": (1.0, 0.0), "cited": True},
-    {"id": "D2", "terms": {"salmonella", "plant", "p1950", "traceability"}, "vector": (0.8, 0.2), "cited": True},
-    {"id": "D3", "terms": {"bakery", "allergen", "p9999"}, "vector": (0.0, 1.0), "cited": False},
-]
-query_terms, query_vector, relevant = {"salmonella", "plant", "p1950", "julian"}, (1.0, 0.0), {"D1"}
-
-
-def cosine(left, right):
-    return sum(a * b for a, b in zip(left, right)) / (sqrt(sum(a * a for a in left)) * sqrt(sum(b * b for b in right)))
-
-
-def rank(scores):
-    return [doc_id for doc_id, _ in sorted(scores.items(), key=lambda item: (-item[1], item[0]))]
-
-
-def recall_at_k(ranking, k):
-    return len(set(ranking[:k]) & relevant) / len(relevant)
-
-
-def ndcg_at_k(ranking, k):
-    dcg = sum(1 / log2(index + 2) for index, doc_id in enumerate(ranking[:k]) if doc_id in relevant)
-    return dcg / sum(1 / log2(index + 2) for index in range(min(k, len(relevant))))
-
-
-sparse = {doc["id"]: len(query_terms & doc["terms"]) for doc in documents}
-dense = {doc["id"]: cosine(query_vector, doc["vector"]) for doc in documents}
-sparse_rank, dense_rank = rank(sparse), rank(dense)
-rrf = {doc_id: 1 / (60 + sparse_rank.index(doc_id) + 1) + 1 / (60 + dense_rank.index(doc_id) + 1) for doc_id in sparse}
-rrf_rank = rank(rrf)
-reranked_rank = rank({doc_id: score + (0.01 if next(doc for doc in documents if doc["id"] == doc_id)["cited"] else 0.0) for doc_id, score in rrf.items()})
-metrics = {"sparse Recall@2": recall_at_k(sparse_rank, 2), "dense Recall@2": recall_at_k(dense_rank, 2), "RRF Recall@2": recall_at_k(rrf_rank, 2), "reranked nDCG@2": ndcg_at_k(reranked_rank, 2)}
-print("architecture ->", architecture)
-print("sparse ->", sparse_rank, "dense ->", dense_rank, "RRF ->", rrf_rank, "reranked ->", reranked_rank)
-print("literal ranking metrics ->", metrics)
-assert sparse_rank[0] == dense_rank[0] == rrf_rank[0] == reranked_rank[0] == "D1"
-assert metrics["RRF Recall@2"] == metrics["reranked nDCG@2"] == 1.0
-print("ASSERTION PASSED: sparse + dense + RRF + reranking + agentic RAG ranking metrics are local")
-"""
-            ),
-            code(
-                """def digest(payload):
-    return sha256(dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-ablations = {
-    "contract": {"96 retrieval": True, "configurations": 6, "calibration": "in-sample offline synthetic"},
-    "metrics": {"sparse_recall_at_5": 0.9659090909, "rrf_recall_at_5": 0.9715909091, "reranked_ndcg_at_5": 0.9554301314},
-    "rewrite": {"eligible_cases": 8, "rewrite_win_count": 0, "rewrite_no_change_count": 8, "zero rewrite uplift": True},
-    "limit": "in-sample calibration is not a causal, holdout, or production claim",
-}
-digest_record = {"payload": ablations, "sha256": digest(ablations)}
-tampered = {**ablations, "metrics": {**ablations["metrics"], "rrf_recall_at_5": 1.0}}
-rrf_uplift = ablations["metrics"]["rrf_recall_at_5"] - ablations["metrics"]["sparse_recall_at_5"]
-print("digest-bound ablations ->", digest_record)
-print("RRF uplift ->", round(rrf_uplift, 10), "; zero rewrite uplift ->", ablations["rewrite"]["zero rewrite uplift"])
-print("tamper rejection ->", digest(tampered) != digest_record["sha256"])
-assert digest(digest_record["payload"]) == digest_record["sha256"]
-assert digest(tampered) != digest_record["sha256"] and ablations["rewrite"]["rewrite_win_count"] == 0
-print("ASSERTION PASSED: digest-bound ablation payload is verified and tamper rejection works")
-"""
-            ),
-            code(
-                """trajectories = {
-    "single-agent": {"cases": 24, "task_success_rate": 1.0, "evidence_fact_coverage": 1.0, "tool_calls": 150},
-    "fixed-specialists": {"cases": 24, "task_success_rate": 1.0, "evidence_fact_coverage": 1.0, "tool_calls": 150},
-}
-delta = {key: trajectories["fixed-specialists"][key] - trajectories["single-agent"][key] for key in ("task_success_rate", "evidence_fact_coverage", "tool_calls")}
-authority_limits = {
-    "model_judge": "advisory review cue only",
-    "HITL": "a human may approve a proposed simulated action",
-    "deterministic_safety": "authoritative for approval, receipt integrity, and closure",
-    "closure": "a judge cannot close a case and failed gates stay blocked",
-}
-print("24 orchestration trajectories ->", trajectories)
-print("trajectory delta ->", delta)
-print("no uplift claim: equal offline task/evidence values do not establish multi-agent superiority")
-print("HITL and judge authority limits ->", authority_limits)
-assert all(profile["cases"] == 24 for profile in trajectories.values())
-assert delta["task_success_rate"] == delta["evidence_fact_coverage"] == 0.0
-assert "cannot close" in authority_limits["closure"]
-print("ASSERTION PASSED: two-profile comparison preserves no uplift claim and safety authority")
-"""
-            ),
-            code(
-                f'''print("{MARKER}")
-print("The response rubric scores correctness/citations, completeness, uncertainty, actionability, and clarity.")
-assert architecture == {{"safety_scenarios": 21, "retrieval_cases": 96, "orchestration_cases": 24, "authority": "deterministic safety"}}
-print("ASSERTION PASSED: {MARKER}")'''
-            ),
-        ],
-    )
-
-
 def notebook_07() -> dict:
     return make_notebook(
         "7. Evaluation, ablations, and orchestration limits",
@@ -286,7 +174,7 @@ def notebook_07() -> dict:
 
 This credential-free lesson embeds a literal, local analogue of the implemented 21 safety, 96 retrieval, and 24 orchestration contracts. It imports no product package and reads no prior notebook or hidden state. The sparse score is BM25-like: IDF, term-frequency saturation, and document-length normalization are calculated below. Dense vectors and the citation bonus are deliberately hand-authored teaching approximations, not production embeddings or a model judge.
 
-The bounded agentic RAG trace shows query, read, critic, gap, and rewrite steps with explicit query/hop/read limits and a stop reason. The trajectory examples derive results from events for a bounded generalist and a planner-driven fixed-specialist workflow: planner, four read-only specialists, and an independent verifier. Middleware surrounds agent, model, and tool calls; no trajectory exposes Operations tools. HITL remains the human authority for a proposed simulated action, and deterministic safety remains authoritative for approval and closure. Optional live evaluation is excluded when credentials are unavailable."""
+The bounded agentic RAG trace shows query, read, critic, gap, and rewrite steps with explicit query/hop/read limits and a stop reason. The trajectory examples derive results from events for a bounded generalist and a planner-driven fixed-specialist workflow: planner, four read-only specialists, and an independent verifier. They observe a literal middleware tuple and a read-only/no-Operations boundary; they are an architectural teaching description, not proof that a real middleware or HITL control ran. In the implemented architecture, HITL remains the human authority for a proposed simulated action and deterministic safety remains authoritative for approval and closure. Optional live evaluation is excluded when credentials are unavailable."""
             ),
             code(
                 """from hashlib import sha256
@@ -400,10 +288,22 @@ def derive_trajectory(events, fixed_specialists):
     calls = [event for event in events if event["kind"] == "tool_call"]
     delegated = [event for event in events if event["kind"] == "delegate"]
     call_keys = [(event["task"], event["tool"]) for event in calls]
-    plan_index = next(index for index, event in enumerate(events) if event["kind"] == "plan")
-    verify_index = next(index for index, event in enumerate(events) if event["kind"] == "verify")
-    delegation_ok = (not fixed_specialists) or all(event["to"] == specialist_names[event["task"]] for event in delegated)
-    return {"task_success_rate": len(completed & set(required_tasks)) / len(required_tasks), "evidence_fact_coverage": len(evidence & set(required_tasks)) / len(required_tasks), "tool_calls": len(calls), "specialist_count": len({event["actor"] for event in calls if event["actor"] != "generalist"}), "delegation_accuracy": float(delegation_ok), "order_accuracy": float(plan_index < verify_index and all(event["mode"] == "read_only" and event["tool"] != "Operations" for event in calls)), "duplicate_tool_call_ratio": (len(call_keys) - len(set(call_keys))) / len(calls)}
+    missing = len(events)
+    plan_index = next((index for index, event in enumerate(events) if event["kind"] == "plan"), missing)
+    verify_index = next((index for index, event in enumerate(events) if event["kind"] == "verify"), missing)
+    delegate_index = {event["task"]: index for index, event in enumerate(events) if event["kind"] == "delegate"}
+    call_index = {event["task"]: index for index, event in enumerate(events) if event["kind"] == "tool_call"}
+    complete_index = {event["task"]: index for index, event in enumerate(events) if event["kind"] == "complete"}
+    exact_delegation = len(delegated) == len(required_tasks) and {event["task"] for event in delegated} == set(required_tasks) and all(event["actor"] == "planner" and event["to"] == specialist_names[event["task"]] for event in delegated)
+    delegation_ok = (not fixed_specialists) or exact_delegation
+    if fixed_specialists:
+        task_sequence_ok = all(plan_index < delegate_index.get(task, missing) < call_index.get(task, missing) < complete_index.get(task, missing) < verify_index for task in required_tasks)
+    else:
+        task_sequence_ok = all(plan_index < call_index.get(task, missing) < complete_index.get(task, missing) < verify_index for task in required_tasks)
+    middleware_observed = all(event["middleware"] == ("agent", "model", "tool") for event in calls)
+    tool_boundary_ok = all(event["mode"] == "read_only" and event["tool"] != "Operations" for event in calls)
+    order_ok = verify_index < missing and task_sequence_ok and tool_boundary_ok
+    return {"task_success_rate": len(completed & set(required_tasks)) / len(required_tasks), "evidence_fact_coverage": len(evidence & set(required_tasks)) / len(required_tasks), "tool_calls": len(calls), "specialist_count": len({event["actor"] for event in calls if event["actor"] != "generalist"}), "delegation_accuracy": float(delegation_ok), "order_accuracy": float(order_ok), "middleware_trace_accuracy": float(middleware_observed), "duplicate_tool_call_ratio": (len(call_keys) - len(set(call_keys))) / len(calls)}
 
 
 trajectory_metrics = {"single-agent": derive_trajectory(single_events, False), "fixed-specialists": derive_trajectory(specialist_events, True)}
@@ -412,8 +312,8 @@ print("derived event trajectories ->", trajectory_metrics)
 print("optional live status ->", optional_live_status)
 assert trajectory_metrics["single-agent"]["task_success_rate"] == 1.0
 assert trajectory_metrics["fixed-specialists"]["specialist_count"] == 4 and trajectory_metrics["fixed-specialists"]["delegation_accuracy"] == 1.0
-assert all(value["duplicate_tool_call_ratio"] == 0 for value in trajectory_metrics.values())
-print("ASSERTION PASSED: event-derived generalist/specialist metrics preserve read-only, middleware, verifier, and HITL boundaries")
+assert all(value["duplicate_tool_call_ratio"] == 0 and value["middleware_trace_accuracy"] == 1.0 for value in trajectory_metrics.values())
+print("ASSERTION PASSED: event-derived metrics observe the literal middleware tuple, read-only calls, complete delegation, and verifier order")
 """
             ),
             code(

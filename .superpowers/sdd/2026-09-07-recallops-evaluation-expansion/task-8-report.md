@@ -28,3 +28,11 @@ The notebook deliberately treats its literal results as instructional examples, 
 - Restored the historical six-notebook verification statement and appended a dated Task 8 verification record instead of rewriting it.
 
 Verification for this fix: the strengthened contracts first failed against the previous notebook. After implementation, `make notebooks` passed twice with `9 passed` and identical notebook 07 bytes; all seven notebooks executed from fresh temporary working directories; documentation tests passed (`22 passed`); Ruff and diff checks passed.
+
+## Fix round 2
+
+- Strengthened fixed-specialist delegation scoring so it requires exactly one planner delegation for every required task, with the expected specialist role. Adversarial tests remove one delegation and all delegations; both now score `0.0`.
+- Strengthened sequence scoring so every task follows plan → expected delegation (for specialists) → specialist tool call → completion → independent verifier. An adversarial early-verifier trajectory now scores `0.0` for order accuracy.
+- Removed the obsolete unused `notebook_07_legacy()` builder. The teaching text now qualifies middleware/HITL as architecture while the local trace assertions observe only the literal middleware tuple and read-only/no-Operations events.
+
+Verification for this fix: `make notebooks` ran twice with `10 passed` each time and identical notebook 07 bytes. The focused notebook plus documentation suite passed (`32 passed`); Ruff check/format and `git diff --check` passed. The focused clean-temporary-working-directory notebook execution remains covered by the notebook contract.

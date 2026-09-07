@@ -94,6 +94,28 @@ def test_evaluation_notebook_derives_ranking_trajectory_and_ablation_results() -
     assert namespace["tamper_rejected"]
 
 
+def test_evaluation_trajectory_metrics_reject_missing_delegation_and_early_verifier() -> None:
+    notebook = nbformat.read(NOTEBOOKS / "07_evaluation_ablation_and_orchestration.ipynb", 4)
+    namespace = _execute_code_cells(notebook)
+    derive_trajectory = namespace["derive_trajectory"]
+    without_delegation = [
+        event for event in namespace["specialist_events"] if event["kind"] != "delegate"
+    ]
+    missing_one_delegation = [
+        event
+        for event in namespace["specialist_events"]
+        if not (event["kind"] == "delegate" and event["task"] == "trace")
+    ]
+    early_verifier = [
+        namespace["specialist_events"][0],
+        namespace["specialist_events"][-1],
+        *namespace["specialist_events"][1:-1],
+    ]
+    assert derive_trajectory(without_delegation, True)["delegation_accuracy"] == 0.0
+    assert derive_trajectory(missing_one_delegation, True)["delegation_accuracy"] == 0.0
+    assert derive_trajectory(early_verifier, True)["order_accuracy"] == 0.0
+
+
 def test_evaluation_notebook_executes_from_a_clean_temporary_cwd() -> None:
     notebook = nbformat.read(NOTEBOOKS / "07_evaluation_ablation_and_orchestration.ipynb", 4)
     with tempfile.TemporaryDirectory() as temporary:
