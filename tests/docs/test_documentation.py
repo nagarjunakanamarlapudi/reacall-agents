@@ -168,6 +168,19 @@ class DocumentationContractTests(unittest.TestCase):
         ]
         self.assertEqual(missing, [], f"missing promised documentation artifacts: {missing}")
 
+    def test_operations_cwd_independent_cli_examples_select_the_project(self) -> None:
+        operations = (DOCS / "OPERATIONS.md").read_text(encoding="utf-8")
+        for command in (
+            "eval",
+            "eval-retrieval",
+            "eval-orchestration",
+            "eval-scorecard",
+        ):
+            self.assertIn(
+                f"uv run --project /absolute/repository/path recallops {command}",
+                operations,
+            )
+
     def test_polished_visuals_are_primary_in_submission_entrypoints(self) -> None:
         expected = {
             ROOT / "README.md": (

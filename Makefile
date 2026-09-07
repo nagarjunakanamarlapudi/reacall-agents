@@ -4,6 +4,8 @@ RECALL_NUMBER ?= H-1230-2026
 PORT ?= 8501
 RUNTIME_DIR ?= .recallops-runtime-demo
 LIVE_MODEL_ADAPTER ?=
+override LIVE_MODEL_ADAPTER := $(value LIVE_MODEL_ADAPTER)
+export LIVE_MODEL_ADAPTER
 
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 EVAL_DIR := $(PROJECT_ROOT)/data/evals
@@ -124,11 +126,12 @@ eval-summary:
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
 eval-model:
-	@if [ -z "$(LIVE_MODEL_ADAPTER)" ]; then \
+	@set -eu; \
+	if [ -z "$${LIVE_MODEL_ADAPTER}" ]; then \
 		printf '%s\n' 'LIVE_MODEL_ADAPTER is required (MODULE:ATTRIBUTE for a configured LiveRunnerFactory with provider credentials).'; \
 		exit 2; \
 	fi; \
-	$(UV_PROJECT) recallops eval-orchestration --run --live-adapter "$(LIVE_MODEL_ADAPTER)" --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
+	$(UV_PROJECT) recallops eval-orchestration --run --live-adapter "$${LIVE_MODEL_ADAPTER}" --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
 	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"; \
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 

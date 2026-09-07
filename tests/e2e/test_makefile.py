@@ -1,19 +1,62 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _make(*arguments: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
+def _make(
+    *arguments: str,
+    cwd: Path = ROOT,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["make", "-s", "-f", str(ROOT / "Makefile"), *arguments],
         cwd=cwd,
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
+
+
+def _copy_eval_dir(destination: Path) -> Path:
+    destination.mkdir()
+    source = ROOT / "data" / "evals"
+    for name in (
+        "report.json",
+        "retrieval_report.json",
+        "orchestration_report.json",
+        "scorecard.json",
+        "scenarios.json",
+        "retrieval_cases.json",
+        "orchestration_cases.json",
+    ):
+        shutil.copyfile(source / name, destination / name)
+    return destination
+
+
+def _live_error_environment(tmp_path: Path) -> tuple[dict[str, str], str]:
+    module = tmp_path / "make_live_adapter.py"
+    module.write_text(
+        "\n".join(
+            (
+                "from recallops.evaluation.orchestration_benchmark import LiveRunnerFactory",
+                "def unavailable():",
+                "    raise ValueError('provider credentials unavailable')",
+                "adapter = LiveRunnerFactory(provider='test', model='test-model', factory=unavailable)",
+            )
+        )
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        item for item in (str(tmp_path), env.get("PYTHONPATH", "")) if item
+    )
+    return env, "make_live_adapter:adapter"
 
 
 def test_make_help_lists_the_supported_project_workflows() -> None:
@@ -101,7 +144,8 @@ def test_make_eval_model_is_explicit_opt_in_and_read_only() -> None:
     assert "LIVE_MODEL_ADAPTER is required" in missing.stdout
     assert "exit 2" in missing.stdout
     assert configured.returncode == 0
-    assert "recallops_live:factory" in configured.stdout
+    assert "recallops_live:factory" not in configured.stdout
+    assert "${LIVE_MODEL_ADAPTER}" in configured.stdout
     assert "eval-orchestration --run" in configured.stdout
     for operation in (
         "create_case",
@@ -119,3 +163,100 @@ def test_make_eval_summary_is_cwd_independent(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "Offline evaluation gate: PASSED" in result.stdout
+
+
+def test_make_eval_model_stops_on_missing_adapter_without_changing_artifacts(
+    tmp_path: Path,
+) -> None:
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    before_report = (eval_dir / "orchestration_report.json").read_bytes()
+    before_scorecard = (eval_dir / "scorecard.json").read_bytes()
+
+    result = _make(
+        "eval-model",
+        f"EVAL_DIR={eval_dir}",
+        "LIVE_MODEL_ADAPTER=module_that_does_not_exist:adapter",
+    )
+
+    assert result.returncode != 0
+    assert "Orchestration evaluation: UNVERIFIED" in result.stdout
+    assert "Offline evaluation gate" not in result.stdout
+    assert (eval_dir / "orchestration_report.json").read_bytes() == before_report
+    assert (eval_dir / "scorecard.json").read_bytes() == before_scorecard
+
+
+def test_make_eval_model_stops_on_wrong_adapter_type_without_changing_artifacts(
+    tmp_path: Path,
+) -> None:
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    before_report = (eval_dir / "orchestration_report.json").read_bytes()
+    before_scorecard = (eval_dir / "scorecard.json").read_bytes()
+
+    result = _make(
+        "eval-model",
+        f"EVAL_DIR={eval_dir}",
+        "LIVE_MODEL_ADAPTER=os:path",
+    )
+
+    assert result.returncode != 0
+    assert "LiveRunnerFactory" in result.stdout
+    assert "Offline evaluation gate" not in result.stdout
+    assert (eval_dir / "orchestration_report.json").read_bytes() == before_report
+    assert (eval_dir / "scorecard.json").read_bytes() == before_scorecard
+
+
+def test_make_eval_model_stops_when_scorecard_build_fails(tmp_path: Path) -> None:
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    before_scorecard = (eval_dir / "scorecard.json").read_bytes()
+    (eval_dir / "report.json").unlink()
+    env, adapter = _live_error_environment(tmp_path)
+
+    result = _make(
+        "eval-model",
+        f"EVAL_DIR={eval_dir}",
+        f"LIVE_MODEL_ADAPTER={adapter}",
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "Offline evaluation gate" not in result.stdout
+    assert (eval_dir / "scorecard.json").read_bytes() == before_scorecard
+
+
+def test_make_eval_model_keeps_valid_live_error_outside_offline_exit(tmp_path: Path) -> None:
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    env, adapter = _live_error_environment(tmp_path)
+
+    result = _make(
+        "eval-model",
+        f"EVAL_DIR={eval_dir}",
+        f"LIVE_MODEL_ADAPTER={adapter}",
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "Optional live: error (excluded from offline gate)" in result.stdout
+    assert "Offline evaluation gate: PASSED" in result.stdout
+    scorecard = json.loads((eval_dir / "scorecard.json").read_bytes())
+    assert scorecard["offline_gate_passed"] is True
+    assert scorecard["optional_live_status"]["status"] == "error"
+
+
+def test_make_eval_model_never_executes_adapter_shell_syntax(tmp_path: Path) -> None:
+    for index, adapter in enumerate(
+        (
+            f"`touch {tmp_path / 'backtick-marker'}`",
+            f"$(touch {tmp_path / 'substitution-marker'})",
+        )
+    ):
+        eval_dir = _copy_eval_dir(tmp_path / f"evals-{index}")
+        result = _make(
+            "eval-model",
+            f"EVAL_DIR={eval_dir}",
+            f"LIVE_MODEL_ADAPTER={adapter}",
+        )
+
+        assert result.returncode != 0
+        assert "live adapter must use MODULE:ATTRIBUTE syntax" in result.stdout
+    assert not (tmp_path / "backtick-marker").exists()
+    assert not (tmp_path / "substitution-marker").exists()

@@ -7,6 +7,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
@@ -149,7 +150,8 @@ def _eval(report_path: Path) -> int:
 
 
 def _unverified(label: str, error: BaseException) -> int:
-    detail = str(error).splitlines()[0][:200] or error.__class__.__name__
+    lines = str(error).splitlines()
+    detail = lines[0][:200] if lines else "evaluation error"
     print(f"{label}: UNVERIFIED — {detail}")
     return 1
 
@@ -225,9 +227,16 @@ def _eval_retrieval(report_path: Path, case_path: Path | None, *, run: bool) -> 
 def _load_live_adapter(specification: str):
     from recallops.evaluation.orchestration_benchmark import LiveRunnerFactory
 
-    module_name, separator, attribute_name = specification.partition(":")
-    if not separator or not module_name or not attribute_name:
+    if (
+        re.fullmatch(
+            r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*",
+            specification,
+            flags=re.ASCII,
+        )
+        is None
+    ):
         raise ValueError("live adapter must use MODULE:ATTRIBUTE syntax")
+    module_name, attribute_name = specification.split(":", 1)
     try:
         candidate = getattr(importlib.import_module(module_name), attribute_name)
     except (AttributeError, ImportError) as exc:

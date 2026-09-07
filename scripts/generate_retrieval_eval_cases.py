@@ -86,9 +86,7 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
     lots = _rows_by_id(dataset, "lots", "lot_id")
     shipments = _rows_by_id(dataset, "supplier_shipments", "shipment_id")
     facilities = _rows_by_id(dataset, "facilities", "facility_id")
-    acknowledgements = _rows_by_id(
-        dataset, "facility_acknowledgements", "facility_id"
-    )
+    acknowledgements = _rows_by_id(dataset, "facility_acknowledgements", "facility_id")
     events_by_lot: dict[str, list[dict[str, Any]]] = defaultdict(list)
     inventory_by_lot: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in dataset["events"]:
@@ -155,11 +153,7 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
     for product_id in PRODUCT_ANCHORS:
         row = products[product_id]
         required = (_citation("products", product_id),)
-        prohibited = (
-            (_citation("products", "P-NEAR"),)
-            if product_id == "P-EXACT"
-            else ()
-        )
+        prohibited = (_citation("products", "P-NEAR"),) if product_id == "P-EXACT" else ()
         add(
             family="exact_identifier",
             question=f"What product name and UPC are recorded for product ID {product_id}?",
@@ -294,7 +288,9 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
                 f"first_movement_destination={child['to_facility']}",
                 f"first_movement_type={child['event_type']}",
             )
-            rationale = "The first child event states the forward edge, destination, and parent link."
+            rationale = (
+                "The first child event states the forward edge, destination, and parent link."
+            )
         else:
             question = (
                 f"Trace movement event {child_id} for lot {lot_id} backward: which parent event "
@@ -358,7 +354,11 @@ def build_cases(dataset: dict[str, Any]) -> tuple[RetrievalCase, ...]:
             "Compare the official affected plant/date code with the plant code and Julian date "
             "recorded for LOT-PROBABLE-160.",
             ("OPENFDA-H-1230-2026", _citation("lots", "LOT-PROBABLE-160")),
-            ("official_julian_range=157-184", "synthetic_plant_code=0840962", "synthetic_julian_date=160"),
+            (
+                "official_julian_range=157-184",
+                "synthetic_plant_code=0840962",
+                "synthetic_julian_date=160",
+            ),
         ),
         (
             "For ongoing shell-egg recall H-1230-2026, pair its official distribution region with "

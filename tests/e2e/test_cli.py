@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from recallops.cli import main
 from recallops.paths import DATA_DIR, EvaluationArtifactPaths
 
@@ -261,6 +263,73 @@ def test_eval_orchestration_reports_missing_live_adapter_without_traceback(
     output = capsys.readouterr().out
     assert "Orchestration evaluation: UNVERIFIED" in output
     assert "Traceback" not in output
+
+
+@pytest.mark.parametrize(
+    "adapter",
+    (
+        "module-only",
+        "module:attribute:extra",
+        "module with space:attribute",
+        "module:`attribute`",
+        "module:$(attribute)",
+        "module:hyphen-name",
+    ),
+)
+def test_eval_orchestration_rejects_malformed_live_adapter_syntax(
+    adapter: str, capsys, tmp_path: Path
+) -> None:
+    paths, _ = copy_verified_artifacts(tmp_path)
+
+    assert (
+        main(
+            [
+                "eval-orchestration",
+                "--run",
+                "--live-adapter",
+                adapter,
+                "--cases",
+                str(paths.orchestration_corpus),
+                "--report",
+                str(paths.orchestration_report),
+            ]
+        )
+        == 1
+    )
+    assert "live adapter must use MODULE:ATTRIBUTE syntax" in capsys.readouterr().out
+
+
+def test_empty_evaluation_error_is_bounded_and_cleans_temporary_file(
+    capsys, monkeypatch, tmp_path: Path
+) -> None:
+    from recallops.evaluation import orchestration_benchmark
+
+    paths, _ = copy_verified_artifacts(tmp_path)
+    previous = paths.orchestration_report.read_bytes()
+
+    async def fail(*_args, **_kwargs):
+        raise ValueError()
+
+    monkeypatch.setattr(orchestration_benchmark, "run_orchestration_benchmark", fail)
+
+    assert (
+        main(
+            [
+                "eval-orchestration",
+                "--run",
+                "--cases",
+                str(paths.orchestration_corpus),
+                "--report",
+                str(paths.orchestration_report),
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "Orchestration evaluation: UNVERIFIED" in output
+    assert "Traceback" not in output
+    assert paths.orchestration_report.read_bytes() == previous
+    assert not tuple(tmp_path.glob(".orchestration_report.json.*.tmp"))
 
 
 def test_eval_scorecard_validates_and_summarizes_all_suites(capsys, tmp_path: Path) -> None:

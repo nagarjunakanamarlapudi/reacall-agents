@@ -133,9 +133,7 @@ def test_exact_float_metrics_and_gates_round_trip_through_json() -> None:
     metrics = _zero_metrics().model_copy(update={"recall_at_1": 0.25})
     gates = _zero_gates().model_copy(update={"route_accuracy": 1.0})
 
-    restored_metrics = RetrievalConfigurationMetrics.model_validate_json(
-        metrics.model_dump_json()
-    )
+    restored_metrics = RetrievalConfigurationMetrics.model_validate_json(metrics.model_dump_json())
     restored_gates = RetrievalEvalGates.model_validate_json(gates.model_dump_json())
 
     assert restored_metrics == metrics
@@ -314,8 +312,7 @@ def test_synthetic_acknowledgement_facts_match_source_booleans() -> None:
         (DATA_DIR / "synthetic/northstar_demo/dataset.json").read_text(encoding="utf-8")
     )
     acknowledgements = {
-        row["facility_id"]: row["acknowledged"]
-        for row in dataset["facility_acknowledgements"]
+        row["facility_id"]: row["acknowledged"] for row in dataset["facility_acknowledgements"]
     }
     checked = 0
     prefix = "NORTHSTAR-FACILITY_ACKNOWLEDGEMENTS-"
@@ -334,9 +331,7 @@ def test_synthetic_acknowledgement_facts_match_source_booleans() -> None:
         ]
         assert len(acknowledgement_ids) == 1
         facility_id = acknowledgement_ids[0].removeprefix(prefix)
-        assert facts["synthetic_acknowledged"] == str(
-            acknowledgements[facility_id]
-        ).lower()
+        assert facts["synthetic_acknowledged"] == str(acknowledgements[facility_id]).lower()
         checked += 1
     assert checked == 4
 

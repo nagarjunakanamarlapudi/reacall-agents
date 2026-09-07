@@ -132,13 +132,15 @@ workflow runs 96 labelled cases through six ablations (576 persisted results). T
 workflow runs 24 cases through the bounded-single-agent and fixed-specialist profiles (48 offline
 results). Every default workflow is offline and supplies no model or provider credentials.
 
-The direct CLI validators are cwd-independent by default:
+When the project environment is not already activated, select the repository explicitly. Replace
+`/absolute/repository/path` with this checkout's absolute path; these commands are then independent
+of the current working directory:
 
 ```bash
-uv run recallops eval
-uv run recallops eval-retrieval
-uv run recallops eval-orchestration
-uv run recallops eval-scorecard
+uv run --project /absolute/repository/path recallops eval
+uv run --project /absolute/repository/path recallops eval-retrieval
+uv run --project /absolute/repository/path recallops eval-orchestration
+uv run --project /absolute/repository/path recallops eval-scorecard
 ```
 
 The first command intentionally retains the original safety-only summary semantics. The distinct
