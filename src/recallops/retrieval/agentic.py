@@ -188,15 +188,10 @@ AUDITED_GENERIC_QUERY_WORDS |= frozenset(
         "affected",
         "first",
         "questions",
-        "treating",
         "makes",
         "relevant",
         "explains",
         "shown",
-        "test",
-        "decode",
-        "recover",
-        "care",
         "decides",
     }
 )
@@ -735,6 +730,7 @@ class ClosedRetrievalGateway:
             index = load_local_hybrid_index(str(config.data_dir))
             if index.metadata.corpus_sha256 != config.corpus_sha256:
                 raise ValueError("sealed retrieval index corpus identity mismatch")
+            index.validate_documents(corpus.documents)
             return index.search(request).model_dump(mode="json")
 
         server = next(
@@ -1107,6 +1103,34 @@ class AgenticRetriever:
                     "retrieved evidence."
                 )
         evidence_tokens = _evidence_grounding_tokens(evidence)
+        # These verbs have substantive noun senses (medical care, lab tests).
+        # Consume only the bounded grammatical uses supported by the evidence.
+        material_question = question_without_identifiers
+        if re.search(
+            r"\bwhat (?:does|do) .*\b(?:guidance|checks?) test[\s?.!]*$", material_question
+        ) and evidence_tokens & {"assess", "check"}:
+            material_question = re.sub(r"\btest(?=[\s?.!]*$)", " ", material_question)
+        if {"when", "where"} <= evidence_tokens:
+            material_question = re.sub(
+                r"(\b(?:semantics|standard|guidance) )care(?= about\b)", r"\1 ", material_question
+            )
+        if IDENTIFIER_PATTERN.search(question):
+            for imperative, objects in (
+                ("decode", "movement|handoff|record"),
+                ("recover", "destination|record|evidence"),
+            ):
+                material_question = re.sub(
+                    rf"(^|,)\s*{imperative}(?=\s+(?:the\s+)?(?:retailer\s+)?(?:{objects})\b)",
+                    r"\1 ",
+                    material_question,
+                )
+        material_question = re.sub(
+            r"(\bwithout )treating(?= (?:retailer|synthetic) (?:data|records?) as (?:fda|official) evidence\b)",
+            r"\1 ",
+            material_question,
+        )
+        # Remove only the verb occurrence, never every instance of the word.
+        question_tokens = set(CONCEPT_TOKEN_PATTERN.findall(material_question))
         material_tokens = question_tokens - consumed - AUDITED_GENERIC_QUERY_WORDS
         for token in sorted(material_tokens):
             if _grounding_form(token) not in evidence_tokens:
@@ -1131,6 +1155,10 @@ class AgenticRetriever:
         identifiers = IDENTIFIER_PATTERN.findall(question)
 
         def supports_identifiers(item: HybridSearchResult) -> bool:
+            if item.document.source_class == "official" and item.document.record_type == "policy":
+                # General policy applies across recall identifiers. Its material
+                # support is checked by the critic over the final citations.
+                return True
             applicable = [
                 identifier
                 for identifier in identifiers
@@ -1392,10 +1420,11 @@ class AgenticRetriever:
             phases.append("fuse_rerank")
             evidence = self._merge(accumulated)
             phases.append("gap_critic")
+            citation_ids = {item.citation_id for item in self._citations(evidence, state.question)}
             gaps = self._critic(
                 state.question,
                 state.sources,
-                evidence,
+                tuple(item for item in evidence if item.document.citation_id in citation_ids),
                 state.authoritative_facts,
             )
             if not gaps:

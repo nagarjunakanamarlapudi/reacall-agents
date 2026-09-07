@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 from sklearn.decomposition import TruncatedSVD
@@ -90,7 +91,10 @@ def _tokens(value: str) -> list[str]:
 
 def _search_text(document: KnowledgeDocument) -> str:
     metadata = json.dumps(
-        document.metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        document.model_dump(mode="json")["metadata"],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
     )
     return f"{document.title} {document.record_id} {document.text} {metadata}"
 
@@ -178,7 +182,7 @@ class HybridIndex:
             raise ValueError("hybrid index requires at least one document")
         if len({item.citation_id for item in self.documents}) != len(self.documents):
             raise ValueError("hybrid index citation IDs must be unique")
-        self._by_citation = {item.citation_id: item for item in self.documents}
+        self._by_citation = MappingProxyType({item.citation_id: item for item in self.documents})
         self._texts = tuple(_search_text(item) for item in self.documents)
         self._tokenized = tuple(_tokens(text) for text in self._texts)
         self._term_frequencies = tuple(Counter(tokens) for tokens in self._tokenized)
@@ -227,6 +231,14 @@ class HybridIndex:
             if (source_filter == "all" or document.source_class == source_filter)
             and (not record_types or document.record_type in record_types)
         ]
+
+    def validate_documents(self, documents: Sequence[KnowledgeDocument]) -> None:
+        """Bind the cached search documents and lookup to freshly verified content."""
+        expected = tuple(sorted(documents, key=lambda item: item.citation_id))
+        if self.documents != expected or self._by_citation != {
+            item.citation_id: item for item in expected
+        }:
+            raise ValueError("cached index documents do not match the validated corpus")
 
     def sparse_search(
         self,

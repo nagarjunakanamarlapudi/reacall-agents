@@ -110,7 +110,16 @@ async def test_report_rejects_missing_forged_and_stale_measurements(tmp_path):
     output = tmp_path / "report.json"
     await run_retrieval_benchmark(DATA_DIR / "evals/retrieval_cases.json", output)
     original = json.loads(output.read_bytes())
-    for change in ("missing", "aggregate", "contribution", "case_digest", "index_digest", "gate", "stop", "budget"):
+    for change in (
+        "missing",
+        "aggregate",
+        "contribution",
+        "case_digest",
+        "index_digest",
+        "gate",
+        "stop",
+        "budget",
+    ):
         payload = deepcopy(original)
         if change == "missing":
             payload["configurations"][0]["results"].pop()
@@ -313,17 +322,210 @@ def test_abstaining_on_answerable_case_is_a_gate_failure():
     assert _contributions(case, row)["abstention_accuracy"] == 0.0
 
 
-@pytest.mark.parametrize(("initial", "final", "expected"), [
-    (("FDA-RECALL-EFFECTIVENESS",), (), (0, 1, 0)),
-    ((), ("FDA-RECALL-EFFECTIVENESS",), (1, 0, 0)),
-    (("FDA-RECALL-EFFECTIVENESS",), ("FDA-RECALL-EFFECTIVENESS",), (0, 0, 1)),
-])
+@pytest.mark.parametrize(
+    ("initial", "final", "expected"),
+    [
+        (("FDA-RECALL-EFFECTIVENESS",), (), (0, 1, 0)),
+        ((), ("FDA-RECALL-EFFECTIVENESS",), (1, 0, 0)),
+        (("FDA-RECALL-EFFECTIVENESS",), ("FDA-RECALL-EFFECTIVENESS",), (0, 0, 1)),
+    ],
+)
 def test_rewrite_outcomes_compare_same_agentic_first_pass(initial, final, expected):
     from recallops.evaluation.retrieval_benchmark import _contributions, _metrics
     from recallops.evaluation.retrieval_schema import RetrievalCaseResult, load_retrieval_cases
 
     case = load_retrieval_cases(DATA_DIR / "evals/retrieval_cases.json").cases[80]
-    row = RetrievalCaseResult(case_id=case.id, family=case.family, initial_ranked_document_ids=initial, ranked_document_ids=final, rewrite_used=True)
+    row = RetrievalCaseResult(
+        case_id=case.id,
+        family=case.family,
+        initial_ranked_document_ids=initial,
+        ranked_document_ids=final,
+        rewrite_used=True,
+    )
     row = row.model_copy(update={"metric_contributions": _contributions(case, row)})
     metrics = _metrics([row], [case], measure_rewrite=True)
-    assert (metrics.rewrite_win_count, metrics.rewrite_loss_count, metrics.rewrite_no_change_count) == expected
+    assert (
+        metrics.rewrite_win_count,
+        metrics.rewrite_loss_count,
+        metrics.rewrite_no_change_count,
+    ) == expected
+
+
+def test_review_cached_documents_and_nested_metadata_are_deeply_immutable():
+    from recallops.retrieval.models import KnowledgeDocument
+
+    original = KnowledgeCorpus.load().documents[0]
+    metadata = {"claims": {"reactor": ["unsupported"]}}
+    document = KnowledgeDocument.model_validate({**original.model_dump(), "metadata": metadata})
+    metadata["claims"]["reactor"].append("injected")
+    assert document.metadata["claims"]["reactor"] == ("unsupported",)
+    with pytest.raises(TypeError):
+        document.metadata["claims"]["reactor"] = ("injected",)
+    with pytest.raises(TypeError):
+        KnowledgeCorpus.load().manifest.source_counts["official"] = 999
+    cached = load_local_hybrid_index(str(DATA_DIR)).documents[0]
+    try:
+        with pytest.raises(TypeError):
+            cached.metadata["reactor"] = "injected"
+    finally:
+        load_local_hybrid_index.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_review_cached_content_mismatch_is_rejected(monkeypatch):
+    index = load_local_hybrid_index(str(DATA_DIR))
+    changed = index.documents[0].model_copy(update={"metadata": {"reactor": True}})
+    monkeypatch.setattr(index, "documents", (changed, *index.documents[1:]))
+    with pytest.raises(ValueError, match="corpus"):
+        await ClosedRetrievalGateway.direct().call(
+            "regulatory_search", "FDA classification", top_k=5, record_types=()
+        )
+
+
+@pytest.mark.asyncio
+async def test_review_reactor_query_stays_unsupported_across_cache_reuse():
+    for _ in range(2):
+        result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(
+            "What reactor classification does FDA provide?"
+        )
+        assert not result.coverage_satisfied
+        assert any("reactor" in gap for gap in result.evidence_gaps)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "unsupported"),
+    [
+        ("Which test determines the classification of recall H-1230-2026?", "test"),
+        ("What test was recorded for product P-EXACT?", "test"),
+        ("What care is required for Salmonella?", "care"),
+        ("Which test does official effectiveness guidance test?", "test"),
+        ("What care do visibility semantics care about?", "care"),
+        ("Recover from Salmonella.", "recover"),
+        ("Decode Salmonella.", "decode"),
+    ],
+)
+async def test_review_substantive_requested_terms_are_not_ignored(question, unsupported):
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+    assert not result.coverage_satisfied
+    assert any(f"Unsupported concept: {unsupported}" in gap for gap in result.evidence_gaps)
+
+
+@pytest.mark.asyncio
+async def test_review_accepted_citations_retain_required_general_policy():
+    question = "What official effectiveness guidance applies to recall H-1230-2026?"
+    result = await AgenticRetriever(ClosedRetrievalGateway.direct()).retrieve(question)
+    assert result.coverage_satisfied
+    ids = {item.citation_id for item in result.citations}
+    assert {"OPENFDA-H-1230-2026", "FDA-RECALL-EFFECTIVENESS"} <= ids
+    accepted = tuple(item for item in result.evidence if item.document.citation_id in ids)
+    assert AgenticRetriever._critic(question, ("official",), accepted, {}) == ()
+
+
+@pytest.mark.asyncio
+async def test_review_resigned_stop_rewrite_and_calibration_forgeries_fail(tmp_path):
+    from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256
+    from recallops.evaluation.retrieval_benchmark import (
+        load_retrieval_report,
+        run_retrieval_benchmark,
+    )
+
+    path = tmp_path / "report.json"
+    await run_retrieval_benchmark(DATA_DIR / "evals/retrieval_cases.json", path)
+    original = json.loads(path.read_bytes())
+    mutations = [
+        (
+            "after_rewrite_without_rewrite",
+            -1,
+            0,
+            {"stop_reason": "coverage_satisfied_after_rewrite"},
+        ),
+        ("disabled_stalled", -1, 88, {"stop_reason": "progress_stalled"}),
+        ("successful_baseline_error", 0, 0, {"stop_reason": "execution_error"}),
+        ("successful_baseline_stop", 0, 0, {"stop_reason": "coverage_satisfied"}),
+        (
+            "unnecessary_rewrite",
+            -1,
+            80,
+            {
+                "rewrite_used": True,
+                "hop_count": 2,
+                "query_count": 4,
+                "read_count": 4,
+                "stop_reason": "coverage_satisfied_after_rewrite",
+            },
+        ),
+    ]
+    for name, config, row, changes in mutations:
+        payload = deepcopy(original)
+        payload["configurations"][config]["results"][row].update(changes)
+        payload.pop("report_sha256")
+        payload["report_sha256"] = canonical_sha256(payload)
+        path.write_bytes(canonical_json_bytes(payload))
+        with pytest.raises(ValueError, match=".") as failure:
+            load_retrieval_report(path, DATA_DIR / "evals/retrieval_cases.json")
+        assert failure.value, name
+    for changes in [
+        {"rrf_sparse_weight": 0.1, "rrf_dense_weight": 0.9},
+        {"rrf_rank_constant": 60},
+        {"rerank_signal_weight": 1.0},
+        {"agentic_rrf_rank_constant": 1},
+        {"agentic_rrf_dense_weight": 0.1},
+        {"agentic_rrf_sparse_weight": 0.9},
+        {"agentic_rerank_signal_weight": 0.05},
+        {"calibrated_configurations": []},
+        {"calibrated_configurations": ["rrf_fusion"]},
+    ]:
+        payload = {**deepcopy(original), **changes}
+        payload.pop("report_sha256")
+        payload["report_sha256"] = canonical_sha256(payload)
+        path.write_bytes(canonical_json_bytes(payload))
+        with pytest.raises(ValueError):
+            load_retrieval_report(path, DATA_DIR / "evals/retrieval_cases.json")
+
+
+@pytest.mark.asyncio
+async def test_review_resigned_answer_cannot_borrow_support_from_uncited_candidates(tmp_path):
+    from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256
+    from recallops.evaluation.retrieval_benchmark import (
+        _configuration,
+        _contributions,
+        _gates,
+        _supported_facts,
+        load_retrieval_report,
+        run_retrieval_benchmark,
+    )
+    from recallops.evaluation.retrieval_schema import RetrievalCaseResult, load_retrieval_cases
+
+    path = tmp_path / "report.json"
+    report = await run_retrieval_benchmark(DATA_DIR / "evals/retrieval_cases.json", path)
+    corpus = load_retrieval_cases(DATA_DIR / "evals/retrieval_cases.json")
+    case = corpus.cases[78]
+    original = report.configurations[-1].results[78]
+    document = KnowledgeCorpus.load().resolve("NORTHSTAR-FACILITY_ACKNOWLEDGEMENTS-STORE-01")
+    assert "FDA-RECALL-EFFECTIVENESS" in original.ranked_document_ids
+    row = original.model_copy(
+        update={
+            "cited_document_ids": (document.citation_id,),
+            "cited_facts": _supported_facts(case, [document]),
+            "provenance": {document.citation_id: document.source_class},
+        }
+    )
+    row = RetrievalCaseResult.model_validate(
+        {**row.model_dump(), "metric_contributions": _contributions(case, row)}
+    )
+    results = list(report.configurations[-1].results)
+    results[78] = row
+    configurations = (
+        *report.configurations[:-1],
+        _configuration("agentic_rag", tuple(results), corpus),
+    )
+    gates, passed = _gates(configurations)
+    forged = report.model_copy(
+        update={"configurations": configurations, "gates": gates, "gate_passed": passed}
+    )
+    payload = forged.model_dump(mode="json", exclude={"report_sha256"})
+    payload["report_sha256"] = canonical_sha256(payload)
+    path.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(ValueError, match="accepted citations"):
+        load_retrieval_report(path, DATA_DIR / "evals/retrieval_cases.json")

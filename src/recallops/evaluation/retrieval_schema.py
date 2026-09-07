@@ -361,9 +361,49 @@ class RetrievalEvalGates(BaseModel):
     rerank_ndcg_delta: StrictFiniteFloat
 
 
-class RetrievalEvalReport(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+SUPPORTED_RETRIEVAL_EXECUTION = MappingProxyType(
+    {
+        "rrf_sparse_weight": 0.9,
+        "rrf_dense_weight": 0.1,
+        "rrf_rank_constant": 1,
+        "rerank_signal_weight": 0.05,
+        "calibration": "in_sample_offline_synthetic",
+        "calibrated_configurations": ("rrf_fusion", "rrf_plus_rerank"),
+        "agentic_rrf_rank_constant": 60,
+        "agentic_rrf_sparse_weight": 1.0,
+        "agentic_rrf_dense_weight": 1.0,
+        "agentic_rerank_signal_weight": 1.0,
+    }
+)
 
+
+class RetrievalExecutionConfig(BaseModel):
+    """The exact supported execution profile, shared by executor and validator."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, validate_default=True)
+
+    rrf_sparse_weight: StrictFiniteFloat = SUPPORTED_RETRIEVAL_EXECUTION["rrf_sparse_weight"]
+    rrf_dense_weight: StrictFiniteFloat = SUPPORTED_RETRIEVAL_EXECUTION["rrf_dense_weight"]
+    rrf_rank_constant: StrictInt = SUPPORTED_RETRIEVAL_EXECUTION["rrf_rank_constant"]
+    rerank_signal_weight: StrictFiniteFloat = SUPPORTED_RETRIEVAL_EXECUTION["rerank_signal_weight"]
+    calibration: Literal["in_sample_offline_synthetic"] = "in_sample_offline_synthetic"
+    calibrated_configurations: tuple[Literal["rrf_fusion", "rrf_plus_rerank"], ...] = (
+        "rrf_fusion",
+        "rrf_plus_rerank",
+    )
+    agentic_rrf_rank_constant: StrictInt = Field(default=60, gt=0)
+    agentic_rrf_sparse_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    agentic_rrf_dense_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    agentic_rerank_signal_weight: StrictFiniteFloat = Field(default=1.0, gt=0, le=1)
+
+    @model_validator(mode="after")
+    def require_supported_execution(self) -> RetrievalExecutionConfig:
+        if any(getattr(self, key) != value for key, value in SUPPORTED_RETRIEVAL_EXECUTION.items()):
+            raise ValueError("report execution configuration does not match the supported executor")
+        return self
+
+
+class RetrievalEvalReport(RetrievalExecutionConfig):
     schema_version: Literal["1.0"]
     retrieval_case_corpus_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     knowledge_corpus_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
@@ -372,18 +412,6 @@ class RetrievalEvalReport(BaseModel):
     gates: RetrievalEvalGates
     gate_passed: StrictBool
     report_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    rrf_sparse_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
-    rrf_dense_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
-    rrf_rank_constant: StrictInt = Field(default=60, gt=0)
-    rerank_signal_weight: StrictFiniteFloat = Field(default=1.0, gt=0, le=1)
-    calibration: Literal["in_sample_offline_synthetic"] = "in_sample_offline_synthetic"
-    calibrated_configurations: tuple[Literal["rrf_fusion", "rrf_plus_rerank"], ...] = (
-        "rrf_fusion", "rrf_plus_rerank",
-    )
-    agentic_rrf_rank_constant: StrictInt = Field(default=60, gt=0)
-    agentic_rrf_sparse_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
-    agentic_rrf_dense_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
-    agentic_rerank_signal_weight: StrictFiniteFloat = Field(default=1.0, gt=0, le=1)
 
 
 def load_retrieval_cases(path: Path, *, data_dir: Path = DATA_DIR) -> RetrievalEvalCorpus:

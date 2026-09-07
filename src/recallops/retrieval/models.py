@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Mapping
 from datetime import datetime
+from types import MappingProxyType
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -13,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictInt,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -36,10 +39,29 @@ KnowledgeOrigin = Literal[
 ]
 
 
+def _freeze_json(value: Any) -> Any:
+    """Copy nested JSON containers into recursively immutable values."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    if value is None or type(value) in {str, bool, int, float}:
+        return value
+    raise ValueError("knowledge metadata must contain JSON values")
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
 class KnowledgeDocument(BaseModel):
     """One immutable, independently citable corpus record."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, validate_default=True)
 
     citation_id: str = Field(min_length=1)
     source_class: SourceClass
@@ -52,7 +74,16 @@ class KnowledgeDocument(BaseModel):
     source_url: str = Field(min_length=1)
     retrieved_at: datetime
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: Mapping[str, Any] = Field(default_factory=dict)
+
+    @field_validator("metadata")
+    @classmethod
+    def freeze_metadata(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return _freeze_json(value)
+
+    @field_serializer("metadata")
+    def serialize_metadata(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_json(value)
 
     @field_validator(
         "citation_id",
@@ -92,10 +123,19 @@ class KnowledgeManifest(BaseModel):
     schema_version: Literal["1.0.0"]
     generated_at: datetime
     document_count: int = Field(ge=1)
-    source_counts: dict[str, int]
-    record_type_counts: dict[str, int]
-    source_checksums: dict[str, str]
+    source_counts: Mapping[str, int]
+    record_type_counts: Mapping[str, int]
+    source_checksums: Mapping[str, str]
     corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("source_counts", "record_type_counts", "source_checksums")
+    @classmethod
+    def freeze_identity_mappings(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return _freeze_json(value)
+
+    @field_serializer("source_counts", "record_type_counts", "source_checksums")
+    def serialize_identity_mappings(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return _thaw_json(value)
 
 
 class HybridSearchRequest(BaseModel):

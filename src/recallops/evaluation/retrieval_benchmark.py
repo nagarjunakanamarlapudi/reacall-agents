@@ -32,6 +32,7 @@ from recallops.evaluation.retrieval_schema import (
     RetrievalEvalCorpus,
     RetrievalEvalGates,
     RetrievalEvalReport,
+    RetrievalExecutionConfig,
     load_retrieval_cases,
 )
 from recallops.paths import DATA_DIR
@@ -71,10 +72,7 @@ RATE_METRICS = (
 )
 # Identifier-heavy local business records benefit from retaining sparse order;
 # dense evidence still contributes at every rank and supplies unique candidates.
-RRF_SPARSE_WEIGHT = 0.9
-RRF_DENSE_WEIGHT = 0.1
-RRF_RANK_CONSTANT = 1
-RERANK_SIGNAL_WEIGHT = 0.05
+EXECUTION_CONFIG = RetrievalExecutionConfig()
 
 
 def measured_delta(value: float, baseline: float) -> float:
@@ -283,10 +281,10 @@ async def _execute(
                 case.question,
                 name,
                 top_k=case.top_k,
-                sparse_weight=RRF_SPARSE_WEIGHT,
-                dense_weight=RRF_DENSE_WEIGHT,
-                rank_constant=RRF_RANK_CONSTANT,
-                signal_weight=RERANK_SIGNAL_WEIGHT,
+                sparse_weight=EXECUTION_CONFIG.rrf_sparse_weight,
+                dense_weight=EXECUTION_CONFIG.rrf_dense_weight,
+                rank_constant=EXECUTION_CONFIG.rrf_rank_constant,
+                signal_weight=EXECUTION_CONFIG.rerank_signal_weight,
             )
             _, sources = AgenticRetriever._plan(case.question)
             identifiers = tuple(item.document.citation_id for item in evidence)
@@ -458,6 +456,9 @@ def validate_retrieval_report(
     knowledge: KnowledgeCorpus,
 ) -> None:
     """Recompute all contributions, denominators, aggregates, deltas and gates."""
+    RetrievalExecutionConfig.model_validate(
+        {key: getattr(report, key) for key in RetrievalExecutionConfig.model_fields}
+    )
     if report.retrieval_case_corpus_sha256 != canonical_sha256(corpus.model_dump(mode="json")):
         raise ValueError("retrieval case corpus digest mismatch")
     if (
@@ -470,6 +471,24 @@ def validate_retrieval_report(
     if tuple(item.name for item in report.configurations) != CONFIGURATIONS:
         raise ValueError("retrieval configurations must be complete and ordered")
     documents = {item.citation_id: item for item in knowledge.documents}
+
+    def evidence(identifiers: Sequence[str]) -> tuple[HybridSearchResult, ...]:
+        return tuple(
+            HybridSearchResult(
+                document=documents[key], rrf_score=0.0, rerank_score=0.0, explanation=()
+            )
+            for key in identifiers
+        )
+
+    def critic_evidence(
+        case: RetrievalCase, identifiers: Sequence[str]
+    ) -> tuple[HybridSearchResult, ...]:
+        candidates = evidence(identifiers)
+        selected = {
+            item.citation_id for item in AgenticRetriever._citations(candidates, case.question)
+        }
+        return tuple(item for item in candidates if item.document.citation_id in selected)
+
     for configuration in report.configurations:
         if tuple(row.case_id for row in configuration.results) != tuple(
             case.id for case in corpus.cases
@@ -500,38 +519,96 @@ def validate_retrieval_report(
             if row.error_code not in {None, "validation_error", "retrieval_error"}:
                 raise ValueError("unbounded error code")
             if row.error_code and (
-                row.answered or row.ranked_document_ids or row.stop_reason != "execution_error"
+                row.answered
+                or row.ranked_document_ids
+                or row.stop_reason != "execution_error"
+                or row.initial_ranked_document_ids
+                or row.route_actual
+                or row.evidence_gaps
+                or row.rewrite_used
+                or row.query_count
+                or row.hop_count
+                or row.read_count
             ):
                 raise ValueError("error results must fail closed")
             if row.answered and row.evidence_gaps:
                 raise ValueError("answered result has unresolved evidence gaps")
             if row.error_code is None and configuration.name == "agentic_rag":
-                candidates = tuple(
-                    HybridSearchResult(document=documents[key], rrf_score=0.0, rerank_score=0.0, explanation=())
-                    for key in row.ranked_document_ids
-                )
+                candidates = evidence(row.ranked_document_ids)
                 _, sources = AgenticRetriever._plan(case.question)
                 expected_hops = 2 if row.rewrite_used else 1
                 expected_reads = len(sources) * expected_hops
                 if (
-                    row.query_count != expected_reads or row.read_count != expected_reads
-                    or row.hop_count != expected_hops or row.route_actual != sources
+                    row.query_count != expected_reads
+                    or row.read_count != expected_reads
+                    or row.hop_count != expected_hops
+                    or row.route_actual != sources
                 ):
                     raise ValueError("inconsistent agentic route or budget observation")
-                gaps = AgenticRetriever._critic(case.question, sources, candidates, {})
+                initial_gaps = AgenticRetriever._critic(
+                    case.question,
+                    sources,
+                    critic_evidence(case, row.initial_ranked_document_ids),
+                    {},
+                )
+                rewrite_query = AgenticRetriever._rewrite(case.question, initial_gaps)
+                if row.rewrite_used and (
+                    not case.rewrite_allowed or not initial_gaps or rewrite_query == case.question
+                ):
+                    raise ValueError("rewrite was disabled, unnecessary, or made no progress")
+                gaps = AgenticRetriever._critic(
+                    case.question, sources, critic_evidence(case, row.ranked_document_ids), {}
+                )
                 if row.evidence_gaps != gaps or row.answered != (not gaps):
                     raise ValueError("forged critic observation")
-                expected_citations = tuple(
-                    item.citation_id for item in AgenticRetriever._citations(candidates, case.question)
-                ) if row.answered else ()
+                expected_citations = (
+                    tuple(
+                        item.citation_id
+                        for item in AgenticRetriever._citations(candidates, case.question)
+                    )
+                    if row.answered
+                    else ()
+                )
                 if row.cited_document_ids != expected_citations:
                     raise ValueError("forged accepted citations")
-                if row.answered and row.stop_reason not in {"coverage_satisfied", "coverage_satisfied_after_rewrite"}:
-                    raise ValueError("accepted evidence has inconsistent stop reason")
-                if not row.answered and row.stop_reason not in {"evidence_gap_after_rewrite", "budget_exhausted", "progress_stalled"}:
-                    raise ValueError("abstained evidence has inconsistent stop reason")
-                if not row.rewrite_used and row.initial_ranked_document_ids != row.ranked_document_ids:
+                if row.answered and AgenticRetriever._critic(
+                    case.question, sources, evidence(row.cited_document_ids), {}
+                ):
+                    raise ValueError("accepted citations do not support the answer")
+                if row.answered:
+                    expected_stop = (
+                        "coverage_satisfied_after_rewrite"
+                        if row.rewrite_used
+                        else "coverage_satisfied"
+                    )
+                elif row.rewrite_used or not case.rewrite_allowed or case.max_hops == 1:
+                    expected_stop = "evidence_gap_after_rewrite"
+                elif min(case.max_queries, case.max_reads) < len(sources) * 2:
+                    expected_stop = "budget_exhausted"
+                elif rewrite_query == case.question:
+                    expected_stop = "progress_stalled"
+                else:
+                    raise ValueError("retrieval stopped before its required bounded rewrite")
+                if row.stop_reason != expected_stop:
+                    raise ValueError("inconsistent stop/rewrite observation")
+                if (
+                    not row.rewrite_used
+                    and row.initial_ranked_document_ids != row.ranked_document_ids
+                ):
                     raise ValueError("single-pass agentic ranking changed without a rewrite")
+            elif row.error_code is None:
+                _, sources = AgenticRetriever._plan(case.question)
+                if (
+                    row.stop_reason != "single_pass"
+                    or row.rewrite_used
+                    or row.initial_ranked_document_ids
+                    or row.evidence_gaps
+                    or (row.query_count, row.hop_count, row.read_count) != (1, 1, 1)
+                    or row.route_actual != sources
+                    or row.answered != bool(row.ranked_document_ids)
+                    or row.cited_document_ids != row.ranked_document_ids
+                ):
+                    raise ValueError("inconsistent single-pass baseline observation")
             if dict(row.metric_contributions) != _contributions(case, row):
                 raise ValueError("forged metric contribution")
         rebuilt = _configuration(
@@ -582,10 +659,7 @@ async def run_retrieval_benchmark(
         configurations=tuple(configurations),
         gates=gates,
         gate_passed=passed,
-        rrf_sparse_weight=RRF_SPARSE_WEIGHT,
-        rrf_dense_weight=RRF_DENSE_WEIGHT,
-        rrf_rank_constant=RRF_RANK_CONSTANT,
-        rerank_signal_weight=RERANK_SIGNAL_WEIGHT,
+        **EXECUTION_CONFIG.model_dump(),
     )
     report = report.model_copy(
         update={
