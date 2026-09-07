@@ -1,5 +1,14 @@
 """Deterministic, offline evaluation contracts for RecallOps."""
 
+from recallops.evaluation.orchestration_benchmark import (
+    load_orchestration_report,
+    run_orchestration_benchmark,
+    validate_orchestration_report,
+)
+from recallops.evaluation.orchestration_schema import (
+    OrchestrationEvalReport,
+    load_orchestration_cases,
+)
 from recallops.evaluation.retrieval_benchmark import (
     load_retrieval_report,
     run_retrieval_benchmark,
@@ -26,6 +35,11 @@ from recallops.evaluation.schema import (
 )
 
 __all__ = [
+    "OrchestrationEvalReport",
+    "load_orchestration_cases",
+    "load_orchestration_report",
+    "run_orchestration_benchmark",
+    "validate_orchestration_report",
     "EvaluationGateError",
     "EvaluationObservation",
     "EvaluationReport",
