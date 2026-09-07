@@ -33,13 +33,16 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 - [x] All five UI views and exact controls/fields/statuses in `demo_contract.json` are visible.
 - [x] CLI data validation/demo/MCP config/eval summary and Streamlit startup exit successfully.
 - [x] The generated evaluator report contains R01–R21, all safety-critical, `gate_passed=true`, perfect required rates, and zero unsafe counters.
+- [x] The 96-case retrieval report includes all six configurations and shows the measured fusion/rerank/rewrite deltas without extrapolating production uplift.
+- [x] The 24-case orchestration report compares bounded single agent and four specialists; zero observed quality/tool-call deltas and `not_run_missing_credentials` live status remain visible.
+- [x] The digest-bound combined scorecard verifies all three offline suites; optional live/model judging is excluded from deterministic authority.
 - [x] Seven self-contained notebooks rebuild and execute without product imports, network, install cells, or credentials.
 - [x] The full test suite, Ruff, lock, dependency, Bandit, pip-audit, Streamlit smoke, MCP stdio smoke, and data checks are recorded.
 
 ## Documentation and recording
 
-- [x] The presentation uses [data boundary](images/recallops-data-boundary.png), [system architecture](images/recallops-system-architecture.png), and [five-minute demo](images/recallops-five-minute-demo.png) visuals; Mermaid/SVG remains the reproducible detail layer.
+- [x] The presentation uses [data boundary](images/recallops-data-boundary.png), [system architecture](images/recallops-system-architecture.png), and [five-minute demo](images/recallops-five-minute-demo.png) visuals; [Diagram 10](images/10_evaluation_architecture.svg) preserves the read-only evaluation truth.
 - [x] README, proposal, business guide, architecture, source register, MCP/HITL/operations/evaluation docs, submission document, backlog, demo, and verification are synchronized.
-- [x] Every Mermaid source renders through the pinned local CLI; two fresh renders match each other and committed SVGs.
-- [x] The 4:35 walkthrough is rehearsed with the exact copy/paste card and a fresh explicit runtime directory.
+- [x] All ten Mermaid sources render through the pinned local CLI; two fresh renders match each other and committed SVGs.
+- [x] The 4:55 walkthrough is rehearsed with the exact copy/paste card, exact 45-second evaluation narration, and a fresh explicit runtime directory.
 - [x] No secret, real PII, unlabelled synthetic claim, production action claim, unsupported test count, or stale integration-status wording remains.

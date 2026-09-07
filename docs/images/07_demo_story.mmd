@@ -13,10 +13,10 @@ flowchart TB
   E["02:35 Approve writes zero<br/>execution confirm → Simulate approved actions<br/>create_case v0→v1 • Simulated action recorded"]:::action
   F["03:05 Human Review again<br/>fresh digest + approval<br/>apply_inventory_hold at v1"]:::human
   G["03:40 Approve + execution confirm<br/>Simulate approved actions<br/>apply_inventory_hold v1→v2 • Simulated action recorded"]:::action
-  H["04:10 Audit & Evaluation<br/>Safety evaluation • 21 scenarios / R01–R21<br/>same-key recovery"]:::safe
-  J["Retrieval ablation<br/>96 cases • sparse BM25 + dense LSA<br/>fusion • rerank • agentic RAG deltas"]:::agent
-  K["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists<br/>optional live status is advisory"]:::safe
-  I["04:35 Audit & Evaluation<br/>Request closure<br/>Open — closure blocked"]:::human
+  H["04:00 Audit & Evaluation<br/>Safety evaluation • 21 scenarios / R01–R21<br/>same-key recovery"]:::safe
+  J["Retrieval ablation<br/>96 cases • six configurations<br/>fusion Δ Recall@5 +0.00568 • rerank Δ nDCG@5 +0.00527<br/>rewrite 0 win • 0 loss • 8 unchanged"]:::agent
+  K["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists<br/>quality + tool-call Δ = 0 • no assumed uplift<br/>optional live: not_run_missing_credentials • advisory"]:::safe
+  I["04:45 Audit & Evaluation<br/>Request closure • finish by 04:55<br/>Open — closure blocked"]:::human
 
   A --> B --> C --> D --> E --> F --> G --> H --> J --> K --> I
   NOTE["No A2A • agents never write directly<br/>internal closure ≠ FDA termination"]:::block --- H

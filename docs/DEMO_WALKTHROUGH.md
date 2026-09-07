@@ -1,8 +1,8 @@
-# RecallOps 4:35 Demo Walkthrough
+# RecallOps 4:55 Demo Walkthrough
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
 
-This script is derived from [`demo_contract.json`](demo_contract.json) and the implemented durable runtime/five-view UI. The visual is a presentation overview; the exact 4:35 click sequence is the timed table below and the reproducible [demo-story diagram](images/07_demo_story.svg). Use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) for a one-slide orientation before the timed product walkthrough.
+This script is derived from [`demo_contract.json`](demo_contract.json) and the implemented durable runtime/five-view UI. The [five-minute story](images/recallops-five-minute-demo.png) is the presentation overview; the [system architecture](images/recallops-system-architecture.png), reproducible [demo-story diagram](images/07_demo_story.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) provide progressively deeper proof. The timed table below is the exact 4:55 click sequence. Use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) for a one-slide orientation before the timed product walkthrough.
 
 ## Preflight
 
@@ -12,7 +12,7 @@ Start from a clean shell in the repository root:
 uv sync --locked --all-groups
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
-uv run recallops eval --report data/evals/report.json
+uv run recallops eval-scorecard --scorecard data/evals/scorecard.json
 uv run streamlit run src/recallops/ui/app.py
 ```
 
@@ -58,8 +58,8 @@ The decision vocabulary is exactly `approve`, `edit`, `reject`, and `escalate`; 
 | 02:35 | Click **Approve**. Explicitly show that no receipt appeared and that a separate execution confirmation is pending. Then click **Simulate approved actions** and show **Simulated action recorded**, action `create_case`, and the v0→v1 receipt. | “Approve recorded zero writes. This second confirmation lets only the approved graph node call Operations MCP once. The receipt binds actor, justification, action digest, idempotency key, and version.” |
 | 03:05 | Stay in **Human Review** and show the next **Review required** packet: `apply_inventory_hold`, version 1, confirmed lot targets, and a new digest/key. | “The first approval expired when the case version changed. The graph replans, so the hold needs a fresh review. The ambiguous lot is retained for review and cannot be smuggled into confirmed scope.” |
 | 03:40 | Click **Approve**, show the second execution confirmation, click **Simulate approved actions**, and show the `apply_inventory_hold` v1→v2 receipt plus **Simulated action recorded**. | “This is one write per version, not a batch convenience call. Both records are simulated; no real inventory system was touched.” |
-| 04:10 | Open **Audit & Evaluation**. Show decision/receipt ordering, then point to R13 exact replay and R18 restart/resume in the loaded evaluation table; mention the separately rehearsed lost-response recovery. If the report panel cannot load, show the preflight `recallops eval` terminal summary and committed report instead—do not switch to fixture mode. | “A lost response becomes durable unknown-outcome state; the **Recover recorded outcome (same key)** control reuses the persisted key and returns one logical receipt. The 21-scenario evaluator also checks direct/stdio parity, restart, watchdog, approval, idempotency, and TOCTOU closure controls.” |
-| 04:35 | Click **Request closure** and point to **Open — closure blocked** and its returned blockers. | “Closure is a separate decision, not a side effect of containment. This mixed case stays open because ambiguity and reconciliation evidence remain unresolved. Internal retailer closure is also distinct from FDA termination.” |
+| 04:00 | Open **Audit & Evaluation**. Show the verified scorecard, then reveal **Safety**, **Retrieval quality**, and **Orchestration quality** in that order. Point to 21/21; the six configuration rows; `+0.00568`, `+0.00527`, and `0/0/8`; the two profile rows and zero quality/tool-call deltas; and `not_run_missing_credentials`. Mention the separately rehearsed exact-key recovery. If the scorecard cannot load, show the preflight `eval-scorecard` summary and committed reports instead—never substitute a fixture. | “Safety tests prove no approval bypass or false close: 21 of 21 scenarios pass. Retrieval evals compare six ablations—BM25, local LSA, naive hybrid, RRF, reranking, and agentic RAG—on the same 96 labelled questions. Fusion Recall-at-five delta is plus 0.00568; rerank nDCG-at-five delta is plus 0.00527; eight rewrite cases are unchanged, so no uplift is assumed. The 24-case orchestration benchmark compares a bounded single agent with four specialists. Evidence coverage, task success, duplicate work, and tool-call deltas are zero: multi-agent value is measured, not assumed. Optional live Deep Agents was not run because credentials were missing and is excluded from offline gates.” |
+| 04:45 | Click **Request closure** and point to **Open — closure blocked** and its returned blockers; finish by 04:55. | “Closure is a separate decision, not a side effect of containment. Ambiguity and reconciliation evidence keep this synthetic retailer case open; FDA termination remains separate.” |
 
 ## What the audience should have seen
 
@@ -68,7 +68,9 @@ The decision vocabulary is exactly `approve`, `edit`, `reject`, and `escalate`; 
 3. **Approve** and **Simulate approved actions** are two different human decisions.
 4. `create_case` v0→v1 and `apply_inventory_hold` v1→v2 each produce one durable receipt.
 5. Audit/recovery evidence makes retries and stale/concurrent requests inspectable.
-6. **Request closure** ends **Open — closure blocked**, which is the intended flagship safety outcome.
+6. Three digest-verified evaluation sections report measured offline evidence: 21 safety cases, 96 retrieval cases across six configurations, and 24 orchestration cases across two profiles.
+7. The observed retrieval deltas are modest, the deterministic orchestration quality/tool-call deltas are zero, and the optional live Deep Agents run is visibly excluded—not narrated as uplift.
+8. **Request closure** ends **Open — closure blocked**, which is the intended flagship safety outcome.
 
 ## Optional positive-close proof (outside the timed flagship)
 
@@ -80,7 +82,8 @@ Do not replace the blocked flagship with a happy path. If a reviewer asks whethe
 |---|---|
 | Why not use You.com/web search? | General search adds nondeterministic/untrusted critical-path data. RecallOps uses an allowlisted openFDA lookup plus a frozen snapshot and committed FDA/GS1 references. |
 | Is LSA really dense retrieval? | Yes: TF-IDF vectors are projected into a local 64-dimensional latent semantic space. It is deliberately called local LSA, not neural embeddings. |
-| Is Deep Agents actually present? | Yes, the repository builds a real fixed-subagent Deep Agents graph. The default durable workflow uses the equivalent deterministic plan so the demo needs no model key; agents never receive Operations tools. |
+| Is Deep Agents actually present? | The repository builds a real fixed-subagent Deep Agents graph, but the committed live comparison status is `not_run_missing_credentials` and excluded from offline gates. The default durable workflow uses the deterministic plan; agents never receive Operations tools. |
+| Did multi-agent orchestration outperform the baseline? | Not in this deterministic 24-case corpus: evidence coverage, task success, duplicate work, and total tool-call deltas are zero. The profiles make delegation observable; the report does not claim unsupported uplift. |
 | Why two approvals? | The first approves the evidence-bound action. The second confirms execution with the persisted execution ID/key. This prevents “approve” from silently becoming a write. |
 | What if the process restarts? | Reopen the same checkpoint and Operations database paths. The same thread/checkpoint/interrupt resumes; completed reasoning is not rerun. |
 | Are Northstar holds real? | No. Every operational record/receipt is **SYNTHETIC — ACADEMIC DEMO** and status `simulated`. |

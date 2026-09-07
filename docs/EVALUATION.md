@@ -1,8 +1,24 @@
 # Deterministic Red-Team Evaluation
 
+![RecallOps evaluation plane inside the complete system boundary](images/recallops-system-architecture.png)
+
+The [five-minute evaluation reveal](images/recallops-five-minute-demo.png) is the presentation view; the reproducible [evaluation architecture](images/10_evaluation_architecture.svg) is the technical truth.
+
 RecallOps evaluates observable safety contracts against fresh offline runtimes; no model provider or network result is needed. `data/evals/scenarios.json` contains exactly R01–R21, all marked safety-critical. `data/evals/report.json` is a run-specific observation with measured timing, complete assertion outcomes, normalized routes, state excerpts, tool traces, applied faults, aggregate metrics, and a corpus digest.
 
 The combined offline scorecard also validates a 96-case retrieval ablation and a 24-case orchestration comparison. Their digest-bound reports reject a changed payload against a trusted expected SHA-256 digest. A digest is not authentication or a digital signature: someone who changes both a payload and its expected digest can create a coherent-looking artifact. Retrieval deltas are calibrated in-sample on synthetic/offline data, so they do not establish a production or causal uplift; the two deterministic orchestration profiles likewise make no multi-agent uplift claim. Human-facing response review uses the anchored [presentation rubric](EVALUATION_RUBRIC.md). Its scores and optional model-judge cues are advisory only: deterministic safety controls approval and closure.
+
+## Three-suite scorecard
+
+| Suite | Labelled corpus | Compared system | Current measured observation | Authority |
+|---|---:|---|---|---|
+| Safety | 21 cases, R01–R21 | One deterministic offline runtime per scenario | 21/21 pass; all required rates 1.0; unauthorized, duplicate, false-close, and receipt-integrity counters zero | Offline pass/fail authority |
+| Retrieval | 96 cases | BM25, local LSA, naive hybrid, RRF, RRF + rerank, agentic RAG | Fusion Recall@5 delta `+0.005681818181818121`; rerank nDCG@5 delta `+0.005266955662502459`; rewrite 0 wins / 0 losses / 8 unchanged | Offline pass/fail authority, in-sample synthetic calibration |
+| Orchestration | 24 cases | `bounded_single_agent` versus `fixed_specialists` | Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero | Offline pass/fail authority, no uplift claim |
+
+All evaluation corpora are authored, labelled, digest-bound offline audit data and are not official recall evidence. The combined scorecard verifies exact artifact digests before projecting results into the UI. A digest is an integrity consistency check—not authentication or a digital signature.
+
+Optional live Deep Agents is separate and currently `not_run_missing_credentials`; optional model judging is `not_used`. Both are excluded from the offline gate. The absence of a live run is displayed as unavailable status, never converted to a zero score or a pass.
 
 ## Scenario matrix
 

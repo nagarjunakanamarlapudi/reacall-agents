@@ -4,7 +4,7 @@ The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](ima
 
 ![RecallOps system architecture: evidence, approval, and safe closure](images/recallops-system-architecture.png)
 
-The presentation visual summarizes the boundaries. The reproducible [technical architecture](images/02_system_architecture.svg), [orchestration](images/03_orchestration.svg), [MCP safety](images/04_mcp_tool_safety.svg), and [middleware lifecycle](images/05_middleware_lifecycle.svg) diagrams carry the implementation detail.
+The presentation visual summarizes the boundaries. The [five-minute demo story](images/recallops-five-minute-demo.png) shows the operator-facing sequence. The reproducible [technical architecture](images/02_system_architecture.svg), [orchestration](images/03_orchestration.svg), [MCP safety](images/04_mcp_tool_safety.svg), [middleware lifecycle](images/05_middleware_lifecycle.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) carry the implementation detail.
 
 ## Architectural thesis
 
@@ -30,7 +30,7 @@ No agent, retrieved document, UI callback, or MCP transport can skip those layer
 | Tool | Three FastMCP servers; direct and stdio gateways | Exposes narrow typed reads and simulated writes |
 | Durable state | LangGraph checkpoint SQLite plus Operations SQLite | Persists graph state, case versions, approvals, tasks, acknowledgements, receipts, and fences |
 | Product | Streamlit five-view command center and CLI | Presents state and invokes only the runtime adapter |
-| Assurance | 21-scenario evaluator, verified report projection, unit/integration/UI/docs/notebook tests | Measures observable safety contracts; stale/missing/invalid reports never claim success |
+| Assurance | 21-case safety suite, 96-case six-configuration retrieval ablation, 24-case two-profile orchestration comparison, digest-bound scorecard | Read-only measurement; stale/missing/invalid reports never claim success and never influence Operations |
 
 ## Agentic RAG
 
@@ -57,6 +57,17 @@ The credential-free runtime calls a deterministic bounded planner, then the four
 The independent verifier sits outside the specialist context and checks overlap, facility coverage, and authoritative-control ownership. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
 
 ![Orchestration and action loop](images/03_orchestration.svg)
+
+## Read-only evaluation plane
+
+The [evaluation architecture](images/10_evaluation_architecture.svg) follows one direction: labelled corpora → suite runners → metrics/gates → digest-bound scorecard → UI/demo/CI. It consumes detached traces and reports after execution. No evaluation, judge, scorecard, or presentation component has an edge to Recall Operations MCP, the approved graph node, or either SQLite write boundary.
+
+- **Safety:** R01–R21 deterministically probe approval, idempotency, recovery, versioning, closure, transport, and failure controls; 21/21 currently pass with all unsafe counters at zero.
+- **Retrieval:** the same 96 labelled cases run through BM25, LSA, naive hybrid, RRF, RRF plus rerank, and agentic RAG. Measured fusion Recall@5 delta is `+0.005681818181818121`; measured rerank nDCG@5 delta is `+0.005266955662502459`; rewrite is unchanged on all eight eligible cases.
+- **Orchestration:** the same 24 investigations run through `bounded_single_agent` and `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are zero, so the architecture makes no unsupported uplift claim.
+- **Optional advice:** live Deep Agents is `not_run_missing_credentials` and model judging is `not_used`; both are non-authoritative and excluded from deterministic gates.
+
+These evaluation records are authored, labelled, digest-bound offline audit data—not official recall evidence. Their SHA-256 digests detect inconsistency against pinned artifacts; they are not authentication or digital signatures.
 
 ## Durable LangGraph lifecycle
 

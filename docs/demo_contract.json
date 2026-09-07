@@ -1,12 +1,12 @@
 {
   "schema_version": "2.0",
   "runtime_integration_status": "implemented durable runtime and five-view UI",
-  "duration_seconds": 275,
+  "duration_seconds": 295,
   "cli": {
     "data_validation_command": "uv run recallops data-validate",
     "demo_command": "uv run recallops demo --recall-number H-1230-2026",
     "ui_command": "uv run streamlit run src/recallops/ui/app.py",
-    "evaluation_summary_command": "uv run recallops eval --report data/evals/report.json"
+    "evaluation_summary_command": "uv run recallops eval-scorecard --scorecard data/evals/scorecard.json"
   },
   "streamlit": {
     "views": [
@@ -52,6 +52,45 @@
     "expected_logical_receipts": 1,
     "expected_version_increments": 1
   },
+  "evaluation_reveal": {
+    "suites": ["safety", "retrieval", "orchestration"],
+    "safety": {
+      "case_count": 21,
+      "passed_case_count": 21,
+      "unsafe_counters": 0
+    },
+    "retrieval": {
+      "case_count": 96,
+      "configurations": [
+        "sparse_bm25",
+        "dense_lsa",
+        "naive_hybrid",
+        "rrf_fusion",
+        "rrf_plus_rerank",
+        "agentic_rag"
+      ],
+      "fusion_recall_delta": 0.005681818181818121,
+      "rerank_ndcg_delta": 0.005266955662502459,
+      "rewrite_outcomes": {"wins": 0, "losses": 0, "unchanged": 8},
+      "qualification": "in-sample synthetic/offline calibration; no production or causal uplift claim"
+    },
+    "orchestration": {
+      "case_count": 24,
+      "profiles": ["bounded_single_agent", "fixed_specialists"],
+      "evidence_fact_coverage_delta": 0.0,
+      "task_success_rate_delta": 0.0,
+      "duplicate_tool_call_ratio_delta": 0.0,
+      "total_tool_calls_delta": 0,
+      "qualification": "deterministic offline comparison; no unsupported multi-agent uplift claim"
+    },
+    "optional_live": {
+      "excluded_from_offline_gates": true,
+      "model_judges": "not_used",
+      "status": "not_run_missing_credentials"
+    },
+    "spoken_copy": "Safety tests prove no approval bypass or false close: 21 of 21 scenarios pass. Retrieval evals compare six ablations—BM25, local LSA, naive hybrid, RRF, reranking, and agentic RAG—on the same 96 labelled questions. Fusion Recall-at-five delta is plus 0.00568; rerank nDCG-at-five delta is plus 0.00527; eight rewrite cases are unchanged, so no uplift is assumed. The 24-case orchestration benchmark compares a bounded single agent with four specialists. Evidence coverage, task success, duplicate work, and tool-call deltas are zero: multi-agent value is measured, not assumed. Optional live Deep Agents was not run because credentials were missing and is excluded from offline gates.",
+    "no_unsupported_uplift_claims": true
+  },
   "data": {
     "public_snapshot_records": 5,
     "knowledge_document_count": 1175,
@@ -87,7 +126,7 @@
       "commands": [
         "uv run recallops data-validate",
         "uv run recallops demo --recall-number H-1230-2026",
-        "uv run recallops eval --report data/evals/report.json",
+        "uv run recallops eval-scorecard --scorecard data/evals/scorecard.json",
         "uv run streamlit run src/recallops/ui/app.py"
       ],
       "required_terms": [
@@ -127,6 +166,7 @@
       "commands": [
         "uv run recallops data-validate",
         "uv run recallops demo --recall-number H-1230-2026",
+        "uv run recallops eval-scorecard --scorecard data/evals/scorecard.json",
         "uv run streamlit run src/recallops/ui/app.py"
       ],
       "required_terms": [
@@ -200,7 +240,7 @@
     "02:35": "Approve, separately confirm, and record create_case version one",
     "03:05": "Review the newly planned confirmed-only hold at version one",
     "03:40": "Approve, separately confirm, and record hold version two",
-    "04:10": "Show audit, evaluator, and same-key recovery evidence",
-    "04:35": "Request closure and finish Open — closure blocked"
+    "04:00": "Show safety, retrieval, orchestration, and same-key recovery evidence",
+    "04:45": "Request closure and finish Open — closure blocked by 04:55"
   }
 }

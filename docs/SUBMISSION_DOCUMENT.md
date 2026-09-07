@@ -10,7 +10,7 @@ The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](ima
 
 ![RecallOps architecture: evidence, approval, and safe closure](images/recallops-system-architecture.png)
 
-The source-controlled [provenance](images/01_data_provenance.svg) and [technical architecture](images/02_system_architecture.svg) diagrams are the reproducible detail views.
+The source-controlled [provenance](images/01_data_provenance.svg), [technical architecture](images/02_system_architecture.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) diagrams are the reproducible detail views. The [five-minute demo visual](images/recallops-five-minute-demo.png) shows how those boundaries appear in the flagship product story.
 
 The differentiator is inspectable authority: RAG is advisory; structured evidence and transactions are authoritative; agents draft; the human approves one action; a second confirmation permits one approved graph-node write; Operations rechecks the request in SQLite.
 
@@ -33,7 +33,7 @@ No You.com or general web search is used. A public recall does not establish tha
 - **Agents:** deterministic planner; Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, Containment; independent verifier; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
 - **MCP:** Recall Registry, Traceability, and Recall Operations FastMCP servers; direct and stdio parity.
 - **Middleware:** context, structured output, retry, circuit breaker, budgets, provenance, masking, approval, version, idempotency, receipt validation, progress watchdog, telemetry, checkpoint-owner/head/request fencing.
-- **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, nine source-controlled diagrams.
+- **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, ten source-controlled diagrams.
 
 There is no A2A. LangGraph coordinates all agents; MCP is the vertical data/action interface.
 
@@ -55,7 +55,11 @@ Copy/paste values:
 
 ## Evaluation design
 
-R01–R21 are all safety-critical and cover source fallback, four-way matching, causal lineage, seven-component reconciliation, missing evidence, retries/circuit, model fallback, no-approval writes, changed/exact idempotent replay, stale version, task/ack coverage, positive closure, restart, watchdog, closure race, ambiguous hold, and direct/stdio parity. The hard gate requires every rate to be 1.0 and unsafe/duplicate/false-close/receipt-integrity counters to be zero. The pinned integrated report passes 21/21 scenarios and 320 assertions, with every required rate at 1.0 and all four unsafe counters at zero. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
+The [evaluation architecture](images/10_evaluation_architecture.svg) keeps three authored, labelled, digest-bound offline corpora separate from source evidence and from Operations. R01–R21 are all safety-critical; the pinned integrated report passes 21/21 scenarios and 320 assertions, with every required rate at 1.0 and all four unsafe counters at zero.
+
+The 96-case retrieval suite compares six configurations: `sparse_bm25`, `dense_lsa`, `naive_hybrid`, `rrf_fusion`, `rrf_plus_rerank`, and `agentic_rag`. The measured fusion Recall@5 delta is `+0.005681818181818121`; the rerank nDCG@5 delta is `+0.005266955662502459`; rewrite records zero wins, zero losses, and eight unchanged cases. These are in-sample synthetic/offline observations, not causal or production uplift.
+
+The 24-case orchestration suite compares `bounded_single_agent` with `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero; the benchmark therefore makes no unsupported multi-agent uplift claim. Optional live Deep Agents remains `not_run_missing_credentials`, model judging is `not_used`, and both are excluded from deterministic offline gates. The digest is a consistency check, not authentication or a digital signature. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
 
 ## Vibe-coding prompts and briefs
 
@@ -88,6 +92,7 @@ Tool/model attribution is documented in [AI Coding Log](AI_CODING_LOG.md). **Cod
 uv sync --locked --all-groups
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
+uv run recallops eval-scorecard --scorecard data/evals/scorecard.json
 uv run streamlit run src/recallops/ui/app.py
 ```
 
@@ -95,7 +100,7 @@ uv run streamlit run src/recallops/ui/app.py
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
 
-The visual is the presentation overview. [`demo_contract.json`](demo_contract.json), the table below, and the [reproducible demo diagram](images/07_demo_story.svg) define the exact 4:35 sequence.
+The visual is the presentation overview. [`demo_contract.json`](demo_contract.json), the table below, the [reproducible demo diagram](images/07_demo_story.svg), and the [evaluation architecture](images/10_evaluation_architecture.svg) define the exact 4:55 sequence.
 
 | Time | Presenter narration | Screen/action |
 |---|---|---|
@@ -106,8 +111,8 @@ The visual is the presentation overview. [`demo_contract.json`](demo_contract.js
 | 02:35 | “Approve writes nothing; separate confirmation records one case receipt.” | **Approve** → **Simulate approved actions** → **Simulated action recorded**, v1. |
 | 03:05 | “The new version invalidates approval and requires a fresh confirmed-only hold review.” | Second `apply_inventory_hold` packet at v1. |
 | 03:40 | “A second review/confirmation records exactly one simulated hold and reaches v2.” | **Approve** → **Simulate approved actions** → second receipt. |
-| 04:10 | “Audit and evaluation show decisions, receipts, restart, stale rejection, and same-key recovery.” | **Audit & Evaluation** → timeline/report/recovery evidence. |
-| 04:35 | “Containment does not imply closure; unresolved evidence keeps this case open.” | **Request closure** → **Open — closure blocked**. |
+| 04:00 | “Safety tests prove no approval bypass or false close: 21 of 21 scenarios pass. Retrieval evals compare six ablations—BM25, local LSA, naive hybrid, RRF, reranking, and agentic RAG—on the same 96 labelled questions. Fusion Recall-at-five delta is plus 0.00568; rerank nDCG-at-five delta is plus 0.00527; eight rewrite cases are unchanged, so no uplift is assumed. The 24-case orchestration benchmark compares a bounded single agent with four specialists. Evidence coverage, task success, duplicate work, and tool-call deltas are zero: multi-agent value is measured, not assumed. Optional live Deep Agents was not run because credentials were missing and is excluded from offline gates.” | **Audit & Evaluation** → verified Safety, Retrieval quality, Orchestration quality, optional-live status, and exact-key recovery. |
+| 04:45 | “Closure is a separate decision; unresolved evidence keeps this case open.” | **Request closure** → **Open — closure blocked**; finish by 04:55. |
 
 The full click-by-click script and optional R17 positive-close proof are in [Demo Walkthrough](DEMO_WALKTHROUGH.md).
 

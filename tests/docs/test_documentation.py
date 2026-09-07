@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 IMAGES = DOCS / "images"
@@ -405,6 +407,118 @@ class DocumentationContractTests(unittest.TestCase):
             for target in targets:
                 self.assertIn(target, content, f"{path.name} must feature {target}")
 
+    def test_evaluation_demo_contract_is_bounded_and_matches_committed_reports(self) -> None:
+        contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
+        retrieval = json.loads(
+            (ROOT / "data/evals/retrieval_report.json").read_text(encoding="utf-8")
+        )
+        orchestration = json.loads(
+            (ROOT / "data/evals/orchestration_report.json").read_text(encoding="utf-8")
+        )
+        scorecard = json.loads((ROOT / "data/evals/scorecard.json").read_text(encoding="utf-8"))
+        reveal = contract["evaluation_reveal"]
+        scorecard_suites = {suite["name"]: suite for suite in scorecard["suite_summaries"]}
+        agentic_metrics = next(
+            configuration["metrics"]
+            for configuration in retrieval["configurations"]
+            if configuration["name"] == "agentic_rag"
+        )
+
+        self.assertLessEqual(contract["duration_seconds"], 295)
+        self.assertEqual(reveal["suites"], ["safety", "retrieval", "orchestration"])
+        self.assertEqual(reveal["safety"]["case_count"], scorecard_suites["safety"]["case_count"])
+        self.assertEqual(
+            reveal["safety"]["passed_case_count"], scorecard_suites["safety"]["result_count"]
+        )
+        self.assertEqual(
+            reveal["safety"]["unsafe_counters"],
+            sum(
+                scorecard_suites["safety"]["metrics"][name]
+                for name in (
+                    "unauthorized_write_count",
+                    "duplicate_logical_write_count",
+                    "false_close_count",
+                    "receipt_integrity_violation_count",
+                )
+            ),
+        )
+        self.assertEqual(
+            reveal["retrieval"]["configurations"],
+            [configuration["name"] for configuration in retrieval["configurations"]],
+        )
+        self.assertEqual(reveal["retrieval"]["case_count"], 96)
+        self.assertEqual(
+            reveal["retrieval"]["fusion_recall_delta"],
+            retrieval["gates"]["fusion_recall_delta"],
+        )
+        self.assertEqual(
+            reveal["retrieval"]["rerank_ndcg_delta"],
+            retrieval["gates"]["rerank_ndcg_delta"],
+        )
+        self.assertEqual(
+            reveal["retrieval"]["rewrite_outcomes"],
+            {
+                "wins": agentic_metrics["rewrite_win_count"],
+                "losses": agentic_metrics["rewrite_loss_count"],
+                "unchanged": agentic_metrics["rewrite_no_change_count"],
+            },
+        )
+        self.assertEqual(
+            reveal["orchestration"]["profiles"],
+            [profile["name"] for profile in orchestration["profiles"]],
+        )
+        self.assertEqual(reveal["orchestration"]["case_count"], 24)
+        self.assertEqual(
+            reveal["orchestration"]["evidence_fact_coverage_delta"],
+            orchestration["deltas"]["evidence_fact_coverage"],
+        )
+        for contract_name, report_name in (
+            ("task_success_rate_delta", "task_success_rate"),
+            ("duplicate_tool_call_ratio_delta", "duplicate_tool_call_ratio"),
+            ("total_tool_calls_delta", "total_tool_calls"),
+        ):
+            self.assertEqual(
+                reveal["orchestration"][contract_name],
+                orchestration["deltas"][report_name],
+            )
+        self.assertEqual(
+            reveal["optional_live"],
+            scorecard["optional_live_status"],
+        )
+        self.assertTrue(reveal["no_unsupported_uplift_claims"])
+        for path in (DOCS / "DEMO_WALKTHROUGH.md", DOCS / "SUBMISSION_DOCUMENT.md"):
+            self.assertIn(reveal["spoken_copy"], path.read_text(encoding="utf-8"))
+
+    def test_evaluation_story_entrypoints_link_raster_and_reproducible_views(self) -> None:
+        for path in (DOCS / "ARCHITECTURE.md", DOCS / "DEMO_WALKTHROUGH.md"):
+            content = path.read_text(encoding="utf-8")
+            for target in (
+                "images/recallops-system-architecture.png",
+                "images/recallops-five-minute-demo.png",
+                "images/10_evaluation_architecture.svg",
+            ):
+                self.assertIn(f"]({target})", content, f"{path.name} must link {target}")
+
+    def test_polished_evaluation_visuals_are_opaque_sixteen_by_nine_pngs(self) -> None:
+        for name in ("recallops-system-architecture.png", "recallops-five-minute-demo.png"):
+            with Image.open(IMAGES / name) as visual:
+                self.assertEqual(visual.format, "PNG")
+                self.assertEqual(visual.width * 9, visual.height * 16)
+                self.assertNotIn("A", visual.getbands(), f"{name} must have no alpha channel")
+
+    def test_visual_prompt_record_captures_evaluation_plane_edits(self) -> None:
+        prompts = (IMAGES / "submission-visual-prompts.md").read_text(encoding="utf-8")
+        for required in (
+            "Built-in `image_gen` edit",
+            "Safety — R01–R21",
+            "Retrieval — 96 cases / six ablations",
+            "Orchestration — 24 cases / single agent vs specialists",
+            "Measured deltas — no assumed uplift",
+            "not_run_missing_credentials",
+            "no edge from evaluation to Operations",
+        ):
+            self.assertIn(required, prompts)
+
     def test_diagrams_preserve_scope_critical_labels(self) -> None:
         for name, labels in DIAGRAM_LABELS.items():
             source = (IMAGES / f"{name}.mmd").read_text(encoding="utf-8")
@@ -718,12 +832,12 @@ flowchart LR
         demo = (IMAGES / "07_demo_story.mmd").read_text(encoding="utf-8")
         self.assertIn("H --> J --> K --> I", demo)
         self.assertLess(
-            demo.index('H["04:10 Audit & Evaluation'), demo.index('J["Retrieval ablation')
+            demo.index('H["04:00 Audit & Evaluation'), demo.index('J["Retrieval ablation')
         )
         self.assertLess(
             demo.index('J["Retrieval ablation'), demo.index('K["Orchestration comparison')
         )
-        self.assertLess(demo.index('K["Orchestration comparison'), demo.index('I["04:35'))
+        self.assertLess(demo.index('K["Orchestration comparison'), demo.index('I["04:45'))
 
     def test_business_orientation_is_linked_from_every_submission_entrypoint(self) -> None:
         expected_targets = {
@@ -914,7 +1028,7 @@ flowchart LR
         knowledge = json.loads((ROOT / "data/knowledge/manifest.json").read_text(encoding="utf-8"))
         public = json.loads((ROOT / "data/public/H-1230-2026.json").read_text(encoding="utf-8"))
 
-        self.assertLessEqual(contract["duration_seconds"], 285)
+        self.assertLessEqual(contract["duration_seconds"], 295)
         self.assertEqual(
             contract["action_cycles"],
             [
@@ -1008,7 +1122,7 @@ flowchart LR
             "Iterations tried",
             "Learnings and observations",
             "00:00",
-            "04:35",
+            "04:45",
         ):
             self.assertIn(required, handout)
 
