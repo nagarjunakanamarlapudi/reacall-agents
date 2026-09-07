@@ -332,6 +332,7 @@ class OrchestrationCaseResult(FrozenContract):
     case_id: Identifier
     observation: TrajectoryObservation
     metrics: TrajectoryMetrics
+    grading_error: StrictBool = False
 
 
 class ProfileMetrics(FrozenContract):
@@ -413,6 +414,14 @@ class LiveProfileStatus(FrozenContract):
             raise ValueError("live usage availability mismatch")
         if self.executed_case_count != len(self.results):
             raise ValueError("live executed count mismatch")
+        if self.error_code in {"factory_error", "prohibited_tool_exposure"} and (
+            self.repetitions or self.results or self.tokens_available or self.cost_available
+        ):
+            raise ValueError("pre-execution failures cannot claim attempts")
+        if self.error_code == "runner_error" and (
+            not self.repetitions or self.executed_case_count != 24 * self.repetitions
+        ):
+            raise ValueError("runtime failure requires the complete attempted matrix")
         if self.status == "completed" and (
             self.error_code is not None
             or self.executed_case_count != 24 * self.repetitions

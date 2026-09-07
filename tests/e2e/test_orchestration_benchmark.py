@@ -496,3 +496,195 @@ async def test_normalization_and_scorer_exceptions_are_isolated(tmp_path, monkey
     result = await run_orchestration_benchmark(CASES, tmp_path / "score-failed.json")
     assert all(len(p.results) == 24 for p in result.profiles)
     assert not result.gate_passed
+
+
+@pytest.mark.parametrize(
+    "target_kind", ["all", "hold", "facility_task", "facility", "food_safety_manager"]
+)
+async def test_fully_valid_forged_containment_citations_fail(tmp_path, monkeypatch, target_kind):
+    from recallops.agents.specialists import ContainmentProposal
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.draft_containment
+
+    def forged(**kwargs):
+        payload = original(**kwargs).model_dump(mode="json")
+        for item in (*payload["proposed_actions"], *payload["communication_drafts"]):
+            kind = (
+                item.get("audience")
+                or {"apply_inventory_hold": "hold", "create_facility_tasks": "facility_task"}[
+                    item["action_type"]
+                ]
+            )
+            if target_kind not in {"all", kind}:
+                continue
+            item["evidence_ids"] = ["EV-FORGED"]
+            key = "evidence_by_target"
+            item[key] = {target: ["EV-FORGED"] for target in item["target_ids"]}
+        payload["all_cited_evidence_ids"] = sorted(
+            {
+                evidence
+                for item in (*payload["proposed_actions"], *payload["communication_drafts"])
+                for evidence in item["evidence_ids"]
+            }
+        )
+        return ContainmentProposal.model_validate(payload)
+
+    monkeypatch.setattr(benchmark, "draft_containment", forged)
+    result = await run_orchestration_benchmark(CASES, tmp_path / "forged-citations.json")
+    assert not result.gate_passed
+    assert all(not profile.results[0].metrics.task_success for profile in result.profiles)
+    assert all(len(profile.results) == 24 for profile in result.profiles)
+
+
+def _test_live_factory(invoke):
+    from recallops.evaluation.orchestration_benchmark import LiveProgram, LiveRunnerFactory
+
+    return LiveRunnerFactory(
+        provider="test", model="adversarial", factory=lambda: LiveProgram(invoke=invoke)
+    )
+
+
+@pytest.mark.parametrize(
+    "attack", ["private_attribute", "introspection", "hidden_reads", "secret_fact"]
+)
+async def test_live_capture_does_not_expose_controller_state(tmp_path, attack):
+    from recallops.evaluation.orchestration_benchmark import LiveUsage
+
+    async def attack_capture(inputs, capture):
+        session = (
+            object.__getattribute__(capture, "_LiveCapture__session")
+            if attack == "introspection"
+            else getattr(capture, "_LiveCapture__session")
+        )
+        if attack == "hidden_reads":
+            for _ in range(17):
+                session.gateway._traceability.reconcile_units("LOT-EXACT-170")
+        for role in capture.required_roles:
+            await capture.execute(role)
+            if capture.halted:
+                break
+        if attack == "secret_fact":
+            session.facts.append("SECRET-FACT-MARKER")
+        return LiveUsage()
+
+    target = tmp_path / "attack.json"
+    result = await run_orchestration_benchmark(
+        CASES, target, live_model=_test_live_factory(attack_capture)
+    )
+    assert result.live_status.status == "error"
+    assert all(not row.metrics.task_success for row in result.live_status.results)
+    assert "SECRET-FACT-MARKER" not in target.read_text()
+
+
+async def test_actual_scorer_failure_persists_all_offline_and_live_rows(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    async def invoke(inputs, capture):
+        for role in capture.required_roles:
+            await capture.execute(role)
+            if capture.halted:
+                break
+        return benchmark.LiveUsage()
+
+    def failed_scorer(*args):
+        raise RuntimeError("secret scorer payload")
+
+    monkeypatch.setattr(benchmark, "_score_trajectory", failed_scorer)
+    target = tmp_path / "grading-error.json"
+    result = await run_orchestration_benchmark(CASES, target, live_model=_test_live_factory(invoke))
+    assert not result.gate_passed
+    assert all(len(profile.results) == 24 for profile in result.profiles)
+    assert len(result.live_status.results) == 24
+    assert result.live_status.status == "error"
+    assert all(row.grading_error for profile in result.profiles for row in profile.results)
+    assert all(row.grading_error for row in result.live_status.results)
+    assert all(profile.metrics.total_tool_calls == 150 for profile in result.profiles)
+    assert sum(len(row.observation.tool_calls) for row in result.live_status.results) == 150
+    assert "secret scorer payload" not in target.read_text()
+    assert load_orchestration_report(target, CASES) == result
+
+
+async def test_live_facade_metadata_is_immutable_and_no_state_is_stored(tmp_path):
+    from recallops.evaluation.orchestration_benchmark import LiveUsage
+
+    async def inspect(inputs, capture):
+        assert set(dir(capture)) == {"execute", "halted", "prompt", "required_roles"}
+        for key in ("__dict__", "__session", "session", "gateway", "facts", "_calls", "budget"):
+            with pytest.raises(AttributeError):
+                object.__getattribute__(capture, key)
+        for key in ("required_roles", "prompt", "facts"):
+            with pytest.raises(AttributeError):
+                setattr(capture, key, "SECRET-FACT-MARKER")
+        with pytest.raises(TypeError):
+            setattr(type(capture), "prompt", type(capture).prompt)
+        for role in capture.required_roles:
+            await capture.execute(role)
+            if capture.halted:
+                break
+        for _ in range(17):
+            with pytest.raises(ValueError):
+                await capture.execute(capture.required_roles[0])
+        return LiveUsage()
+
+    target = tmp_path / "immutable.json"
+    result = await run_orchestration_benchmark(
+        CASES, target, live_model=_test_live_factory(inspect)
+    )
+    assert result.live_status.status == "completed"
+    assert all(row.metrics.task_success for row in result.live_status.results)
+    assert sum(len(row.observation.tool_calls) for row in result.live_status.results) == 150
+    assert "SECRET-FACT-MARKER" not in target.read_text()
+
+
+async def test_unknown_worker_facts_are_hashed_before_persistence(tmp_path, monkeypatch):
+    from recallops.evaluation import orchestration_benchmark as benchmark
+
+    original = benchmark.InvestigationSession.finish
+
+    def inject(self):
+        observation = original(self)
+        return observation.model_copy(
+            update={"evidence_facts": (*observation.evidence_facts, "SECRET-FACT-MARKER")}
+        )
+
+    async def invoke(inputs, capture):
+        for role in capture.required_roles:
+            await capture.execute(role)
+            if capture.halted:
+                break
+        return benchmark.LiveUsage()
+
+    monkeypatch.setattr(benchmark.InvestigationSession, "finish", inject)
+    target = tmp_path / "redacted.json"
+    result = await run_orchestration_benchmark(CASES, target, live_model=_test_live_factory(invoke))
+    assert not result.gate_passed
+    assert all(not row.metrics.task_success for row in result.live_status.results)
+    assert "SECRET-FACT-MARKER" not in target.read_text()
+    assert "unsupported_fact:" in target.read_text()
+
+
+@pytest.mark.parametrize("mutation", ["empty", "partial", "duplicate", "reordered"])
+async def test_runtime_error_live_matrix_cannot_be_removed_or_rewritten(tmp_path, mutation):
+    async def fail(inputs, capture):
+        raise RuntimeError("provider failure")
+
+    result = await run_orchestration_benchmark(
+        CASES, tmp_path / "runtime-failed.json", live_model=_test_live_factory(fail)
+    )
+    payload = result.model_dump(mode="json")
+    rows = payload["live_status"]["results"]
+    if mutation == "empty":
+        rows.clear()
+    elif mutation == "partial":
+        rows.pop()
+    elif mutation == "duplicate":
+        rows[1] = rows[0]
+    else:
+        rows.reverse()
+    payload["live_status"]["executed_case_count"] = len(rows)
+    payload["report_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "report_sha256"}
+    )
+    with pytest.raises(ValueError):
+        validate_orchestration_report(payload, load_orchestration_cases(CASES))

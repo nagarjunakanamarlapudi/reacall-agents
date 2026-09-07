@@ -207,6 +207,31 @@ def _independent_verify(matching, traceability, proposal) -> bool:
     manager_drafts = [
         draft for draft in proposal.communication_drafts if draft.audience == "food_safety_manager"
     ]
+    lot_sources = {
+        row.lot_id: set(row.event_ids)
+        | set(row.inventory_evidence_ids)
+        | set(row.reconciliation_evidence_ids)
+        for row in traceability.coverage
+    }
+    facility_sources = {
+        facility: {
+            evidence
+            for row in traceability.coverage
+            if facility in row.facility_evidence
+            for evidence in (*row.facility_evidence[facility], *row.reconciliation_evidence_ids)
+        }
+        for facility in facilities
+    }
+
+    def supported(item, sources):
+        expected = {target: sources.get(target, set()) for target in item.target_ids}
+        return (
+            bool(expected)
+            and all(expected.values())
+            and {target: set(ids) for target, ids in item.evidence_by_target.items()} == expected
+            and set(item.evidence_ids) == set().union(*expected.values())
+        )
+
     return (
         targets("apply_inventory_hold") == confirmed
         and targets("create_facility_tasks") == facilities
@@ -217,8 +242,21 @@ def _independent_verify(matching, traceability, proposal) -> bool:
         == confirmed | ambiguous
         and all(
             action.action_type in {"apply_inventory_hold", "create_facility_tasks"}
+            and supported(
+                action,
+                lot_sources if action.action_type == "apply_inventory_hold" else facility_sources,
+            )
             for action in proposal.proposed_actions
         )
+        and all(supported(draft, facility_sources) for draft in facility_drafts)
+        and all(supported(draft, lot_sources) for draft in manager_drafts)
+        and len(facility_drafts) + len(manager_drafts) == len(proposal.communication_drafts)
+        and set(proposal.all_cited_evidence_ids)
+        == {
+            e
+            for item in (*proposal.proposed_actions, *proposal.communication_drafts)
+            for e in item.evidence_ids
+        }
     )
 
 
@@ -749,6 +787,79 @@ def _failed_observation(started, calls=()):
     )
 
 
+def _redact_unsupported_facts(case, observation):
+    """Persist only audited normalized facts; unknown worker text is hashed, never echoed."""
+    return observation.model_copy(
+        update={
+            "evidence_facts": tuple(
+                fact
+                if fact in case.evidence_facts
+                else "unsupported_fact:" + canonical_sha256(fact)
+                for fact in observation.evidence_facts
+            )
+        }
+    )
+
+
+def _grading_error_result(case, profile, observation):
+    """Independent conservative failure contract, with no call to either scorer."""
+    calls = observation.tool_calls
+    required_specialists = case.required_specialists if profile != "bounded_single_agent" else ()
+    fields = [f for f in case.evidence_facts if f.startswith(("field:", "citation:", "source:"))]
+    observation = observation.model_copy(
+        update={
+            "tasks": (),
+            "specialists": (),
+            "evidence_facts": (),
+            "completion_criteria": (),
+            "safe_stop": "error",
+            "routes": tuple(
+                dict.fromkeys(
+                    "official" if call.family == "registry" else "synthetic" for call in calls
+                )
+            ),
+        }
+    )
+    metrics = TrajectoryMetrics(
+        task_success=False,
+        task_accuracy=0.0,
+        route_accuracy=0.0,
+        required_field_coverage=0.0,
+        evidence_fact_coverage=0.0,
+        completion_criteria_coverage=0.0,
+        delegation_accuracy=0.0,
+        missing_specialist_count=len(required_specialists),
+        duplicate_tool_calls=len(calls) - len({(c.name, c.input_sha256) for c in calls}),
+        duplicate_work_count=0,
+        tool_order_correct=False,
+        prohibited_tool_call_count=sum(
+            c.name not in READ_TOOLS
+            or c.name in case.prohibited_tool_names
+            or c.family != _family(c.name)
+            for c in calls
+        ),
+        safe_stop_correct=False,
+        budget_compliant=len(calls) <= case.max_tool_calls,
+        tool_call_count=len(calls),
+        required_task_count=len(case.expected_tasks),
+        required_field_count=len(fields),
+        required_fact_count=len(case.evidence_facts),
+        required_completion_count=len(case.completion_criteria),
+        required_specialist_count=len(required_specialists),
+    )
+    return OrchestrationCaseResult(
+        case_id=case.id, observation=observation, metrics=metrics, grading_error=True
+    )
+
+
+def _validate_result(case, row, profile):
+    if row.grading_error:
+        if row != _grading_error_result(case, profile, row.observation):
+            raise ValueError("invalid independent grading-error row")
+    elif row.metrics != _score_trajectory(case, row.observation, profile):
+        raise ValueError("trajectory metrics mismatch")
+
+
 async def _run_profile(corpus, adapter):
     results = []
     for case in corpus.cases:
@@ -763,15 +874,20 @@ async def _run_profile(corpus, adapter):
             observation = TrajectoryObservation.model_validate(observation.model_dump(mode="json"))
             if observation.tool_calls != tuple(calls):
                 raise ValueError("adapter trace differs from captured reads")
-            metrics = score_trajectory(case, observation, adapter.name)
+            observation = _redact_unsupported_facts(case, observation)
         except Exception:
             observation = _failed_observation(started, calls)
-            metrics = _score_trajectory(case, observation, adapter.name)
         finally:
             _CASE_READS.reset(token)
-        results.append(
-            OrchestrationCaseResult(case_id=case.id, observation=observation, metrics=metrics)
-        )
+        try:
+            row = OrchestrationCaseResult(
+                case_id=case.id,
+                observation=observation,
+                metrics=score_trajectory(case, observation, adapter.name),
+            )
+        except Exception:
+            row = _grading_error_result(case, adapter.name, observation)
+        results.append(row)
     exposed = _exposed_tools()
     return ProfileResult(
         name=adapter.name,
@@ -824,38 +940,76 @@ class LiveRunnerFactory:
             raise ValueError("live model and prompt must be explicit")
 
 
-class LiveCapture:
-    """No messages or arbitrary facts can be submitted to this observable boundary."""
+@dataclass(slots=True)
+class _LiveController:
+    session: InvestigationSession
+    facade: LiveCapture
+    roles: tuple[str, ...]
+    prompt: str
 
-    __slots__ = ("__session", "required_roles", "prompt")
 
-    def __init__(self, inputs, budget, prompt):
-        self.__session = InvestigationSession(inputs, budget, sealed=True)
-        count = {"intake": 1, "matching": 2, "lineage": 3, "reconciliation": 3, "containment": 4}[
-            inputs.intent
-        ]
-        self.required_roles = tuple(row[0] for row in _DISPATCH_CONTRACT[:count])
-        self.prompt = prompt
+_LIVE_CONTROLLER: ContextVar[_LiveController | None] = ContextVar("live_controller", default=None)
+
+
+def _live_controller(facade):
+    controller = _LIVE_CONTROLLER.get()
+    if controller is None or controller.facade is not facade:
+        raise ValueError("capture is outside its active invocation")
+    return controller
+
+
+class _SealedCaptureMeta(type):
+    def __setattr__(cls, name, value):
+        raise TypeError("capture class is immutable")
+
+    def __delattr__(cls, name):
+        raise TypeError("capture class is immutable")
+
+
+class LiveCapture(metaclass=_SealedCaptureMeta):
+    """Stateless sealed facade; trusted execution state is held outside the object.
+
+    This is a capability boundary, not a sandbox for arbitrary Python module access.
+    Ordinary attribute access, including object.__getattribute__, reveals no controller.
+    """
+
+    __slots__ = ()
+
+    def __getattribute__(self, name):
+        if name not in {"execute", "required_roles", "prompt", "halted", "__class__"}:
+            raise AttributeError("capture exposes only its role API")
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("capture is immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError("capture is immutable")
+
+    def __dir__(self):
+        return ["execute", "halted", "prompt", "required_roles"]
+
+    @property
+    def required_roles(self):
+        return _live_controller(self).roles
+
+    @property
+    def prompt(self):
+        return _live_controller(self).prompt
 
     @property
     def halted(self):
-        return self.__session.halted
+        return _live_controller(self).session.halted
 
     async def execute(self, role: str) -> tuple[str, ...]:
-        session = self.__session
+        controller = _live_controller(self)
+        session = controller.session
         index = len(session.specialists)
-        if (
-            session.halted
-            or index >= len(self.required_roles)
-            or role != self.required_roles[index]
-        ):
+        if session.halted or index >= len(controller.roles) or role != controller.roles[index]:
             raise ValueError("live delegation is duplicated, out of order, or beyond scope")
         session.specialists.append(role)
         await _dispatch_specialist(session, role)
         return tuple(session.criteria)
-
-    def observation(self):
-        return self.__session.finish()
 
 
 async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
@@ -894,7 +1048,6 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
         provider=model.provider,
         model_sha256=canonical_sha256(model.model),
         prompt_sha256=canonical_sha256(model.prompt),
-        repetitions=model.repetitions,
     )
     try:
         program = model.factory()
@@ -917,20 +1070,36 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
             **metadata,
         )
 
+    metadata["repetitions"] = model.repetitions
     results, usage_rows = [], []
     had_error = False
     for _ in range(model.repetitions):
         for case in corpus.cases:
             case_started, calls = perf_counter(), []
             token = _CASE_READS.set((calls, case.max_tool_calls))
+            controller_token = None
             try:
                 inputs = InvestigationInput.model_validate(
                     case.model_dump(include=set(InvestigationInput.model_fields))
                 )
-                capture = LiveCapture(inputs, case.max_tool_calls, model.prompt)
+                capture = LiveCapture()
+                count = {
+                    "intake": 1,
+                    "matching": 2,
+                    "lineage": 3,
+                    "reconciliation": 3,
+                    "containment": 4,
+                }[inputs.intent]
+                controller = _LiveController(
+                    InvestigationSession(inputs, case.max_tool_calls, sealed=True),
+                    capture,
+                    tuple(row[0] for row in _DISPATCH_CONTRACT[:count]),
+                    model.prompt,
+                )
+                controller_token = _LIVE_CONTROLLER.set(controller)
                 usage = await program.invoke(inputs, capture)
                 usage = LiveUsage.model_validate(usage.model_dump(mode="json"))
-                observation = capture.observation()
+                observation = controller.session.finish()
                 observation = TrajectoryObservation.model_validate(
                     {
                         **observation.model_dump(mode="json"),
@@ -940,20 +1109,26 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
                 )
                 if observation.tool_calls != tuple(calls):
                     raise ValueError("live trace differs from observed sealed reads")
+                observation = _redact_unsupported_facts(case, observation)
                 usage_rows.append(usage)
             except Exception:
                 had_error = True
                 observation = _failed_observation(case_started, calls)
                 usage_rows.append(LiveUsage())
             finally:
+                if controller_token is not None:
+                    _LIVE_CONTROLLER.reset(controller_token)
                 _CASE_READS.reset(token)
-            results.append(
-                OrchestrationCaseResult(
+            try:
+                row = OrchestrationCaseResult(
                     case_id=case.id,
                     observation=observation,
                     metrics=_score_trajectory(case, observation, "deep_agents_live"),
                 )
-            )
+            except Exception:
+                had_error = True
+                row = _grading_error_result(case, "deep_agents_live", observation)
+            results.append(row)
     tokens = (
         sum(row.tokens for row in usage_rows)
         if all(row.tokens is not None for row in usage_rows)
@@ -1005,21 +1180,19 @@ def validate_orchestration_report(
         if tuple(row.case_id for row in profile.results) != tuple(case.id for case in corpus.cases):
             raise ValueError("profile case coverage mismatch")
         for case, row in zip(corpus.cases, profile.results, strict=True):
-            if row.metrics != _score_trajectory(case, row.observation, profile.name):
-                raise ValueError("trajectory metrics mismatch")
+            _validate_result(case, row, profile.name)
         if profile.metrics != _aggregate(profile.results, profile.exposed_tool_names):
             raise ValueError("aggregate metrics mismatch")
     deltas, gates, passed = _comparison(report.profiles)
     if (report.deltas, report.metrics, report.gate_passed) != (deltas, gates, passed):
         raise ValueError("comparison gates or deltas mismatch")
     live = report.live_status
-    if live.results:
+    if live.repetitions:
         expected_cases = corpus.cases * live.repetitions
         if tuple(row.case_id for row in live.results) != tuple(case.id for case in expected_cases):
             raise ValueError("live repetition/case matrix mismatch")
         for case, row in zip(expected_cases, live.results, strict=True):
-            if row.metrics != _score_trajectory(case, row.observation, "deep_agents_live"):
-                raise ValueError("live trajectory metric mismatch")
+            _validate_result(case, row, "deep_agents_live")
         observations = [row.observation for row in live.results]
         tokens = (
             sum(row.tokens for row in observations)
