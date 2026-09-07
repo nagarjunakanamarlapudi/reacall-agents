@@ -489,3 +489,67 @@ dictionary. One broader UI command likewise retained the existing
 that a final `close_case` receipt is absent, while the current hardened service
 records that safe close. Neither unrelated result was hidden or changed in this
 planner-focused follow-up.
+
+## 2026-09-07 Provenance-truth and CI follow-up
+
+This follow-up was executed on `main` from base `50dbcca`. The frozen public JSON was not
+rewritten. Its SHA-256 remains
+`086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9` and it contains exactly
+five results. Metadata schema 2.0 now distinguishes:
+
+- five-row capture URL
+  `https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc` and the preserved
+  `2026-08-30T00:00:00+00:00` retrieval time; from
+- the 2026-09-07 exact verification URL
+  `https://api.fda.gov/food/enforcement.json?search=recall_number.exact%3A%22H-1230-2026%22&limit=5`,
+  whose one returned record matched frozen `results[0]` field-for-field.
+
+The canonical flagship-record SHA-256 is
+`16a50f3966d11ee80519c4935890db9a250b36ffccf081f812b8f6d4f5d384de`; the metadata file SHA-256
+is `77b3d1ed5beddd20dcafeecdf2872b4be095c2f64f12582ef285f75e4c9aa3a7`. No HTTP-byte-identity
+claim is made. The strict loader verifies the five-row shape, frozen payload digest, flagship
+identity, canonical flagship digest, capture URL, verification URL, and result count.
+
+All dependent artifacts were regenerated from the changed metadata boundary. Observed raw file
+SHA-256 values:
+
+```text
+677361c20dddba9383ae48ec94024130bc4aefda146178c98d1d99905bb765b5  data/knowledge/manifest.json
+483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3  data/evals/scenarios.json
+7aa8d732d5dde7c302af497318542367aec354a43ac68e038a2a2189c88125f4  data/evals/report.json
+85bb1c5f00957f46872fb25e0b09babe51424246f94a522730a31275ae5793b7  data/evals/retrieval_cases.json
+a26c365bf21b24d353e21520edbd59dacad67c990102183e598d6959df1e847b  data/evals/retrieval_report.json
+90e2bc0d731a8eb1b425e2ccb9c7e59d5e13b0883c3877d45ad79443ea4b72f9  data/evals/orchestration_cases.json
+370d53dc9a50c1fa2f05a551c02b2f5153ca9bde19fcccfc118a469f68a3b849  data/evals/orchestration_report.json
+2aa95c0cf7bfa5f29341195d60056819eb3d46b7ff8a63e1a1a403dbc64c98c8  data/evals/scorecard.json
+```
+
+The knowledge corpus retains 1,175 documents and now has canonical corpus digest
+`939063e983471743d60d6c644ba7b8435d10834aca18f811b95053ce7071a7ef`. Fresh `make eval`
+finished 21/21 safety cases, 576 retrieval results, 48 orchestration results, and a passing combined
+offline gate. Retrieval observations remained Recall@5 `0.9753787878787878`, nDCG@5
+`0.9521676712287099`, fusion delta `+0.005681818181818121`, and rerank delta
+`+0.005266955662502459`. The scorecard self-digest is
+`881b5379998aa498565eb4c899c1c89b7b3ba5005f01ddae13eb816dc74ee8ab`.
+
+The implemented provenance diagram removes the previously connected USDA label; its stable fresh
+SVG SHA-256 is `b3ee5d05787f43d56a91652538dc4608712a7164f8924da6930cbe5e00aff1cb`.
+The real `.github/workflows/ci.yml` uses locked `uv`/Node/npm installation and invokes credential-free
+`make ci`. Production audit is authoritative; the separate full npm report remains visible for the
+pinned Mermaid/Puppeteer development renderer.
+
+Fresh verification observations before this record was appended:
+
+```text
+focused provenance, retrieval, docs, and Make contracts   145 passed in 58.32s
+complete test tree                                       1340 passed in 850.19s
+make data-validate                                       exit 0; 48 products, 144 lots, 577 events
+make eval-summary                                        exit 0; all three offline suites passed
+make diagrams                                            exit 0; 10 stable/parity-checked diagrams
+make lint                                                exit 0; 110 formatted, Ruff/lock/pip clean
+make security                                            exit 0; Python clean, Bandit medium/high clean,
+                                                        production npm 0 vulnerabilities
+npm audit                                                exit 1; 5 high findings only in the
+                                                        Mermaid/Puppeteer/extract-zip dev chain
+git diff --check                                         exit 0
+```

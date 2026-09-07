@@ -1,0 +1,35 @@
+name: Offline verification
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline-verification:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install locked uv toolchain
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.14"
+          enable-cache: true
+      - name: Install locked Node toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - name: Install locked dependencies
+        run: |
+          uv sync --locked --all-groups
+          npm ci
+      - name: Run credential-free RecallOps gates
+        run: make ci
+      - name: Report development-only Mermaid and Puppeteer advisories
+        if: always()
+        run: |
+          npm audit --omit=dev
+          npm audit || echo "::warning::Development-tool advisories are reported separately; production dependencies were audited above."

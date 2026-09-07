@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -57,7 +57,40 @@ class RecallRecord(BaseModel):
     payload: dict[str, Any]
     sha256: str | None = None
     source_url: str | None = None
+    verification_url: str | None = None
+    verified_on: date | None = None
     cached: bool = True
+
+
+class OpenFDASnapshotMetadata(BaseModel):
+    """Strict provenance receipt for the five-row frozen openFDA capture."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["2.0"]
+    recall_number: Literal["H-1230-2026"]
+    capture_url: Literal[
+        "https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc"
+    ]
+    retrieved_at: datetime
+    capture_method: Literal[
+        "Frozen five-row openFDA response captured from the report-date-sorted endpoint."
+    ]
+    source_label: Literal["OFFICIAL OPENFDA SNAPSHOT — FROZEN FOR REPRODUCIBILITY"]
+    sha256: Literal["086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9"]
+    flagship_verification_url: Literal[
+        "https://api.fda.gov/food/enforcement.json?"
+        "search=recall_number.exact%3A%22H-1230-2026%22&limit=5"
+    ]
+    flagship_verified_on: date
+    flagship_verification_method: Literal[
+        "Independent live exact-recall-number lookup returned one record matching snapshot "
+        "results[0] field-for-field."
+    ]
+    flagship_result_count: Literal[1]
+    flagship_record_sha256: Literal[
+        "16a50f3966d11ee80519c4935890db9a250b36ffccf081f812b8f6d4f5d384de"
+    ]
 
 
 class RecallPredicate(BaseModel):

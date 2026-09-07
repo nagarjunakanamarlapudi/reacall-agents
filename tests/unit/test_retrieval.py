@@ -73,6 +73,19 @@ def test_corpus_preserves_resolvable_citations_hashes_and_source_boundaries(
             assert document.audience_label == "SYNTHETIC — ACADEMIC DEMO"
 
 
+def test_openfda_corpus_documents_cite_the_five_record_capture_endpoint(
+    corpus: KnowledgeCorpus,
+) -> None:
+    """Break caught: neighboring snapshot rows are attributed to an exact flagship query."""
+
+    openfda = [item for item in corpus.documents if item.record_type == "openfda_recall"]
+
+    assert len(openfda) == 5
+    assert {item.source_url for item in openfda} == {
+        "https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc"
+    }
+
+
 def test_knowledge_artifact_builder_is_byte_deterministic_and_matches_committed_manifest(
     corpus: KnowledgeCorpus,
 ) -> None:
@@ -187,7 +200,8 @@ def test_independent_trust_anchors_reject_self_consistent_raw_source_tampering(
         path = data_dir / "synthetic" / "northstar_demo" / "manifest.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         path.write_text(json.dumps(payload, indent=4) + "\n", encoding="utf-8")
-    _write_self_consistent_attacker_manifest(data_dir)
+    if target not in {"openfda", "openfda_metadata"}:
+        _write_self_consistent_attacker_manifest(data_dir)
 
     with pytest.raises(ValueError, match="independent trust anchor"):
         KnowledgeCorpus.load(data_dir=data_dir)

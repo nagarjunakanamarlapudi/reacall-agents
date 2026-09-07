@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from xml.etree import ElementTree
 
+import yaml
 from PIL import Image, ImageStat
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,7 @@ REQUIRED_DOCUMENTS = (
     "docs/CURRICULUM_COVERAGE.md",
     "docs/demo_contract.json",
     "docs/images/README.md",
+    ".github/workflows/ci.yml",
     "scripts/render_diagrams.sh",
     "scripts/mermaid-config.json",
 )
@@ -360,6 +362,45 @@ class DocumentationContractTests(unittest.TestCase):
             f"docs/images/{name}" for name in POLISHED_VISUALS if not (IMAGES / name).is_file()
         ]
         self.assertEqual(missing, [], f"missing promised documentation artifacts: {missing}")
+
+    def test_ci_workflow_runs_the_locked_credential_free_verification_contract(self) -> None:
+        workflow_path = ROOT / ".github/workflows/ci.yml"
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        jobs = workflow["jobs"]
+        self.assertEqual(set(jobs), {"offline-verification"})
+        job = jobs["offline-verification"]
+        self.assertEqual(job["permissions"], {"contents": "read"})
+        steps = job["steps"]
+        uses = {step["uses"] for step in steps if "uses" in step}
+        self.assertTrue(any(value.startswith("actions/checkout@") for value in uses))
+        self.assertTrue(any(value.startswith("astral-sh/setup-uv@") for value in uses))
+        self.assertTrue(any(value.startswith("actions/setup-node@") for value in uses))
+        commands = "\n".join(str(step.get("run", "")) for step in steps)
+        for required in (
+            "uv sync --locked --all-groups",
+            "npm ci",
+            "make ci",
+            "npm audit --omit=dev",
+        ):
+            self.assertIn(required, commands)
+        self.assertNotRegex(commands, r"(?i)OPENAI_API_KEY|LIVE_MODEL_ADAPTER=.*[^=\s]")
+
+    def test_data_provenance_diagram_has_no_implemented_usda_path(self) -> None:
+        diagram = (IMAGES / "01_data_provenance.mmd").read_text(encoding="utf-8")
+        declared = mermaid_declared_ids(diagram)
+        if "USDA" in declared:
+            self.assertIn("future / excluded", diagram)
+            self.assertEqual(
+                [edge for edge in mermaid_directed_edges(diagram) if "USDA" in edge],
+                [],
+            )
+        else:
+            self.assertNotIn("USDA", diagram)
+
+    def test_environment_example_requires_explicit_live_adapter_not_just_api_key(self) -> None:
+        environment = (ROOT / ".env.example").read_text(encoding="utf-8")
+        self.assertIn("OPENAI_API_KEY alone does not enable live planning", environment)
+        self.assertIn("LIVE_MODEL_ADAPTER=module:attribute", environment)
 
     def test_supporting_diagram_inventory_is_exactly_ten_source_svg_pairs(self) -> None:
         expected = set(DIAGRAM_LABELS)

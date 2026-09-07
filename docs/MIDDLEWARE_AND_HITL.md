@@ -9,7 +9,7 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 | Boundary | Implemented policy | Observable safe behavior |
 |---|---|---|
 | Case/agent | Case context and bounded task plan | Case ID, role, provenance, task limits, and completion criteria remain explicit |
-| Model/reasoning | Fixed planner, structured Pydantic outputs, optional Deep Agents, model-failure fallback | Deterministic path remains available; provider failure cannot bypass review |
+| Model/reasoning | Fixed planner, structured Pydantic outputs, optional Deep Agents, deterministic model-failure injection | R10 exercises a scripted failure/budget branch and deterministic fallback; it does not claim an exercised provider retry |
 | Retrieval | Source routing, sealed capabilities, query/read budgets, progress watchdog, evidence critic | No Operations tool, no infinite query loop, unsupported concepts remain gaps |
 | Read tool | `CallBudget`, `CircuitBreaker`, `with_retry`, typed/provenance validation | Reads retry only within bounds; malformed/unlabelled evidence fails closed |
 | Context/display | `mask_sensitive`, citation-preserving summaries | Customer-like values do not leak to model/trace/UI while evidence IDs remain |

@@ -1,12 +1,15 @@
 import hashlib
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from recallops.data.generator import ORIGIN, generate_demo_dataset
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot, validate_manifest
+from recallops.models import OpenFDASnapshotMetadata
 
 EXPECTED_IDS = {
     "products": {"P-EXACT", "P-PROBABLE", "P-NEAR", "P-CONTROL"},
@@ -121,6 +124,67 @@ def test_loads_exact_pinned_openfda_recall_with_checksum() -> None:
     assert recall.payload["classification"] == "Class I"
     assert recall.payload["reason_for_recall"] == "Possible Salmonella Enteritidis"
     assert recall.sha256
+
+
+def test_openfda_metadata_separates_five_row_capture_from_exact_flagship_verification() -> None:
+    """Break caught: one misleading URL is presented as both capture and exact verification."""
+
+    metadata_path = Path("data/public/H-1230-2026.metadata.json")
+    metadata = OpenFDASnapshotMetadata.model_validate_json(metadata_path.read_text())
+    snapshot = json.loads(Path("data/public/H-1230-2026.json").read_text())
+    flagship_bytes = (_canonical(snapshot["results"][0]) + "\n").encode("utf-8")
+    recall = load_recall_snapshot()
+
+    assert metadata.capture_url == (
+        "https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc"
+    )
+    assert metadata.flagship_verification_url == (
+        "https://api.fda.gov/food/enforcement.json?"
+        "search=recall_number.exact%3A%22H-1230-2026%22&limit=5"
+    )
+    assert metadata.capture_url != metadata.flagship_verification_url
+    assert metadata.flagship_result_count == 1
+    assert metadata.flagship_record_sha256 == hashlib.sha256(flagship_bytes).hexdigest()
+    assert recall.source_url == metadata.capture_url
+    assert recall.verification_url == metadata.flagship_verification_url
+    assert recall.verified_on == metadata.flagship_verified_on
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("capture_url", "https://attacker.invalid/five"),
+        ("flagship_verification_url", "https://attacker.invalid/exact"),
+        ("flagship_result_count", 5),
+        ("flagship_record_sha256", "0" * 64),
+    ],
+)
+def test_openfda_metadata_schema_rejects_false_provenance_claims(field: str, value: object) -> None:
+    """Break caught: schema-valid metadata can contradict the independently observed capture."""
+
+    payload = json.loads(Path("data/public/H-1230-2026.metadata.json").read_text())
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        OpenFDASnapshotMetadata.model_validate_json(json.dumps(payload))
+
+
+def test_loader_rejects_schema_valid_metadata_outside_independent_trust_anchor(
+    tmp_path: Path,
+) -> None:
+    """Break caught: an attacker changes a non-literal metadata field and bypasses the loader."""
+
+    public = tmp_path / "public"
+    public.mkdir()
+    for name in ("H-1230-2026.json", "H-1230-2026.metadata.json"):
+        shutil.copyfile(Path("data/public") / name, public / name)
+    metadata_path = public / "H-1230-2026.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["flagship_verified_on"] = "2026-09-08"
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+    with pytest.raises(ValueError, match="metadata checksum"):
+        load_recall_snapshot(data_dir=tmp_path)
 
 
 def test_demo_twin_has_expected_referentially_valid_shape() -> None:

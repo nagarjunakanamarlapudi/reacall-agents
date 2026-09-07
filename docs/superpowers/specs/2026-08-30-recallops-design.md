@@ -1,8 +1,14 @@
 # RecallOps Command Center — Design Specification
 
 **Date:** 30 August 2026
-**Status:** Approved for implementation
+**Status:** Historical baseline — superseded by the implemented repository and the 2026-09-07 evaluation-expansion design
 **Submission:** GenAI Academy, Mastering Agentic AI — Week 3
+
+> This file preserves the original 2026-08-30 design intent; it is not the current product
+> contract. Its four-product/six-lot/two-DC/eight-store counts, six-notebook inventory, original
+> middleware sketch, and statement that `OPENAI_API_KEY` alone enables live planning are stale.
+> Use the root README, `docs/ARCHITECTURE.md`, `docs/DATA_SOURCES.md`, and
+> `docs/OPERATIONS.md` for implemented behavior and current counts.
 
 ## 1. Executive intent
 

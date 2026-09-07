@@ -22,7 +22,7 @@ SUITE_REPORTS := \
 	eval-orchestration eval eval-summary eval-model \
 	demo-data notebooks diagrams \
 	test test-unit test-integration test-e2e test-product \
-	lint format security security-full verify
+	lint format security security-full ci verify
 
 help:
 	@printf '%s\n' \
@@ -59,6 +59,7 @@ help:
 		'  make format             Apply Ruff formatting' \
 		'  make security           Run the production dependency/security gate' \
 		'  make security-full      Report all findings, including dev dependencies' \
+		'  make ci                 Run credential-free hosted-CI verification gates' \
 		'  make verify             Run the complete submission gate' \
 		'' \
 		'Optional variables:' \
@@ -188,5 +189,7 @@ security-full:
 	npm audit --omit=dev || status=1; \
 	npm audit || status=1; \
 	exit $$status
+
+ci: data-validate lint test diagrams mcp-smoke eval-fast security
 
 verify: data-validate lint test notebooks diagrams mcp-smoke eval security

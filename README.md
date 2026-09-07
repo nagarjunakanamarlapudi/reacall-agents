@@ -24,7 +24,7 @@ The presentation visuals above are backed by the reproducible [data-provenance M
 
 ## Honest data boundary
 
-The public source is a frozen, checksummed openFDA response containing five food-enforcement records, including `H-1230-2026`. An allowlisted live lookup can call only `api.fda.gov` and falls back to the labelled snapshot. The fictional Northstar Grocers digital twin contains 48 products, 144 lots, 18 facilities, 577 EPCIS-like events, 216 inventory positions, 144 supplier shipments, and 18 facility acknowledgement seeds.
+The public source is a frozen, checksummed five-row openFDA response captured from the report-date-sorted endpoint, including `H-1230-2026`. A separate exact-recall-number query was verified on 2026-09-07: it returned one flagship record matching the first frozen row field-for-field. The capture URL and verification URL remain distinct in the strict metadata receipt. An allowlisted live lookup can call only `api.fda.gov` and falls back to the labelled snapshot. The fictional Northstar Grocers digital twin contains 48 products, 144 lots, 18 facilities, 577 EPCIS-like events, 216 inventory positions, 144 supplier shipments, and 18 facility acknowledgement seeds.
 
 Every operational record is labelled **SYNTHETIC — ACADEMIC DEMO**. The public notice does not prove that Northstar or any synthetic facility was involved. RecallOps has no You.com dependency and performs no general web search; policy and operational retrieval use the committed, checksummed corpus.
 
@@ -48,7 +48,8 @@ stable metric smoke tests, or `make eval-summary` to validate the existing score
 regeneration. The legacy `uv run recallops eval --report data/evals/report.json` command remains the
 safety-only summary; `uv run recallops eval-scorecard` is the distinct combined summary. Optional
 live orchestration requires the explicit `make eval-model LIVE_MODEL_ADAPTER=module:attribute`
-opt-in and never contributes to the offline pass/fail verdict.
+opt-in and never contributes to the offline pass/fail verdict. `eval-model` imports a trusted local
+Python adapter; it is not a sandbox for untrusted modules, and an API key by itself enables nothing.
 
 To demonstrate actual stdio MCP subprocesses:
 
@@ -63,6 +64,10 @@ RECALLOPS_SOURCE_MODE=live uv run streamlit run src/recallops/ui/app.py
 ```
 
 The durable graph itself uses the pinned snapshot for repeatable reasoning and evaluation. No API key is required. See [Operations](docs/OPERATIONS.md) for validation, evaluator, MCP, notebook, and security commands.
+
+GitHub Actions runs the same credential-free core contract through `make ci`: locked installation,
+data and artifact validation, tests, diagrams, MCP smoke, deterministic evaluation, and production
+dependency/security gates. Development-only Mermaid/Puppeteer advisories are reported separately.
 
 ## Flagship proof
 

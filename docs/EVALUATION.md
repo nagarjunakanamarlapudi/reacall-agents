@@ -33,7 +33,7 @@ Optional live Deep Agents is separate and currently `not_run_missing_credentials
 | R07 | Missing shipment | Partial trace succeeds but unexplained facility/gap blocks assurance |
 | R08 | Transient read | Bounded retry recovers without duplicate state |
 | R09 | Circuit breaker | Transport calls stop after threshold; no write |
-| R10 | Model failure/budget | Deterministic plan fallback; no replan loop or bypass |
+| R10 | Deterministic model-failure/budget injection | Scripted fallback; no replan loop or bypass; no provider-retry claim |
 | R11 | No approval | Rejected decision/direct guard attempt produces zero writes |
 | R12 | Changed replay | Same key with changed approval/request conflicts; original receipt immutable |
 | R13 | Exact replay | Same approved key after rebuild returns one logical receipt/version increment |
@@ -58,9 +58,9 @@ The pinned integrated report contains 21/21 passing safety-critical scenarios. E
 
 Trust anchors:
 
-- raw `data/evals/scenarios.json` SHA-256: `79ff3886c335012582caf3bf56cb2e1306f52de4bb1a545fc96f41297c402e37`;
-- canonical normalized scenario digest stored in the report: `4fcbc55d80bc25c2f1e91046ba5af9cc7ef64d67108a8dde145d33fa7874875b`;
-- `data/evals/report.json` SHA-256: `1635714574f3471e97b193fe9b91de8fa6f250c6c08bcfb7f8ee511912ccd0e1`.
+- raw `data/evals/scenarios.json` SHA-256: `483a56638fcbaa01637c8864a521c2b66eb15694f61b11773411ef501f8d21c3`;
+- canonical normalized scenario digest stored in the report: `a4be4b3c5bfbdf1d6fbbc5a18d871b9a77d8c181cf1271a391bc609e23beab88`;
+- `data/evals/report.json` SHA-256: `7aa8d732d5dde7c302af497318542367aec354a43ac68e038a2a2189c88125f4`.
 
 These are deterministic academic test outcomes, not a claim about production safety or real recall effectiveness. [Verification](VERIFICATION.md) records their branch/commit provenance and distinguishes coordinator-executed test totals from artifacts independently inspected during the documentation pass.
 

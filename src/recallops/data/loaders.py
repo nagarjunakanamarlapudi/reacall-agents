@@ -19,7 +19,7 @@ from recallops.data.generator import (
     SEED,
     SOURCE_LABEL,
 )
-from recallops.models import RecallRecord
+from recallops.models import OpenFDASnapshotMetadata, RecallRecord
 
 ID_FIELDS = {
     "products": "product_id",
@@ -76,6 +76,7 @@ LOT_IDENTITY_FIELDS = (
     "unaccounted",
 )
 PINNED_DATASET_SHA256 = "6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9"
+PINNED_OPENFDA_METADATA_SHA256 = "77b3d1ed5beddd20dcafeecdf2872b4be095c2f64f12582ef285f75e4c9aa3a7"
 
 
 def _read_json(path: Path) -> Any:
@@ -98,21 +99,38 @@ def load_recall_snapshot(
 ) -> RecallRecord:
     public_dir = (Path(data_dir) if data_dir is not None else get_settings().data_dir) / "public"
     payload_path = public_dir / f"{recall_number}.json"
-    metadata = _read_json(public_dir / f"{recall_number}.metadata.json")
+    metadata_bytes = (public_dir / f"{recall_number}.metadata.json").read_bytes()
+    if hashlib.sha256(metadata_bytes).hexdigest() != PINNED_OPENFDA_METADATA_SHA256:
+        raise ValueError("pinned openFDA metadata checksum mismatch")
+    metadata = OpenFDASnapshotMetadata.model_validate_json(metadata_bytes)
     raw_payload = payload_path.read_bytes()
     checksum = hashlib.sha256(raw_payload).hexdigest()
-    if checksum != metadata["sha256"]:
+    if checksum != metadata.sha256:
         raise ValueError("pinned openFDA snapshot checksum mismatch")
     response = json.loads(raw_payload)
-    payload = response["results"][0] if "results" in response else response
+    rows = response.get("results") if isinstance(response, dict) else None
+    if not isinstance(rows, list) or len(rows) != 5 or not isinstance(rows[0], dict):
+        raise ValueError("pinned openFDA snapshot must contain exactly five result records")
+    payload = rows[0]
+    if payload.get("recall_number") != metadata.recall_number:
+        raise ValueError("pinned openFDA flagship recall mismatch")
+    flagship_checksum = hashlib.sha256(
+        (
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    if flagship_checksum != metadata.flagship_record_sha256:
+        raise ValueError("pinned openFDA flagship record checksum mismatch")
     return RecallRecord(
         recall_number=payload["recall_number"],
         source="openFDA Food Enforcement API",
         provenance="OFFICIAL_OPENFDA_SNAPSHOT",
-        retrieved_at=datetime.fromisoformat(metadata["retrieved_at"]),
+        retrieved_at=metadata.retrieved_at,
         payload=payload,
         sha256=checksum,
-        source_url=metadata["source_url"],
+        source_url=metadata.capture_url,
+        verification_url=metadata.flagship_verification_url,
+        verified_on=metadata.flagship_verified_on,
     )
 
 

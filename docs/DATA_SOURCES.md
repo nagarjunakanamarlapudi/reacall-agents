@@ -21,12 +21,14 @@ RecallOps has no You.com integration and performs no general web search. Retriev
 
 ## Frozen official snapshot
 
-The openFDA response contains five records: the flagship `H-1230-2026` egg recall plus four neighboring food-enforcement records that provide negative retrieval controls. The snapshot metadata records the exact source URL, frozen retrieval time, retrieval method, and SHA-256.
+The frozen openFDA response contains five records: the flagship `H-1230-2026` egg recall plus four neighboring food-enforcement records that provide negative retrieval controls. Its capture endpoint was `https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc`; that URL is the citation source for all five frozen rows. This is a field-for-field snapshot of the observed response, not a claim that an unrelated exact-query response supplied all five rows and not a claim of HTTP-byte identity.
+
+On 2026-09-07, a separate live verification used `https://api.fda.gov/food/enforcement.json?search=recall_number.exact%3A%22H-1230-2026%22&limit=5`. It returned one result, and that JSON record matched frozen `results[0]` field-for-field. The metadata records both URLs and methods separately, preserves the original `retrieved_at`, and binds the canonical flagship record digest `16a50f3966d11ee80519c4935890db9a250b36ffccf081f812b8f6d4f5d384de`.
 
 | Artifact | SHA-256 |
 |---|---|
 | `data/public/H-1230-2026.json` | `086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9` |
-| `data/public/H-1230-2026.metadata.json` | `3199cdb467c81bfd1c83228a4ee61d8ca6f93103209ed2c415c8fb0a2e657034` |
+| `data/public/H-1230-2026.metadata.json` | `77b3d1ed5beddd20dcafeecdf2872b4be095c2f64f12582ef285f75e4c9aa3a7` |
 
 The frozen capture is reproducible evidence, not proof of current recall status. Production decisions would need current FDA/firm communications and accountable food-safety/legal review.
 
@@ -72,13 +74,13 @@ Corpus generation converts each source record into an independently citable docu
 | Synthetic operational records | 1,165 |
 | **Total** | **1,175** |
 
-Record-type counts are 577 events, 216 inventory positions, 144 lots, 144 shipments, 48 products, 18 facilities, 18 acknowledgement seeds, five openFDA records, and five policies. Corpus SHA-256 is `508914dfe31e4ab2dfa769006bf7fb4d21ed39fb36a9113bd9fb1d136d1e9963`.
+Record-type counts are 577 events, 216 inventory positions, 144 lots, 144 shipments, 48 products, 18 facilities, 18 acknowledgement seeds, five openFDA records, and five policies. Corpus SHA-256 is `939063e983471743d60d6c644ba7b8435d10834aca18f811b95053ce7071a7ef`.
 
 The in-memory hybrid index has 5,930 TF-IDF features and 64 LSA dimensions. BM25 and LSA rank independently; reciprocal-rank fusion and deterministic reranking preserve both component scores/ranks and return content-hash citations.
 
 ## Live/cached behavior
 
-`RECALLOPS_SOURCE_MODE=snapshot` is the default. The durable LangGraph runtime explicitly uses the snapshot so replay/evaluation cannot drift. With `RECALLOPS_SOURCE_MODE=live`, the registry/UI notice opener requests the exact Food Enforcement endpoint with a two-second default timeout and academic user agent. An HTTP error, malformed response, missing result, or mismatched recall number returns the frozen record with `cached=True` and the cached-fallback source label.
+`RECALLOPS_SOURCE_MODE=snapshot` is the default. The durable LangGraph runtime explicitly uses the snapshot so replay/evaluation cannot drift. With `RECALLOPS_SOURCE_MODE=live`, the registry/UI notice opener requests an exact recall-number search from the Food Enforcement endpoint with a two-second default timeout and academic user agent. An HTTP error, malformed response, missing result, or mismatched recall number returns the frozen record with `cached=True` and the cached-fallback source label. This runtime request is independent of both frozen-capture provenance and the 2026-09-07 verification receipt.
 
 ## Privacy and interpretation limits
 

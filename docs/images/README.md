@@ -6,7 +6,7 @@ Three polished PNGs are the primary presentation visuals:
 |---|---|
 | `recallops-data-boundary.png` | Opens with the non-negotiable official/synthetic provenance boundary. |
 | `recallops-system-architecture.png` | Summarizes evidence, LangGraph control, agent/tool boundaries, human review, simulated actions, and outcome. |
-| `recallops-five-minute-demo.png` | Gives the audience the flagship story at a glance; the exact 4:35 timings remain in `docs/demo_contract.json` and `07_demo_story`. |
+| `recallops-five-minute-demo.png` | Gives the audience the flagship story at a glance; the exact 4:55 timings remain in `docs/demo_contract.json` and `07_demo_story`. |
 
 The shared art direction, generation prompts, and refinements are recorded in [RecallOps Submission Visual Prompts](submission-visual-prompts.md).
 
@@ -20,7 +20,7 @@ The supporting technical diagrams are Mermaid sources rendered to SVG through `s
 | `04_mcp_tool_safety` | Shows read boundaries, two-stage consent, idempotency, and approval-gated simulated writes. |
 | `05_middleware_lifecycle` | Shows policy hooks plus cross-store checkpoint/Operations fencing. |
 | `06_hitl_closure` | Shows action review, execution confirmation, one write/version, recovery, and closure review. |
-| `07_demo_story` | Gives the exact 4:35 presenter sequence and first two version transitions. |
+| `07_demo_story` | Gives the exact 4:55 presenter sequence and first two version transitions. |
 | `08_business_recall_lifecycle` | Shows the regulator-to-retailer business lifecycle, human decisions, facility evidence, consumers, and the distinct closure boundaries. |
 | `09_domain_evidence_model` | Connects public recall scope to fictional product, lot, lineage, inventory, facility, action, approval, receipt, and closure evidence. |
 | `10_evaluation_architecture` | Traces the three labelled corpora through deterministic suites, metrics, digest-bound authority, verified consumers, and a separate optional advisory lane. |

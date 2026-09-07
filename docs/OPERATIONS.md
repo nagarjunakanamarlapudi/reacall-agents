@@ -157,6 +157,10 @@ credentials are configured. Supply a Python `MODULE:ATTRIBUTE` that resolves to 
 make eval-model LIVE_MODEL_ADAPTER=my_recallops_provider:live_factory
 ```
 
+This is a trusted local Python import boundary, not a sandbox. Do not point it at an unreviewed
+module. `OPENAI_API_KEY` alone does not enable live planning; both a reviewed adapter and that
+adapter's provider-specific credentials are required.
+
 With no `LIVE_MODEL_ADAPTER`, `make eval-model` exits nonzero with an explicit configuration and
 credentials message; it never selects a provider implicitly. The adapter retains credentials and
 raw provider messages outside persisted artifacts, and its evaluated capability surface is the

@@ -1,8 +1,14 @@
 {
+  "schema_version": "2.0",
   "recall_number": "H-1230-2026",
-  "source_url": "https://api.fda.gov/food/enforcement.json?search=recall_number.exact:%5C%22H-1230-2026%5C%22",
+  "capture_url": "https://api.fda.gov/food/enforcement.json?limit=5&sort=report_date%3Adesc",
   "retrieved_at": "2026-08-30T00:00:00+00:00",
+  "capture_method": "Frozen five-row openFDA response captured from the report-date-sorted endpoint.",
   "source_label": "OFFICIAL OPENFDA SNAPSHOT — FROZEN FOR REPRODUCIBILITY",
   "sha256": "086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9",
-  "retrieval_method": "Provided official openFDA response record, copied byte-for-byte into the snapshot."
+  "flagship_verification_url": "https://api.fda.gov/food/enforcement.json?search=recall_number.exact%3A%22H-1230-2026%22&limit=5",
+  "flagship_verified_on": "2026-09-07",
+  "flagship_verification_method": "Independent live exact-recall-number lookup returned one record matching snapshot results[0] field-for-field.",
+  "flagship_result_count": 1,
+  "flagship_record_sha256": "16a50f3966d11ee80519c4935890db9a250b36ffccf081f812b8f6d4f5d384de"
 }

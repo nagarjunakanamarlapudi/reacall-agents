@@ -10,13 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from recallops.config import get_settings
-from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+from recallops.data.loaders import (
+    PINNED_OPENFDA_METADATA_SHA256,
+    load_demo_dataset,
+    load_recall_snapshot,
+)
+from recallops.models import OpenFDASnapshotMetadata
 from recallops.paths import DATA_DIR
 from recallops.retrieval.models import KnowledgeDocument, KnowledgeManifest
 
 TRUSTED_POLICY_CORPUS_SHA256 = "e698fc4e113724b7e6819d8d70ea411d54cb777e32126a4218c417dac4798453"
 TRUSTED_OPENFDA_SNAPSHOT_SHA256 = "086c80b789959dc0612f4d94ca4f199da621158416784a3e1ed0eeeecc260aa9"
-TRUSTED_OPENFDA_METADATA_SHA256 = "3199cdb467c81bfd1c83228a4ee61d8ca6f93103209ed2c415c8fb0a2e657034"
+TRUSTED_OPENFDA_METADATA_SHA256 = PINNED_OPENFDA_METADATA_SHA256
 TRUSTED_SYNTHETIC_DATASET_SHA256 = (
     "6f60ce4a3119aae2d68b3ea3c5105d79cc0df9fd335c2c2132218a886f5c61d9"
 )
@@ -74,7 +79,7 @@ def _load_policy_documents(policy_path: Path) -> list[KnowledgeDocument]:
 
 def _openfda_documents(data_dir: Path) -> list[KnowledgeDocument]:
     snapshot_path = data_dir / "public" / "H-1230-2026.json"
-    metadata = json.loads(
+    metadata = OpenFDASnapshotMetadata.model_validate_json(
         (data_dir / "public" / "H-1230-2026.metadata.json").read_text(encoding="utf-8")
     )
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -120,12 +125,12 @@ def _openfda_documents(data_dir: Path) -> list[KnowledgeDocument]:
                 record_id=record_id,
                 title=f"openFDA food enforcement record {record_id}",
                 text=text,
-                source_url=metadata["source_url"],
-                retrieved_at=datetime.fromisoformat(metadata["retrieved_at"]),
+                source_url=metadata.capture_url,
+                retrieved_at=metadata.retrieved_at,
                 metadata={
                     "event_id": event_id,
                     "recall_number": recall_number,
-                    "snapshot_sha256": metadata["sha256"],
+                    "snapshot_sha256": metadata.sha256,
                 },
             )
         )
