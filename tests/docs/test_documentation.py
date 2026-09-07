@@ -165,34 +165,70 @@ POLISHED_VISUALS = (
 )
 
 
-_DIRECTED_EDGE = re.compile(
-    r'--\s+(?:"[^"\n]*"|\'[^\'\n]*\'|.*?)\s+-->\s*(?:\|[^|\n]*\|)?\s*'
-    r"|-->\s*(?:\|[^|\n]*\|)?\s*"
-    r"|-\.->\s*"
-    r"|-\.(?:(?!\.->)[^\n])*\.->\s*"
+_EDGE_OPERATOR = re.compile(
+    r"(?<![-.=~<>])(?:"
+    r'--\s+(?:"[^"\n]*"|\'[^\'\n]*\'|.*?)\s+--+[-ox>]'
+    r'|==\s+(?:"[^"\n]*"|\'[^\'\n]*\'|.*?)\s+==+[=ox>]'
+    r'|-\.\s+(?:"[^"\n]*"|\'[^\'\n]*\'|.*?)\s+\.+-[ox>]?'
+    r"|[<ox]?--+[-ox>]"
+    r"|[<ox]?==+[=ox>]"
+    r"|[<ox]?-?\.+-[ox>]?"
+    r"|~~+"
+    r")(?:\s*\|[^|\n]*\|)?\s*(?![-.=~<>])"
 )
-_UNDIRECTED_EDGE = re.compile(r"---|-\.(?:(?!\.->)[^\n])*\.\-(?!>)")
+_CONNECTOR_CANDIDATE = re.compile(r"[<ox]?[-.=~]{2,}[<>=ox-]*")
+_QUOTED_TEXT = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
 
 
 def _mermaid_node_id(segment: str) -> str | None:
     """Return the node adjacent to an edge in the Mermaid subset used here."""
-    adjacent = _UNDIRECTED_EDGE.split(segment)[-1].strip()
-    match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", adjacent)
+    match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*)", segment)
     return match.group(1) if match else None
 
 
+def _mermaid_directions(operator: str) -> tuple[bool, bool]:
+    """Return forward/reverse direction flags for one validated operator."""
+    without_pipe_label = re.sub(r"\s*\|[^|\n]*\|\s*$", "", operator).strip()
+    forward = without_pipe_label[-1:] in {">", "o", "x"}
+    reverse = without_pipe_label[:1] in {"<", "o", "x"}
+    return forward, reverse
+
+
+def _validate_mermaid_operators(line: str, operators: list[re.Match[str]]) -> None:
+    """Reject any connector-shaped token outside the supported Mermaid grammar."""
+    stripped = line.lstrip()
+    if not stripped or stripped.startswith(("%%", "classDef ", "style ", "linkStyle ")):
+        return
+    masked = list(line)
+    for operator in operators:
+        masked[operator.start() : operator.end()] = " " * (operator.end() - operator.start())
+    remainder = "".join(masked)
+    remainder = _QUOTED_TEXT.sub(lambda match: " " * len(match.group()), remainder)
+    candidate = _CONNECTOR_CANDIDATE.search(remainder)
+    if candidate is not None:
+        raise AssertionError(f"unsupported Mermaid connector {candidate.group()!r}")
+
+
 def mermaid_directed_edges(source: str) -> set[tuple[str, str]]:
-    """Extract solid, labelled, dotted, and chained directed Mermaid edges."""
+    """Extract every validated directed edge and fail closed on unknown operators."""
     edges: set[tuple[str, str]] = set()
     for line in source.splitlines():
-        arrows = list(_DIRECTED_EDGE.finditer(line))
-        for index, arrow in enumerate(arrows):
-            left = arrows[index - 1].end() if index else 0
-            right = arrows[index + 1].start() if index + 1 < len(arrows) else len(line)
-            source_id = _mermaid_node_id(line[left : arrow.start()])
-            target_id = _mermaid_node_id(line[arrow.end() : right])
-            if source_id is not None and target_id is not None:
+        operators = list(_EDGE_OPERATOR.finditer(line))
+        _validate_mermaid_operators(line, operators)
+        for index, operator in enumerate(operators):
+            left = operators[index - 1].end() if index else 0
+            right = operators[index + 1].start() if index + 1 < len(operators) else len(line)
+            source_id = _mermaid_node_id(line[left : operator.start()])
+            target_id = _mermaid_node_id(line[operator.end() : right])
+            forward, reverse = _mermaid_directions(operator.group())
+            if (forward or reverse) and (source_id is None or target_id is None):
+                raise AssertionError(
+                    f"could not resolve nodes around Mermaid connector {operator.group()!r}"
+                )
+            if forward and source_id is not None and target_id is not None:
                 edges.add((source_id, target_id))
+            if reverse and source_id is not None and target_id is not None:
+                edges.add((target_id, source_id))
     return edges
 
 
@@ -370,6 +406,11 @@ flowchart LR
   SCORE -- "labelled solid" --> VIEW["View"]
   LIVE -. advisory observation .-> ADVISORY --> UI
   VIEW -.-> END
+  THICK ==> ARCHIVE
+  LABELLED == audit copy ==> REPORT
+  CIRCLE --o REVIEW
+  CROSS --x BLOCK
+  OM <--> JUDGE
 """
         self.assertEqual(
             mermaid_directed_edges(fixture),
@@ -380,8 +421,18 @@ flowchart LR
                 ("LIVE", "ADVISORY"),
                 ("ADVISORY", "UI"),
                 ("VIEW", "END"),
+                ("THICK", "ARCHIVE"),
+                ("LABELLED", "REPORT"),
+                ("CIRCLE", "REVIEW"),
+                ("CROSS", "BLOCK"),
+                ("OM", "JUDGE"),
+                ("JUDGE", "OM"),
             },
         )
+
+    def test_mermaid_directed_edge_extractor_rejects_unknown_connector_syntax(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "unsupported Mermaid connector"):
+            mermaid_directed_edges("flowchart LR\n  JUDGE ~~> OM\n")
 
     def test_authority_path_guard_rejects_direct_labelled_and_transitive_leaks(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
@@ -401,6 +452,22 @@ flowchart LR
                 ("SCORECARD",),
                 writes,
             )
+
+        directed_mutations = (
+            "JUDGE ==> OM",
+            "JUDGE == write ==> OM",
+            "JUDGE --o OM",
+            "JUDGE --x OM",
+            "OM <--> JUDGE",
+        )
+        for mutation in directed_mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(AssertionError, r"JUDGE.*OM"):
+                    self.assert_no_mermaid_path(
+                        f"{diagram}\n{mutation}\n",
+                        ("JUDGE",),
+                        writes,
+                    )
 
     def test_evaluation_corpora_are_authored_audit_data_not_official_evidence(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
