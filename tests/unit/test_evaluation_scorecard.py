@@ -890,3 +890,65 @@ def test_round2_nested_and_opposite_container_shapes_fail_closed(paths, tmp_path
         build(paths, tmp_path)
     assert type(failure.value) is ValueError
     assert len(str(failure.value)) <= 200
+
+
+@pytest.mark.parametrize("input_name", tuple(EvaluationArtifactPaths.__dataclass_fields__))
+@pytest.mark.parametrize("alias", ["exact", "parent", "leaf"])
+def test_round3_replaced_input_entry_is_protected(paths, tmp_path, monkeypatch, input_name, alias):
+    from recallops.evaluation import scorecard as module
+
+    output = getattr(paths, input_name)
+    report_paths = [paths.safety_report, paths.retrieval_report, paths.orchestration_report]
+    if alias == "leaf":
+        if input_name.endswith("_report"):
+            output = tmp_path / f"alias-{output.name}"
+            output.symlink_to(getattr(paths, input_name))
+            report_paths[report_paths.index(getattr(paths, input_name))] = output
+        else:
+            target = tmp_path / f"target-{output.name}"
+            output.rename(target)
+            output.symlink_to(target)
+            paths = EvaluationArtifactPaths(*report_paths)
+    elif alias == "parent":
+        parent_alias = tmp_path / "alias-parent"
+        parent_alias.symlink_to(tmp_path, target_is_directory=True)
+        output = parent_alias / output.name
+    inputs = {getattr(paths, name) for name in paths.__dataclass_fields__}
+    before = {path: path.read_bytes() for path in inputs}
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(output.read_bytes())
+    original_stat = Path.stat
+    original_open = module.os.open
+    original_write = module._write_scorecard
+    observed = set()
+    replaced = False
+    writing = False
+
+    def start_write(*args, **kwargs):
+        nonlocal writing
+        writing = True
+        return original_write(*args, **kwargs)
+
+    def replace_after_inode_collection(path, *args, **kwargs):
+        nonlocal replaced
+        result = original_stat(path, *args, **kwargs)
+        if writing and path in inputs:
+            observed.add(path)
+        if not replaced and observed == inputs:
+            replaced = True
+            os.replace(replacement, output)
+        return result
+
+    def reject_temporary_creation(path, flags, *args, **kwargs):
+        assert not flags & os.O_CREAT, "protected entries must reject before temp creation"
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", replace_after_inode_collection)
+    monkeypatch.setattr(module.os, "open", reject_temporary_creation)
+    monkeypatch.setattr(module, "_write_scorecard", start_write)
+    with pytest.raises(ValueError, match="overwrite|alias"):
+        build_scorecard(*report_paths, output)
+    assert replaced
+    assert {path: path.read_bytes() for path in inputs} == before
+    assert output.read_bytes() == before[getattr(paths, input_name)]
+    assert not list(tmp_path.glob(".scorecard-*"))

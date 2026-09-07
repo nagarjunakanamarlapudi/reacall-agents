@@ -13,6 +13,7 @@ import os
 import secrets
 import stat
 from collections import Counter
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -404,7 +405,7 @@ def _offline_gate(summaries: tuple[SuiteSummary, ...]) -> bool:
     )
 
 
-def _open_output_directory(parent: Path) -> int:
+def _open_output_directory(parent: Path, *, create: bool = True) -> int:
     """Resolve once, then open and verify each directory component without following links."""
     directory = parent.resolve()
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -414,6 +415,8 @@ def _open_output_directory(parent: Path) -> int:
             try:
                 child = os.open(component, flags, dir_fd=current)
             except FileNotFoundError:
+                if not create:
+                    raise
                 os.mkdir(component, mode=0o755, dir_fd=current)
                 child = os.open(component, flags, dir_fd=current)
             try:
@@ -435,7 +438,12 @@ def _open_output_directory(parent: Path) -> int:
         raise
 
 
-def _write_scorecard(output_path: Path, raw: bytes, paths: EvaluationArtifactPaths) -> None:
+def _write_scorecard(
+    output_path: Path,
+    raw: bytes,
+    paths: EvaluationArtifactPaths,
+    input_entries: set[tuple[int, int, str]],
+) -> None:
     output_path = output_path.expanduser().absolute()
     input_inodes = set()
     for name in paths.__dataclass_fields__:
@@ -447,6 +455,8 @@ def _write_scorecard(output_path: Path, raw: bytes, paths: EvaluationArtifactPat
     temporary = None
 
     def check_leaf():
+        if (identity.st_dev, identity.st_ino, leaf) in input_entries:
+            raise ValueError("scorecard output must not overwrite or alias an input artifact")
         try:
             entry = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -521,9 +531,28 @@ def build_scorecard(
     payload["scorecard_sha256"] = canonical_sha256(payload)
     with artifact_validation("scorecard"):
         scorecard = EvaluationScorecard.model_validate(payload)
-    _write_scorecard(
-        Path(output_path), canonical_json_bytes(scorecard.model_dump(mode="json")), paths
-    )
+    # Pin both lexical entries and resolved targets: replacing an input inode
+    # (including a caller-supplied symlink) must not make its location writable.
+    locations = [Path(safety_path), Path(retrieval_path), Path(orchestration_path)]
+    locations.extend(getattr(paths, name) for name in paths.__dataclass_fields__)
+    for suite, filename in zip(
+        SUITES, ("scenarios.json", "retrieval_cases.json", "orchestration_cases.json"), strict=True
+    ):
+        locations.append(getattr(paths, f"{suite}_report").with_name(filename))
+    with ExitStack() as directories:
+        input_entries = set()
+        for location in set(locations):
+            location = location.expanduser().absolute()
+            descriptor = _open_output_directory(location.parent, create=False)
+            directories.callback(os.close, descriptor)
+            parent = os.fstat(descriptor)
+            input_entries.add((parent.st_dev, parent.st_ino, location.name))
+        _write_scorecard(
+            Path(output_path),
+            canonical_json_bytes(scorecard.model_dump(mode="json")),
+            paths,
+            input_entries,
+        )
     return scorecard
 
 
