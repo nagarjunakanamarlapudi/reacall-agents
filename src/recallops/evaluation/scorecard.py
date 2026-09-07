@@ -12,6 +12,7 @@ import hashlib
 import os
 import secrets
 import stat
+import unicodedata
 from collections import Counter
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -438,13 +439,26 @@ def _open_output_directory(parent: Path, *, create: bool = True) -> int:
         raise
 
 
+def _normalized_component(value: str) -> str:
+    """Conservatively collide canonical Unicode and case-equivalent spellings."""
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
+
+
+def _path_key(path: Path) -> tuple[str, ...]:
+    absolute = Path(os.path.abspath(path.expanduser()))
+    return tuple(_normalized_component(part) for part in absolute.parts)
+
+
 def _write_scorecard(
     output_path: Path,
     raw: bytes,
     paths: EvaluationArtifactPaths,
     input_entries: set[tuple[int, int, str]],
+    input_keys: set[tuple[str, ...]],
+    input_parents: dict[Path, tuple[int, int]],
 ) -> None:
     output_path = output_path.expanduser().absolute()
+    output_keys = {_path_key(output_path), _path_key(output_path.resolve())}
     input_inodes = set()
     for name in paths.__dataclass_fields__:
         source = getattr(paths, name).stat()
@@ -455,8 +469,26 @@ def _write_scorecard(
     temporary = None
 
     def check_leaf():
-        if (identity.st_dev, identity.st_ino, leaf) in input_entries:
+        # Keep the initial lexical/resolved exclusions even when the pathname
+        # now resolves through a replacement directory or a fresh file inode.
+        current_keys = output_keys | {_path_key(output_path.resolve())}
+        if (
+            current_keys & input_keys
+            or (
+                identity.st_dev,
+                identity.st_ino,
+                _normalized_component(leaf),
+            )
+            in input_entries
+        ):
             raise ValueError("scorecard output must not overwrite or alias an input artifact")
+        for parent_path, expected_identity in input_parents.items():
+            try:
+                current_parent = parent_path.stat()
+            except OSError as exc:
+                raise ValueError("protected input parent is unavailable") from exc
+            if (current_parent.st_dev, current_parent.st_ino) != expected_identity:
+                raise ValueError("protected input parent identity changed")
         try:
             entry = os.stat(leaf, dir_fd=directory_fd, follow_symlinks=False)
         except FileNotFoundError:
@@ -516,6 +548,16 @@ def build_scorecard(
 ) -> EvaluationScorecard:
     """Build a canonical scorecard from complete, independently verified inputs."""
     paths = EvaluationArtifactPaths(safety_path, retrieval_path, orchestration_path)
+    # Preserve lexical and initially resolved paths before validating snapshots.
+    locations = [Path(safety_path), Path(retrieval_path), Path(orchestration_path)]
+    locations.extend(getattr(paths, name) for name in paths.__dataclass_fields__)
+    for suite, filename in zip(
+        SUITES, ("scenarios.json", "retrieval_cases.json", "orchestration_cases.json"), strict=True
+    ):
+        locations.append(getattr(paths, f"{suite}_report").with_name(filename))
+    locations = {location.expanduser().absolute() for location in locations}
+    locations |= {location.resolve() for location in locations}
+    input_keys = {_path_key(location) for location in locations}
     snapshots = _capture_artifacts(paths)
     digests = {name: hashlib.sha256(raw).hexdigest() for name, raw in snapshots.items()}
     summaries, live = _verified_snapshots(snapshots)
@@ -533,25 +575,25 @@ def build_scorecard(
         scorecard = EvaluationScorecard.model_validate(payload)
     # Pin both lexical entries and resolved targets: replacing an input inode
     # (including a caller-supplied symlink) must not make its location writable.
-    locations = [Path(safety_path), Path(retrieval_path), Path(orchestration_path)]
-    locations.extend(getattr(paths, name) for name in paths.__dataclass_fields__)
-    for suite, filename in zip(
-        SUITES, ("scenarios.json", "retrieval_cases.json", "orchestration_cases.json"), strict=True
-    ):
-        locations.append(getattr(paths, f"{suite}_report").with_name(filename))
     with ExitStack() as directories:
         input_entries = set()
-        for location in set(locations):
-            location = location.expanduser().absolute()
-            descriptor = _open_output_directory(location.parent, create=False)
-            directories.callback(os.close, descriptor)
-            parent = os.fstat(descriptor)
-            input_entries.add((parent.st_dev, parent.st_ino, location.name))
+        input_parents = {}
+        for location in locations:
+            if location.parent not in input_parents:
+                descriptor = _open_output_directory(location.parent, create=False)
+                directories.callback(os.close, descriptor)
+                parent = os.fstat(descriptor)
+                input_parents[location.parent] = (parent.st_dev, parent.st_ino)
+            input_entries.add(
+                (*input_parents[location.parent], _normalized_component(location.name))
+            )
         _write_scorecard(
             Path(output_path),
             canonical_json_bytes(scorecard.model_dump(mode="json")),
             paths,
             input_entries,
+            input_keys,
+            input_parents,
         )
     return scorecard
 

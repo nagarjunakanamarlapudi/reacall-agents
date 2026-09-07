@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -597,6 +598,121 @@ def test_fix_failed_atomic_replace_preserves_existing_output(paths, tmp_path, mo
     with pytest.raises(OSError, match="atomic replacement"):
         build(paths, tmp_path)
     assert output.read_bytes() == before
+    assert not list(tmp_path.glob(".scorecard-*"))
+
+
+@pytest.mark.parametrize("input_name", tuple(EvaluationArtifactPaths.__dataclass_fields__))
+@pytest.mark.parametrize("unrelated_output", [False, True])
+def test_round4_replaced_input_parent_is_protected(
+    paths, tmp_path, monkeypatch, input_name, unrelated_output
+):
+    from recallops.evaluation import scorecard as module
+
+    source_parent = tmp_path / "inputs"
+    replacement_parent = tmp_path / "replacement-inputs"
+    source_parent.mkdir()
+    replacement_parent.mkdir()
+    for path in (getattr(paths, name) for name in paths.__dataclass_fields__):
+        shutil.copyfile(path, source_parent / path.name)
+        shutil.copyfile(path, replacement_parent / path.name)
+    paths = EvaluationArtifactPaths(
+        *(source_parent / getattr(paths, f"{suite}_report").name for suite in module.SUITES)
+    )
+    output = tmp_path / "unrelated.json" if unrelated_output else getattr(paths, input_name)
+    inputs = {getattr(paths, name) for name in paths.__dataclass_fields__}
+    before = {path.name: path.read_bytes() for path in inputs}
+    moved = tmp_path / "old-inputs"
+    original_stat = Path.stat
+    original_write = module._write_scorecard
+    observed = set()
+    writing = False
+    swapped = False
+
+    def start_write(*args, **kwargs):
+        nonlocal writing
+        writing = True
+        return original_write(*args, **kwargs)
+
+    def swap_after_inode_collection(path, *args, **kwargs):
+        nonlocal swapped
+        result = original_stat(path, *args, **kwargs)
+        if writing and path in inputs:
+            observed.add(path)
+        if not swapped and observed == inputs:
+            swapped = True
+            source_parent.rename(moved)
+            replacement_parent.rename(source_parent)
+        return result
+
+    monkeypatch.setattr(module, "_write_scorecard", start_write)
+    monkeypatch.setattr(Path, "stat", swap_after_inode_collection)
+    with pytest.raises(ValueError, match="overwrite|alias|parent"):
+        build_scorecard(
+            paths.safety_report, paths.retrieval_report, paths.orchestration_report, output
+        )
+    assert swapped
+    for parent in (source_parent, moved):
+        assert {name: (parent / name).read_bytes() for name in before} == before
+        assert not list(parent.glob(".scorecard-*"))
+    assert not (tmp_path / "unrelated.json").exists()
+
+
+@pytest.mark.parametrize("input_name", tuple(EvaluationArtifactPaths.__dataclass_fields__))
+@pytest.mark.parametrize("alias", ["case", "unicode"])
+def test_round4_normalized_input_leaf_is_protected(paths, tmp_path, monkeypatch, input_name, alias):
+    from recallops.evaluation import scorecard as module
+
+    source = getattr(paths, input_name)
+    report_paths = [paths.safety_report, paths.retrieval_report, paths.orchestration_report]
+    if alias == "unicode":
+        accented = source.with_name(f"caf\u00e9-{source.name}")
+        if input_name.endswith("_report"):
+            accented.symlink_to(source)
+            report_paths[report_paths.index(source)] = accented
+            source = accented
+        else:
+            source.rename(accented)
+            source.symlink_to(accented)
+            paths = EvaluationArtifactPaths(*report_paths)
+            source = accented
+        output = source.with_name(unicodedata.normalize("NFD", source.name))
+    else:
+        output = source.with_name(source.name.upper())
+    # The host volume aliases these spellings; conservative rejection is also
+    # required on case/normalization-sensitive filesystems where they differ.
+    inputs = {getattr(paths, name) for name in paths.__dataclass_fields__}
+    before = {path: path.read_bytes() for path in inputs}
+    source_bytes = source.read_bytes()
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(source_bytes)
+    original_stat = Path.stat
+    original_write = module._write_scorecard
+    observed = set()
+    writing = False
+    replaced = False
+
+    def start_write(*args, **kwargs):
+        nonlocal writing
+        writing = True
+        return original_write(*args, **kwargs)
+
+    def replace_after_inode_collection(path, *args, **kwargs):
+        nonlocal replaced
+        result = original_stat(path, *args, **kwargs)
+        if writing and path in inputs:
+            observed.add(path)
+        if not replaced and observed == inputs:
+            replaced = True
+            os.replace(replacement, source)
+        return result
+
+    monkeypatch.setattr(module, "_write_scorecard", start_write)
+    monkeypatch.setattr(Path, "stat", replace_after_inode_collection)
+    with pytest.raises(ValueError, match="overwrite|alias"):
+        build_scorecard(*report_paths, output)
+    assert replaced
+    assert {path: path.read_bytes() for path in inputs} == before
+    assert source.read_bytes() == source_bytes
     assert not list(tmp_path.glob(".scorecard-*"))
 
 
