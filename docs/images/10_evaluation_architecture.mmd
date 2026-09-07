@@ -1,0 +1,65 @@
+flowchart LR
+  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
+  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
+  classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
+
+  subgraph CORPORA["LABELLED CORPORA"]
+    direction TB
+    SAFETY["21 safety scenarios<br/>R01–R21"]:::official
+    RETRIEVAL["96 retrieval cases<br/>labelled relevance + policy"]:::official
+    ORCHESTRATION["24 orchestration cases<br/>shared gold evidence"]:::official
+  end
+
+  subgraph RUNNERS["SUITE RUNNERS"]
+    direction TB
+    SAFETY_RUN["Deterministic safety suite<br/>hard-gated offline"]:::reason
+    RETRIEVAL_RUN["Six retrieval ablations<br/>BM25 • LSA • hybrid • RRF<br/>rerank • AgenticRetriever"]:::reason
+    ORCHESTRATION_RUN["Two orchestration profiles<br/>bounded single agent • fixed specialists"]:::reason
+  end
+
+  subgraph MEASURES["METRICS + GATES"]
+    direction TB
+    SAFETY_GATE["Safety gates<br/>21/21 • unsafe counters = 0"]:::verify
+    RETRIEVAL_METRICS["Retrieval metrics<br/>Recall@5 • nDCG@5 • MRR<br/>fusion • rerank • rewrite deltas"]:::verify
+    ORCHESTRATION_METRICS["Orchestration metrics<br/>coverage • duplicate work<br/>tool calls • latency"]:::verify
+  end
+
+  subgraph AUTHORITY["DETERMINISTIC AUTHORITY"]
+    direction TB
+    SCORECARD["digest-bound scorecard<br/>verified inputs + aggregate gates"]:::state
+    EVAL_BOUNDARY["READ-ONLY EVALUATION PLANE<br/>No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
+    EVAL_BOUNDARY --- SCORECARD
+  end
+
+  subgraph OUTPUTS["VERIFIED CONSUMERS"]
+    direction TB
+    UI["Verified UI"]:::verify
+    DEMO["Demo evidence"]:::verify
+    CI["CI / make verify"]:::verify
+  end
+
+  subgraph OPTIONAL["OPTIONAL ADVISORY LANE"]
+    direction TB
+    LIVE["Optional live Deep Agents run<br/>nondeterministic observation"]:::reason
+    JUDGE["Optional human / model judge<br/>blinded presentation review"]:::reason
+    ADVISORY["Advisory appendix<br/>excluded from deterministic authority"]:::human
+  end
+
+  SAFETY --> SAFETY_RUN --> SAFETY_GATE
+  RETRIEVAL --> RETRIEVAL_RUN --> RETRIEVAL_METRICS
+  ORCHESTRATION --> ORCHESTRATION_RUN --> ORCHESTRATION_METRICS
+  SAFETY_GATE --> SCORECARD
+  RETRIEVAL_METRICS --> SCORECARD
+  ORCHESTRATION_METRICS --> SCORECARD
+  SCORECARD --> UI
+  SCORECARD --> DEMO
+  SCORECARD --> CI
+
+  ORCHESTRATION -. optional same-case run .-> LIVE
+  SCORECARD -. read-only presentation copy .-> JUDGE
+  LIVE -. advisory observation .-> ADVISORY
+  JUDGE -. presentation feedback .-> ADVISORY
+  ADVISORY -. labelled optional context .-> UI
+  ADVISORY -. labelled optional context .-> DEMO

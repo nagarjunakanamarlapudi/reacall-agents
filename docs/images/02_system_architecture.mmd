@@ -34,6 +34,16 @@ flowchart TB
     G -. optional live reasoning .-> DA --> SP
   end
 
+  subgraph EVALUATION["READ-ONLY EVALUATION PLANE"]
+    direction LR
+    EV["Read-only evaluation plane<br/>typed traces + verified reports"]:::verify
+    SUITES["Safety • retrieval ablation<br/>orchestration comparison"]:::reason
+    SCORE["digest-bound scorecard<br/>verified before display"]:::state
+    EVALSAFE["No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
+    EV --> SUITES --> SCORE
+    EVALSAFE --- EV
+  end
+
   subgraph CONSENT["DUAL HUMAN CONSENT + ONE WRITE"]
     direction LR
     HR["Human action review<br/>exact action + digest + version"]:::human
@@ -55,6 +65,9 @@ flowchart TB
   P --> RR
   S --> TM
   RAG --> G
+  RAG -. read-only retrieval report .-> EV
+  G -. read-only traces .-> EV
+  VC -. read-only verified trajectory .-> EV
   VC --> HR
   OM --> OP
   G --> CP

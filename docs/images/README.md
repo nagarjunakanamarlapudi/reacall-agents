@@ -23,10 +23,12 @@ The supporting technical diagrams are Mermaid sources rendered to SVG through `s
 | `07_demo_story` | Gives the exact 4:35 presenter sequence and first two version transitions. |
 | `08_business_recall_lifecycle` | Shows the regulator-to-retailer business lifecycle, human decisions, facility evidence, consumers, and the distinct closure boundaries. |
 | `09_domain_evidence_model` | Connects public recall scope to fictional product, lot, lineage, inventory, facility, action, approval, receipt, and closure evidence. |
+| `10_evaluation_architecture` | Traces the three labelled corpora through deterministic suites, metrics, digest-bound authority, verified consumers, and a separate optional advisory lane. |
 
 ## Visual truth rules
 
 - Blue means official public data or control flow; orange denotes synthetic academic data/actions; purple denotes reasoning; green denotes verified outcomes; red denotes human review/risk/blocking; gray denotes durable state/audit.
 - `official openFDA H-1230-2026` and `SYNTHETIC — ACADEMIC DEMO` must remain exact labels in provenance diagrams.
 - No diagram depicts A2A or a direct agent-to-database/action write.
+- The evaluation plane is read-only: it has no Operations MCP credentials, SQLite write edge, or action authority. Optional live runs and human/model presentation judging remain visibly excluded from deterministic scorecard authority.
 - Diagram labels and paths are reconciled to the implemented runtime; command outcomes belong in `docs/VERIFICATION.md`.

@@ -55,6 +55,9 @@ DIAGRAM_LABELS = {
         "BM25 + LSA",
         "Human action review",
         "Execution confirmation",
+        "Read-only evaluation plane",
+        "digest-bound scorecard",
+        "No Operations MCP credentials",
     ),
     "03_orchestration": (
         "Deep Agent supervisor",
@@ -63,6 +66,9 @@ DIAGRAM_LABELS = {
         "StateGraph",
         "create_case v0→v1",
         "apply_inventory_hold v1→v2",
+        "Typed trajectory capture",
+        "Orchestration comparison",
+        "excluded from action authority",
     ),
     "04_mcp_tool_safety": (
         "Recall Registry MCP",
@@ -91,6 +97,9 @@ DIAGRAM_LABELS = {
         "Open — closure blocked",
         "create_case v0→v1",
         "apply_inventory_hold v1→v2",
+        "Safety evaluation",
+        "Retrieval ablation",
+        "Orchestration comparison",
     ),
     "08_business_recall_lifecycle": (
         "SYNTHETIC — ACADEMIC DEMO",
@@ -129,6 +138,21 @@ DIAGRAM_LABELS = {
         "Operation receipt",
         "Internal closure decision",
     ),
+    "10_evaluation_architecture": (
+        "21 safety scenarios",
+        "R01–R21",
+        "96 retrieval cases",
+        "24 orchestration cases",
+        "Deterministic safety suite",
+        "Six retrieval ablations",
+        "Two orchestration profiles",
+        "digest-bound scorecard",
+        "Optional live Deep Agents run",
+        "Optional human / model judge",
+        "excluded from deterministic authority",
+        "No Operations MCP credentials",
+        "No SQLite writes",
+    ),
 }
 
 POLISHED_VISUALS = (
@@ -136,6 +160,14 @@ POLISHED_VISUALS = (
     "recallops-system-architecture.png",
     "recallops-five-minute-demo.png",
 )
+
+
+def mermaid_edge_pattern(sources: tuple[str, ...], targets: tuple[str, ...]) -> str:
+    """Match a Mermaid edge from one named node set to another on a source line."""
+    source_pattern = "|".join(re.escape(value) for value in sources)
+    target_pattern = "|".join(re.escape(value) for value in targets)
+    edge = r"(?:-->|---|-\.[^\n]*\.->)"
+    return rf"(?m)^\s*(?:{source_pattern})\s+{edge}[^\n]*\b(?:{target_pattern})\b"
 
 
 class DocumentationContractTests(unittest.TestCase):
@@ -167,6 +199,13 @@ class DocumentationContractTests(unittest.TestCase):
             f"docs/images/{name}" for name in POLISHED_VISUALS if not (IMAGES / name).is_file()
         ]
         self.assertEqual(missing, [], f"missing promised documentation artifacts: {missing}")
+
+    def test_supporting_diagram_inventory_is_exactly_ten_source_svg_pairs(self) -> None:
+        expected = set(DIAGRAM_LABELS)
+        sources = {path.stem for path in IMAGES.glob("*.mmd")}
+        rendered = {path.stem for path in IMAGES.glob("*.svg")}
+        self.assertEqual(sources, expected)
+        self.assertEqual(rendered, expected)
 
     def test_operations_cwd_independent_cli_examples_select_the_project(self) -> None:
         operations = (DOCS / "OPERATIONS.md").read_text(encoding="utf-8")
@@ -233,6 +272,61 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("DS --> RI", diagram)
         self.assertIn("DA --> RI", diagram)
         self.assertIn("Verification / Critic<br/>outside supervisor context", diagram)
+
+    def test_evaluation_architecture_separates_deterministic_authority_from_advice(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        for edge in (
+            "SAFETY --> SAFETY_RUN",
+            "RETRIEVAL --> RETRIEVAL_RUN",
+            "ORCHESTRATION --> ORCHESTRATION_RUN",
+            "SAFETY_GATE --> SCORECARD",
+            "RETRIEVAL_METRICS --> SCORECARD",
+            "ORCHESTRATION_METRICS --> SCORECARD",
+            "SCORECARD --> UI",
+            "SCORECARD --> DEMO",
+            "SCORECARD --> CI",
+        ):
+            self.assertIn(edge, diagram)
+        self.assertIn("LIVE -. advisory observation .-> ADVISORY", diagram)
+        self.assertIn("JUDGE -. presentation feedback .-> ADVISORY", diagram)
+        self.assertNotRegex(
+            diagram,
+            mermaid_edge_pattern(("LIVE", "JUDGE", "ADVISORY"), ("SCORECARD",)),
+        )
+        self.assertNotRegex(diagram, r"(?m)^\s*(?:OPERATIONS|SQLITE_WRITE)\s*\[")
+
+    def test_runtime_diagrams_keep_evaluation_read_only_and_before_closure(self) -> None:
+        architecture = (IMAGES / "02_system_architecture.mmd").read_text(encoding="utf-8")
+        self.assertIn("G -. read-only traces .-> EV", architecture)
+        self.assertIn("RAG -. read-only retrieval report .-> EV", architecture)
+        evaluation_nodes = ("EV", "SUITES", "SCORE", "EVALSAFE")
+        operations_nodes = ("OM", "OP")
+        self.assertNotRegex(
+            architecture,
+            mermaid_edge_pattern(evaluation_nodes, operations_nodes),
+        )
+        self.assertNotRegex(
+            architecture,
+            mermaid_edge_pattern(operations_nodes, evaluation_nodes),
+        )
+
+        orchestration = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
+        self.assertIn("VC -. read-only typed events .-> TC", orchestration)
+        self.assertIn("TC --> OE", orchestration)
+        self.assertNotRegex(
+            orchestration,
+            mermaid_edge_pattern(("TC", "OE", "ER"), ("W",)),
+        )
+
+        demo = (IMAGES / "07_demo_story.mmd").read_text(encoding="utf-8")
+        self.assertIn("H --> J --> K --> I", demo)
+        self.assertLess(
+            demo.index('H["04:10 Audit & Evaluation'), demo.index('J["Retrieval ablation')
+        )
+        self.assertLess(
+            demo.index('J["Retrieval ablation'), demo.index('K["Orchestration comparison')
+        )
+        self.assertLess(demo.index('K["Orchestration comparison'), demo.index('I["04:35'))
 
     def test_business_orientation_is_linked_from_every_submission_entrypoint(self) -> None:
         expected_targets = {
@@ -494,7 +588,7 @@ class DocumentationContractTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Stable double-render verified", result.stdout)
+        self.assertIn("Stable double-render verified for 10 diagrams", result.stdout)
         self.assertIn("Committed SVGs match fresh render", result.stdout)
 
     def test_toolchain_files_are_exactly_locked(self) -> None:

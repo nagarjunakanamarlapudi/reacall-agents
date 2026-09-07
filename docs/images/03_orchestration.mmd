@@ -22,6 +22,10 @@ flowchart TB
   TR --> REC
   CO --> REC
   REC --> VC["Verification / Critic<br/>outside supervisor context"]:::verify
+  VC -. read-only typed events .-> TC["Typed trajectory capture<br/>routes • tools • citations<br/>no chain-of-thought"]:::statefill
+  DA -. optional live status<br/>advisory only .-> TC
+  TC --> OE["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists"]:::verify
+  OE --> ER["Read-only evaluation report<br/>excluded from action authority"]:::verify
   VC --> AR["Action review interrupt<br/>approve writes zero records"]:::human
   AR --> EC["Execution confirmation interrupt"]:::human
   EC --> W["Approved graph node<br/>exactly one Operations call"]:::action
