@@ -24,6 +24,7 @@ from pydantic import (
 )
 
 from recallops.evaluation.digests import canonical_json_bytes
+from recallops.paths import DATA_DIR
 from recallops.retrieval.corpus import KnowledgeCorpus
 
 RetrievalFamily = Literal[
@@ -55,6 +56,7 @@ EXPECTED_RETRIEVAL_FAMILY_COUNTS: dict[str, int] = {
     "difficult_rewrite": 8,
     "abstention_adversarial": 8,
 }
+
 
 def _freeze_mapping[Key, Value](
     value: Mapping[Key, Value],
@@ -141,9 +143,7 @@ class RetrievalCase(BaseModel):
     ) -> dict[str, RetrievalJudgment]:
         return dict(value)
 
-    @field_validator(
-        "required_document_ids", "prohibited_document_ids", "required_facts"
-    )
+    @field_validator("required_document_ids", "prohibited_document_ids", "required_facts")
     @classmethod
     def validate_unique_nonblank_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(item.strip() for item in value)
@@ -194,6 +194,9 @@ class RetrievalCase(BaseModel):
             raise ValueError("expected rewrite intent contradicts expected route")
         if self.rewrite_allowed and (self.max_queries < 2 or self.max_hops < 2):
             raise ValueError("rewrite-enabled cases require a second query and hop")
+        required_reads = len(self.expected_route) * (2 if self.rewrite_allowed else 1)
+        if self.max_queries < required_reads or self.max_reads < required_reads:
+            raise ValueError("budgets must permit the complete source route and allowed rewrite")
         return self
 
 
@@ -217,8 +220,7 @@ class RetrievalEvalCorpus(BaseModel):
         counts = Counter(case.family for case in self.cases)
         if counts != Counter(EXPECTED_RETRIEVAL_FAMILY_COUNTS):
             raise ValueError(
-                "retrieval family counts must equal "
-                f"{EXPECTED_RETRIEVAL_FAMILY_COUNTS}"
+                f"retrieval family counts must equal {EXPECTED_RETRIEVAL_FAMILY_COUNTS}"
             )
         return self
 
@@ -233,6 +235,7 @@ class RetrievalCaseResult(BaseModel):
     ranked_document_ids: tuple[StrictStr, ...] = ()
     route_actual: tuple[RetrievalRoute, ...] = ()
     cited_document_ids: tuple[StrictStr, ...] = ()
+    initial_ranked_document_ids: tuple[StrictStr, ...] = ()
     cited_facts: tuple[StrictStr, ...] = ()
     answered: StrictBool = False
     rewrite_used: StrictBool = False
@@ -241,9 +244,21 @@ class RetrievalCaseResult(BaseModel):
     read_count: StrictInt = Field(default=0, ge=0)
     duration_ms: StrictInt = Field(default=0, ge=0)
     error_code: StrictStr | None = None
-    metric_contributions: Mapping[
-        StrictStr, StrictFiniteFloat | StrictInt | StrictBool
-    ] = Field(default_factory=dict)
+    evidence_gaps: tuple[StrictStr, ...] = ()
+    stop_reason: Literal[
+        "single_pass",
+        "coverage_satisfied",
+        "coverage_satisfied_after_rewrite",
+        "evidence_gap_after_rewrite",
+        "budget_exhausted",
+        "progress_stalled",
+        "empty_query",
+        "execution_error",
+    ] = "single_pass"
+    provenance: Mapping[StrictStr, RetrievalRoute] = Field(default_factory=dict)
+    metric_contributions: Mapping[StrictStr, StrictFiniteFloat | StrictInt | StrictBool] = Field(
+        default_factory=dict
+    )
 
     @field_validator("metric_contributions")
     @classmethod
@@ -256,6 +271,17 @@ class RetrievalCaseResult(BaseModel):
     def serialize_metric_contributions(
         self, value: Mapping[str, float | int | bool]
     ) -> dict[str, float | int | bool]:
+        return dict(value)
+
+    @field_validator("provenance")
+    @classmethod
+    def freeze_provenance(cls, value: Mapping[str, RetrievalRoute]) -> Mapping[str, RetrievalRoute]:
+        return _freeze_mapping(value)
+
+    @field_serializer("provenance")
+    def serialize_provenance(
+        self, value: Mapping[str, RetrievalRoute]
+    ) -> dict[str, RetrievalRoute]:
         return dict(value)
 
 
@@ -284,6 +310,18 @@ class RetrievalConfigurationMetrics(BaseModel):
     rewrite_win_count: StrictInt = Field(default=0, ge=0)
     rewrite_loss_count: StrictInt = Field(default=0, ge=0)
     rewrite_no_change_count: StrictInt = Field(default=0, ge=0)
+    denominators: Mapping[StrictStr, StrictInt] = Field(default_factory=dict)
+
+    @field_validator("denominators")
+    @classmethod
+    def freeze_denominators(cls, value: Mapping[str, int]) -> Mapping[str, int]:
+        if any(count < 0 for count in value.values()):
+            raise ValueError("metric denominators cannot be negative")
+        return _freeze_mapping(value)
+
+    @field_serializer("denominators")
+    def serialize_denominators(self, value: Mapping[str, int]) -> dict[str, int]:
+        return dict(value)
 
 
 class RetrievalConfigurationResult(BaseModel):
@@ -333,9 +371,22 @@ class RetrievalEvalReport(BaseModel):
     configurations: tuple[RetrievalConfigurationResult, ...]
     gates: RetrievalEvalGates
     gate_passed: StrictBool
+    report_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    rrf_sparse_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    rrf_dense_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    rrf_rank_constant: StrictInt = Field(default=60, gt=0)
+    rerank_signal_weight: StrictFiniteFloat = Field(default=1.0, gt=0, le=1)
+    calibration: Literal["in_sample_offline_synthetic"] = "in_sample_offline_synthetic"
+    calibrated_configurations: tuple[Literal["rrf_fusion", "rrf_plus_rerank"], ...] = (
+        "rrf_fusion", "rrf_plus_rerank",
+    )
+    agentic_rrf_rank_constant: StrictInt = Field(default=60, gt=0)
+    agentic_rrf_sparse_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    agentic_rrf_dense_weight: StrictFiniteFloat = Field(default=1.0, gt=0)
+    agentic_rerank_signal_weight: StrictFiniteFloat = Field(default=1.0, gt=0, le=1)
 
 
-def load_retrieval_cases(path: Path) -> RetrievalEvalCorpus:
+def load_retrieval_cases(path: Path, *, data_dir: Path = DATA_DIR) -> RetrievalEvalCorpus:
     """Load a canonical case artifact and validate it against production knowledge."""
 
     resolved = Path(path)
@@ -347,7 +398,7 @@ def load_retrieval_cases(path: Path) -> RetrievalEvalCorpus:
     if raw != canonical_json_bytes(decoded):
         raise ValueError("retrieval corpus must use canonical JSON")
     corpus = RetrievalEvalCorpus.model_validate(decoded)
-    knowledge = KnowledgeCorpus.load()
+    knowledge = KnowledgeCorpus.load(data_dir=data_dir)
     if corpus.knowledge_corpus_sha256 != knowledge.manifest.corpus_sha256:
         raise ValueError("knowledge corpus digest mismatch")
     known = {document.citation_id for document in knowledge.documents}
@@ -368,8 +419,7 @@ def load_retrieval_cases(path: Path) -> RetrievalEvalCorpus:
         (case.id, document_id)
         for case in corpus.cases
         for document_id, judgment in case.judgments.items()
-        if judgment.relevance > 0
-        and by_id[document_id].source_class not in case.expected_route
+        if judgment.relevance > 0 and by_id[document_id].source_class not in case.expected_route
     ]
     if contradictions:
         raise ValueError(f"source-route contradiction: {contradictions}")

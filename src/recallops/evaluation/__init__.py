@@ -1,5 +1,11 @@
 """Deterministic, offline evaluation contracts for RecallOps."""
 
+from recallops.evaluation.retrieval_benchmark import (
+    load_retrieval_report,
+    run_retrieval_benchmark,
+    validate_retrieval_report,
+)
+from recallops.evaluation.retrieval_schema import RetrievalEvalReport
 from recallops.evaluation.runner import (
     EvaluationGateError,
     EvaluationObservation,
@@ -28,8 +34,12 @@ __all__ = [
     "RuntimeProtocol",
     "RuntimeScenarioExecutor",
     "RecallOpsEvaluationExecutor",
+    "RetrievalEvalReport",
     "ScenarioCorpus",
     "load_scenarios",
+    "load_retrieval_report",
     "run_evaluations",
     "run_recallops_evaluations",
+    "run_retrieval_benchmark",
+    "validate_retrieval_report",
 ]

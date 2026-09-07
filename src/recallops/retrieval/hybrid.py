@@ -100,9 +100,16 @@ def reciprocal_rank_fusion(
     sparse: Sequence[tuple[str, float]],
     dense: Sequence[tuple[str, float]],
     rank_constant: int = 60,
+    sparse_weight: float = 1.0,
+    dense_weight: float = 1.0,
 ) -> tuple[FusionRecord, ...]:
     if isinstance(rank_constant, bool) or not isinstance(rank_constant, int) or rank_constant <= 0:
         raise ValueError("rank_constant must be a positive integer")
+    if any(
+        type(weight) is not float or not math.isfinite(weight) or weight <= 0
+        for weight in (sparse_weight, dense_weight)
+    ):
+        raise ValueError("RRF weights must be strict positive finite floats")
     for component_name, ranked in (("sparse", sparse), ("dense", dense)):
         for citation_id, score in ranked:
             if type(score) is not float or not math.isfinite(score):
@@ -126,7 +133,8 @@ def reciprocal_rank_fusion(
             seen.add(citation_id)
             rows[citation_id][f"{kind}_rank"] = rank
             rows[citation_id][f"{kind}_score"] = _round(score)
-            rows[citation_id]["rrf_score"] = float(rows[citation_id]["rrf_score"]) + 1 / (
+            weight = sparse_weight if kind == "sparse" else dense_weight
+            rows[citation_id]["rrf_score"] = float(rows[citation_id]["rrf_score"]) + weight / (
                 rank_constant + rank
             )
     fused = [
@@ -287,7 +295,14 @@ class HybridIndex:
         fused: tuple[FusionRecord, ...],
         *,
         intent: RetrievalIntent,
+        signal_weight: float = 1.0,
     ) -> list[_Reranked]:
+        if (
+            type(signal_weight) is not float
+            or not math.isfinite(signal_weight)
+            or not 0 < signal_weight <= 1
+        ):
+            raise ValueError("rerank signal weight must be a float in (0, 1]")
         resolved_intent = self._resolve_intent(query) if intent == "auto" else intent
         identifiers = tuple(
             dict.fromkeys(match.casefold() for match in IDENTIFIER_PATTERN.findall(query))
@@ -327,7 +342,7 @@ class HybridIndex:
                 _Reranked(
                     fusion=item,
                     document=document,
-                    score=_round(score),
+                    score=_round(item.rrf_score + signal_weight * (score - item.rrf_score)),
                     explanation=tuple(explanation),
                 )
             )
@@ -361,6 +376,31 @@ class HybridIndex:
         if operational:
             return "operational"
         return "regulatory"
+
+    def rerank_fused(
+        self,
+        query: str,
+        fused: Sequence[FusionRecord],
+        *,
+        intent: RetrievalIntent,
+        signal_weight: float = 1.0,
+    ) -> tuple[HybridSearchResult, ...]:
+        """Expose production reranking without the search diversity selector."""
+        return tuple(
+            HybridSearchResult(
+                document=item.document,
+                sparse_rank=item.fusion.sparse_rank,
+                sparse_score=item.fusion.sparse_score,
+                dense_rank=item.fusion.dense_rank,
+                dense_score=item.fusion.dense_score,
+                rrf_score=item.fusion.rrf_score,
+                rerank_score=item.score,
+                explanation=item.explanation,
+            )
+            for item in self._rerank(
+                query, tuple(fused), intent=intent, signal_weight=signal_weight
+            )
+        )
 
     def search(self, request: HybridSearchRequest) -> HybridSearchResponse:
         candidate_k = min(len(self.documents), max(20, request.top_k * 4))

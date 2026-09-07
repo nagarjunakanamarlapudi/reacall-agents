@@ -28,7 +28,7 @@ from recallops.agents.policies import (
 )
 from recallops.config import get_settings
 from recallops.retrieval.corpus import KnowledgeCorpus
-from recallops.retrieval.hybrid import HybridIndex
+from recallops.retrieval.hybrid import load_local_hybrid_index
 from recallops.retrieval.models import (
     HybridSearchRequest,
     HybridSearchResponse,
@@ -157,11 +157,60 @@ AUDITED_GENERIC_QUERY_WORDS = frozenset(
         "would",
     }
 )
+# Request/relationship language asks how to present evidence; it does not assert
+# a new material subject. Domain nouns (e.g. reactor, API key, employee) remain
+# subject to literal or explicitly grounded semantic evidence checks.
+AUDITED_GENERIC_QUERY_WORDS |= frozenset(
+    {
+        "recorded",
+        "report",
+        "reference",
+        "carry",
+        "description",
+        "matches",
+        "forward",
+        "backward",
+        "go",
+        "kind",
+        "belong",
+        "find",
+        "guidance",
+        "compare",
+        "pair",
+        "say",
+        "covers",
+        "concerns",
+        "involved",
+        "involving",
+        "describes",
+        "provide",
+        "reviewed",
+        "affected",
+        "first",
+        "questions",
+        "treating",
+        "makes",
+        "relevant",
+        "explains",
+        "shown",
+        "test",
+        "decode",
+        "recover",
+        "care",
+        "decides",
+    }
+)
 
 # The critic compares normalized domain concepts, not literal surface forms.  These
 # aliases intentionally remain small and auditable: retrieval is advisory, so an
 # unfamiliar material concept becomes an explicit gap instead of being guessed.
 CONCEPT_ALIASES = {
+    "unexplained": "reconciliation",
+    "catalog": "product",
+    "destination": "facility",
+    "sent": "shipping",
+    "transfer": "shipping",
+    "acknowledge": "effectiveness",
     "acted": "effectiveness",
     "actions": "remediation",
     "batch": "lot",
@@ -335,12 +384,25 @@ def _domain_concepts(text: str) -> tuple[set[str], set[str]]:
     raw_tokens = set(CONCEPT_TOKEN_PATTERN.findall(text.casefold()))
     consumed = {token for token in raw_tokens if token in CONCEPT_ALIASES}
     concepts = {CONCEPT_ALIASES[token] for token in consumed}
+    if {"parent", "event"} <= raw_tokens:
+        concepts.add("traceability")
     return concepts, consumed
 
 
 def _grounding_form(token: str) -> str:
     """Apply a deliberately small, deterministic English singularization."""
 
+    equivalents = {
+        "contaminant": "contamination",
+        "declaration": "declared",
+        "omitted": "undeclared",
+        "missing": "undeclared",
+        "category": "classification",
+        "region": "distribution",
+        "dimension": "where",
+    }
+    if token in equivalents:
+        return equivalents[token]
     if len(token) > 4 and token.endswith("ies"):
         return f"{token[:-3]}y"
     if len(token) > 3 and token.endswith("s") and not token.endswith(("ss", "us", "is")):
@@ -365,6 +427,18 @@ def _evidence_grounding_tokens(
             _grounding_form(token)
             for token in CONCEPT_TOKEN_PATTERN.findall(document_json.casefold())
         )
+    # Narrow one-way taxonomy expansions require an actual supporting term in
+    # retrieved evidence, unlike an allowlist that would silently ignore nouns.
+    for term, supported in {
+        "peanut": {"allergen"},
+        "milk": {"dairy", "allergen"},
+        "cyclospora": {"parasite"},
+        "romaine": {"leafy", "green"},
+        "color": {"additive", "dye"},
+        "water": {"liquid"},
+    }.items():
+        if term in tokens:
+            tokens.update(supported)
     return tokens
 
 
@@ -478,18 +552,21 @@ def _retrieval_config_digest(config: _RetrievalConfig) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _build_retrieval_config(transport: Literal["direct", "stdio"]) -> _RetrievalConfig:
+def _build_retrieval_config(
+    transport: Literal["direct", "stdio"], data_dir: Path | None = None
+) -> _RetrievalConfig:
     settings = get_settings()
-    corpus = KnowledgeCorpus.load(data_dir=settings.data_dir)
+    resolved_data_dir = Path(data_dir or settings.data_dir).resolve()
+    corpus = KnowledgeCorpus.load(data_dir=resolved_data_dir)
     provisional = _RetrievalConfig(
         transport=transport,
-        data_dir=settings.data_dir,
+        data_dir=resolved_data_dir,
         source_mode=settings.source_mode,
         corpus_sha256=corpus.manifest.corpus_sha256,
         python_executable=_PYTHON_EXECUTABLE if transport == "stdio" else None,
         cwd=_PROJECT_ROOT if transport == "stdio" else None,
         environment=(
-            _stdio_environment(settings.data_dir, settings.source_mode)
+            _stdio_environment(resolved_data_dir, settings.source_mode)
             if transport == "stdio"
             else ()
         ),
@@ -592,12 +669,13 @@ class ClosedRetrievalGateway:
         transport: str,
         *,
         _factory_token: object | None = None,
+        data_dir: Path | None = None,
     ) -> None:
         if _factory_token is not _GATEWAY_FACTORY_TOKEN:
             raise TypeError("ClosedRetrievalGateway is factory-built; use direct() or stdio()")
         if transport not in {"direct", "stdio"}:
             raise TypeError("closed retrieval gateway requires a fixed transport identity")
-        config = _build_retrieval_config(transport)
+        config = _build_retrieval_config(transport, data_dir)
         object.__setattr__(self, "_config", config)
         object.__setattr__(self, "_expected_digest", config.digest)
 
@@ -619,8 +697,8 @@ class ClosedRetrievalGateway:
         return _manifest_for_config(self._config, self._expected_digest)
 
     @classmethod
-    def direct(cls) -> ClosedRetrievalGateway:
-        return cls("direct", _factory_token=_GATEWAY_FACTORY_TOKEN)
+    def direct(cls, *, data_dir: Path | None = None) -> ClosedRetrievalGateway:
+        return cls("direct", _factory_token=_GATEWAY_FACTORY_TOKEN, data_dir=data_dir)
 
     @classmethod
     def stdio(cls) -> ClosedRetrievalGateway:
@@ -654,7 +732,10 @@ class ClosedRetrievalGateway:
             record_types=record_types,
         )
         if config.transport == "direct":
-            return HybridIndex(corpus.documents).search(request).model_dump(mode="json")
+            index = load_local_hybrid_index(str(config.data_dir))
+            if index.metadata.corpus_sha256 != config.corpus_sha256:
+                raise ValueError("sealed retrieval index corpus identity mismatch")
+            return index.search(request).model_dump(mode="json")
 
         server = next(
             item for item in config.servers if item.connection_id == descriptor.connection_id
@@ -898,12 +979,27 @@ class AgenticRetriever:
     @staticmethod
     def _plan(question: str) -> tuple[RetrievalIntent, tuple[SourceRoute, ...]]:
         concepts, _ = _domain_concepts(question)
+        words = set(CONCEPT_TOKEN_PATTERN.findall(question.casefold()))
+        # A concrete retailer record can mention classification, disposition, or
+        # movement without asking for regulatory policy. Recall numbers, unlike
+        # lot/shipment/facility IDs, identify official enforcement records.
+        identifiers = IDENTIFIER_PATTERN.findall(question)
+        retailer_identifier = any(not item.upper().startswith("H-") for item in identifiers)
+        explicit_official = bool(words & {"official", "fda", "regulator", "regulatory", "gs1"})
+        explicit_official = explicit_official or any(
+            item.upper().startswith("H-") for item in identifiers
+        )
+        explicit_synthetic = bool(words & {"synthetic", "northstar", "retailer"})
+        if retailer_identifier or explicit_synthetic:
+            regulatory = explicit_official or "recall" in concepts or "effectiveness" in concepts
+            if regulatory:
+                return "mixed", ("official", "synthetic")
+            return "operational", ("synthetic",)
         regulatory = bool(concepts & REGULATORY_ROUTE_CONCEPTS) or (
             "traceability" in concepts and bool(concepts & {"receiving", "shipping"})
         )
-        operational = bool(IDENTIFIER_PATTERN.search(question)) or bool(
-            concepts & OPERATIONAL_ROUTE_CONCEPTS
-        )
+        regulatory = regulatory or explicit_official
+        operational = bool(concepts & OPERATIONAL_ROUTE_CONCEPTS)
         if regulatory and operational:
             return "mixed", ("official", "synthetic")
         if operational:
@@ -943,12 +1039,21 @@ class AgenticRetriever:
                     current.document.citation_id,
                 ):
                     by_citation[result.document.citation_id] = result
-        return tuple(
-            sorted(
-                by_citation.values(),
-                key=lambda item: (-item.rerank_score, item.document.citation_id),
-            )
+        ranked = sorted(
+            by_citation.values(),
+            key=lambda item: (-item.rerank_score, item.document.citation_id),
         )
+        # Source-specific scores have different identifier boosts. Retain the
+        # strongest item from each requested source before filling remaining
+        # positions, so a mixed question cannot bury an entire evidence family.
+        leaders: list[HybridSearchResult] = []
+        seen_sources: set[str] = set()
+        for item in ranked:
+            if item.document.source_class not in seen_sources:
+                leaders.append(item)
+                seen_sources.add(item.document.source_class)
+        leader_ids = {item.document.citation_id for item in leaders}
+        return (*leaders, *(item for item in ranked if item.document.citation_id not in leader_ids))
 
     @staticmethod
     def _critic(
@@ -1019,7 +1124,26 @@ class AgenticRetriever:
         return tuple(dict.fromkeys(gaps))
 
     @staticmethod
-    def _citations(evidence: tuple[HybridSearchResult, ...]) -> tuple[RetrievalCitation, ...]:
+    def _citations(
+        evidence: tuple[HybridSearchResult, ...],
+        question: str = "",
+    ) -> tuple[RetrievalCitation, ...]:
+        identifiers = IDENTIFIER_PATTERN.findall(question)
+
+        def supports_identifiers(item: HybridSearchResult) -> bool:
+            applicable = [
+                identifier
+                for identifier in identifiers
+                if (
+                    identifier.upper().startswith("H-")
+                    == (item.document.source_class == "official")
+                )
+            ]
+            searchable = f"{item.document.record_id} {item.document.text}".casefold()
+            return not applicable or any(
+                identifier.casefold() in searchable for identifier in applicable
+            )
+
         return tuple(
             RetrievalCitation(
                 citation_id=item.document.citation_id,
@@ -1028,6 +1152,7 @@ class AgenticRetriever:
                 origin=item.document.origin,
             )
             for item in evidence
+            if supports_identifiers(item)
         )
 
     async def _retrieve_source(
@@ -1124,7 +1249,7 @@ class AgenticRetriever:
             evidence_gaps=gaps,
             stop_reason=stop_reason,
             evidence=state.evidence,
-            citations=self._citations(state.evidence),
+            citations=self._citations(state.evidence, state.question),
             query_trace=state.query_trace,
             tool_trace=state.tool_trace,
             phase_trace=phase_trace,
