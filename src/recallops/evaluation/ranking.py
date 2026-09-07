@@ -51,10 +51,6 @@ def reciprocal_rank(relevance: Mapping[str, int], ranked_ids: Sequence[str]) -> 
     return 0.0
 
 
-def _dcg(grades: Sequence[int]) -> float:
-    return sum((2**grade - 1) / math.log2(rank + 2) for rank, grade in enumerate(grades))
-
-
 def _scaled_dcg(grades: Sequence[int], scale: int) -> float:
     """Compute DCG divided by ``2**scale`` without integer/float overflow."""
     scale_factor = math.ldexp(1.0, -scale)
