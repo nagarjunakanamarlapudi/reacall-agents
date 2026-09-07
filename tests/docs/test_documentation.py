@@ -204,6 +204,8 @@ def _validate_mermaid_operators(line: str, operators: list[re.Match[str]]) -> No
         masked[operator.start() : operator.end()] = " " * (operator.end() - operator.start())
     remainder = "".join(masked)
     remainder = _QUOTED_TEXT.sub(lambda match: " " * len(match.group()), remainder)
+    if operators and (composition := re.search(r"[;&]", remainder)) is not None:
+        raise AssertionError(f"unsupported Mermaid composition {composition.group()!r}")
     candidate = _CONNECTOR_CANDIDATE.search(remainder)
     if candidate is not None:
         raise AssertionError(f"unsupported Mermaid connector {candidate.group()!r}")
@@ -403,6 +405,7 @@ class DocumentationContractTests(unittest.TestCase):
         fixture = """\
 flowchart LR
   EVAL["Evaluation"] -->|verified report| MID["Middle"] --> SCORE["Score"]
+  SAFE["semicolon ; and ampersand & are label text"] -->|compare ; & cite| CLEAN["Clean"]
   SCORE -- "labelled solid" --> VIEW["View"]
   LIVE -. advisory observation .-> ADVISORY --> UI
   VIEW -.-> END
@@ -417,6 +420,7 @@ flowchart LR
             {
                 ("EVAL", "MID"),
                 ("MID", "SCORE"),
+                ("SAFE", "CLEAN"),
                 ("SCORE", "VIEW"),
                 ("LIVE", "ADVISORY"),
                 ("ADVISORY", "UI"),
@@ -433,6 +437,20 @@ flowchart LR
     def test_mermaid_directed_edge_extractor_rejects_unknown_connector_syntax(self) -> None:
         with self.assertRaisesRegex(AssertionError, "unsupported Mermaid connector"):
             mermaid_directed_edges("flowchart LR\n  JUDGE ~~> OM\n")
+
+    def test_authority_path_guard_rejects_ambiguous_edge_composition(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        for mutation in (
+            "X --> Y; JUDGE ==> OM",
+            "X & JUDGE ==> OM",
+        ):
+            with self.subTest(mutation=mutation):
+                with self.assertRaisesRegex(AssertionError, "unsupported Mermaid composition"):
+                    self.assert_no_mermaid_path(
+                        f"{diagram}\n{mutation}\n",
+                        ("JUDGE",),
+                        ("GN", "W", "OM", "OP"),
+                    )
 
     def test_authority_path_guard_rejects_direct_labelled_and_transitive_leaks(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
