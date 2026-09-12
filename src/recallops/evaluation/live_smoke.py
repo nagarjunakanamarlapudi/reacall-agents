@@ -5,6 +5,7 @@ from time import perf_counter
 
 from recallops.agents.deep_supervisor import live_prompt_fingerprint
 from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
+from recallops.demo_contract import FLAGSHIP_SCOPE_LOT_IDS
 from recallops.llm import LLMSettings
 from recallops.llm.artifacts import ROLES, build_live_request, canonical_digest
 from recallops.llm.live_reasoning import LiveReasoningService
@@ -32,7 +33,7 @@ async def run_live_smoke(settings: LLMSettings, output_path: Path) -> dict:
             case_version=0,
             recall_number="H-1230-2026",
             question=question,
-            scope_lot_ids=["LOT-EXACT-170", "LOT-PROBABLE-160", "LOT-AMBIG-175", "LOT-REJECT-190"],
+            scope_lot_ids=FLAGSHIP_SCOPE_LOT_IDS,
             rag_result=rag.model_dump(mode="json"),
         )
         result = await LiveReasoningService(settings).run(request, transport="direct")

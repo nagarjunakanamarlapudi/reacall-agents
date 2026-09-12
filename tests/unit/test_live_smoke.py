@@ -7,6 +7,40 @@ import pytest
 from recallops.llm import LLMSettings
 
 
+async def test_ui_and_smoke_share_the_exact_immutable_flagship_scope(
+    tmp_path, monkeypatch, live_case
+):
+    import recallops.evaluation.live_smoke as smoke
+    import recallops.llm.live_reasoning as live
+    import recallops.ui.adapter as ui
+    from recallops.demo_contract import FLAGSHIP_RECALL_NUMBER, FLAGSHIP_SCOPE_LOT_IDS
+
+    assert type(FLAGSHIP_SCOPE_LOT_IDS) is tuple
+    assert smoke.FLAGSHIP_SCOPE_LOT_IDS is ui.FLAGSHIP_SCOPE_LOT_IDS is FLAGSHIP_SCOPE_LOT_IDS
+    captured = []
+    build_request = smoke.build_live_request
+
+    def capture_request(**kwargs):
+        captured.append(kwargs["scope_lot_ids"])
+        return build_request(**kwargs)
+
+    monkeypatch.setattr(smoke, "build_live_request", capture_request)
+    monkeypatch.setattr(live, "build_chat_model", lambda settings: live_case.script())
+    settings = LLMSettings(mode="openai", model="test-model")
+    adapter = ui.DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoint.sqlite",
+        operations_path=tmp_path / "operations.sqlite",
+        llm_settings=settings,
+    )
+    opened = await adapter.open_case(FLAGSHIP_RECALL_NUMBER)
+    report = await smoke.run_live_smoke(settings, tmp_path / "smoke.json")
+    assert report["passed"]
+    assert captured[0] is FLAGSHIP_SCOPE_LOT_IDS
+    assert tuple(opened["scope_lot_ids"]) == captured[0]
+    opened["scope_lot_ids"].clear()
+    assert len(FLAGSHIP_SCOPE_LOT_IDS) == 4
+
+
 @pytest.mark.parametrize("invalid", [False, True])
 async def test_smoke_scores_one_real_graph_result_and_never_overstates_verification(
     tmp_path, monkeypatch, live_case, invalid
