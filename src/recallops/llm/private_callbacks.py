@@ -8,10 +8,15 @@ from functools import wraps
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.callbacks import manager as callback_managers
 
-_PRIVATE_CALLBACK: ContextVar[BaseCallbackHandler | None] = ContextVar(
-    "recallops_private_callback", default=None
-)
-_sdk_configure = callback_managers._configure
+# reload() retains this module's globals, which existing wrappers/context managers
+# also reference. Preserve both original identities: recapturing the installed
+# wrapper self-delegates, and replacing the ContextVar invalidates active tokens.
+if "_PRIVATE_CALLBACK" not in globals():
+    _PRIVATE_CALLBACK: ContextVar[BaseCallbackHandler | None] = ContextVar(
+        "recallops_private_callback", default=None
+    )
+if "_sdk_configure" not in globals():
+    _sdk_configure = callback_managers._configure
 
 
 @wraps(_sdk_configure)
