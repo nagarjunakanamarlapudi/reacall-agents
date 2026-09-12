@@ -9,10 +9,12 @@ import json
 import math
 import os
 import sys
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from types import MappingProxyType
-from typing import Annotated, Any, ClassVar, NamedTuple, NotRequired
+from typing import Annotated, Any, ClassVar, Literal, NamedTuple, NotRequired
 
 from deepagents import (
     GeneralPurposeSubagentProfile,
@@ -27,12 +29,13 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain.agents.middleware.types import AgentState, PrivateStateAttr
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.callbacks import AsyncCallbackManager
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import _format_output
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from recallops.agents.prompts import (
     CONTAINMENT_COMMUNICATIONS_PROMPT,
@@ -125,6 +128,33 @@ class SpecialistDefinition(BaseModel):
     response_model_name: str
 
 
+class SupervisorResponse(BaseModel):
+    """Advisory, text-free synthesis; independent verification still owns all actions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    outcome: Literal["human_review", "evidence_gap", "out_of_scope"]
+    evidence_count: int = Field(ge=0)
+    confirmed_lot_count: int = Field(ge=0)
+    ambiguous_lot_count: int = Field(ge=0)
+    proposed_action_count: int = Field(ge=0)
+    executed: Literal[False]
+
+
+@dataclass(frozen=True)
+class ReadToolObservation:
+    """Only inert scalars cross the sealed read capability's telemetry boundary."""
+
+    name: str
+    started_at: float
+    duration_ms: float
+    status: Literal["completed", "failed"]
+
+
+READ_TOOL_OBSERVATIONS: ContextVar[list[ReadToolObservation] | None] = ContextVar(
+    "recallops_read_tool_observations", default=None
+)
+
+
 class DelegationState(AgentState):
     delegated_specialists: NotRequired[Annotated[list[str], PrivateStateAttr]]
     plan_written: NotRequired[Annotated[bool, PrivateStateAttr]]
@@ -171,10 +201,15 @@ class DelegationGuardMiddleware(AgentMiddleware):
                 raise ValueError(f"unknown specialist delegation {specialist!r}")
             if specialist in delegated:
                 raise ValueError(f"duplicate specialist delegation {specialist!r}")
+            if specialist != fixed[len(delegated)]:
+                raise ValueError("specialist delegation must follow the fixed order")
             delegated.append(specialist)
         if len(delegated) > len(fixed):
             raise ValueError("specialist delegation budget exceeded")
-        if not last_message.tool_calls and delegated != fixed:
+        final_response = any(
+            call["name"] == "SupervisorResponse" for call in last_message.tool_calls
+        )
+        if (not last_message.tool_calls or final_response) and delegated != fixed:
             raise ValueError("live supervisor must complete exactly four specialist delegations")
         if task_calls:
             return {"delegated_specialists": delegated, "plan_written": plan_written}
@@ -959,12 +994,16 @@ def _close_read_gateway(
         )
         if any(value is not None for value in callback_state.values()):
             raise ValueError("trusted RecallOps stdio callbacks must all be disabled")
-        if not _has_exact_keys(
-            connections,
-            frozenset(server for server, _module in _STDIO_SERVERS),
-        ):
+        servers = (
+            _STDIO_READ_SERVERS
+            if _has_exact_keys(
+                connections, frozenset(server for server, _module in _STDIO_READ_SERVERS)
+            )
+            else _STDIO_SERVERS
+        )
+        if not _has_exact_keys(connections, frozenset(server for server, _module in servers)):
             raise ValueError("trusted RecallOps stdio server identity set is incomplete")
-        for server, module in _STDIO_SERVERS:
+        for server, module in servers:
             connection = connections[server]
             if type(connection) is not dict:
                 raise ValueError(
@@ -1406,10 +1445,25 @@ async def _invoke_sealed_read_tool(
         tool_call_id=resolved_tool_call_id,
     )
     try:
+        started_at = perf_counter()
         content = await capability(**payload)
     except (Exception, KeyboardInterrupt) as error:
+        observations = READ_TOOL_OBSERVATIONS.get()
+        if type(observations) is list:
+            observations.append(
+                ReadToolObservation(
+                    tool_name, started_at, (perf_counter() - started_at) * 1000, "failed"
+                )
+            )
         await run_manager.on_tool_error(error, tool_call_id=resolved_tool_call_id)
         raise
+    observations = READ_TOOL_OBSERVATIONS.get()
+    if type(observations) is list:
+        observations.append(
+            ReadToolObservation(
+                tool_name, started_at, (perf_counter() - started_at) * 1000, "completed"
+            )
+        )
     output = _format_output(
         content,
         None,
@@ -1573,7 +1627,14 @@ def build_deep_supervisor(
     graph = create_deep_agent(
         model=model,
         tools=[],
-        system_prompt=SUPERVISOR_PROMPT,
+        system_prompt=SUPERVISOR_PROMPT
+        + (
+            "\nWrite exactly four todos, each prefixed by [specialist-name], in this order: "
+            + ", ".join(item.name for item in catalog)
+            + ". Delegate to each once in order. Finish with SupervisorResponse, reporting only "
+            "advisory counts, the review outcome, and executed=false."
+        ),
+        response_format=ToolStrategy(SupervisorResponse, handle_errors=False),
         middleware=[
             delegation_guard,
             task_limiter,

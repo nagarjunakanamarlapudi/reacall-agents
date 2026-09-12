@@ -2411,6 +2411,11 @@ def test_delegation_guard_requires_one_runtime_delegation_per_fixed_specialist()
             )
         )
     ]
+    with pytest.raises(ValueError, match="order"):
+        guard.after_model(
+            {"messages": [AIMessage(content="", tool_calls=[calls[1]])], "plan_written": True},
+            Runtime(),
+        )
     update = guard.after_model(
         {
             "messages": [AIMessage(content="", tool_calls=calls)],
@@ -2576,3 +2581,91 @@ def test_fake_model_delegation_returns_each_typed_specialist_response(
     assert (
         response.__class__.model_validate(json.loads(returned)).model_dump(mode="json") == payload
     )
+
+
+def test_registry_traceability_only_stdio_compiles_without_any_operations_tools() -> None:
+    """Catches requiring an Operations connection or adding it anywhere in the compiled union."""
+    import sys
+
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import (
+        _compiled_subagent_graphs,
+        _compiled_tool_names,
+        build_deep_supervisor,
+    )
+    from recallops.mcp.gateway import StdioMCPGateway
+
+    gateway = StdioMCPGateway(
+        {
+            "registry": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-m", "recallops.mcp.recall_registry_server"],
+            },
+            "traceability": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-m", "recallops.mcp.traceability_server"],
+            },
+        }
+    )
+    supervisor = build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter([])),
+        read_gateway=gateway,
+    )
+    actual = set(_compiled_tool_names(supervisor.graph))
+    for graph in _compiled_subagent_graphs(supervisor.graph).values():
+        actual.update(_compiled_tool_names(graph))
+    assert actual == {
+        "ls",
+        "read_file",
+        "task",
+        "write_todos",
+        "search_recalls",
+        "get_recall",
+        "get_product_metadata",
+        "find_candidate_products",
+        "match_lots",
+        "trace_forward",
+        "trace_backward",
+        "get_inventory",
+        "get_sales",
+        "reconcile_units",
+    }
+    assert actual.isdisjoint(
+        {
+            "create_case",
+            "apply_inventory_hold",
+            "create_facility_tasks",
+            "record_acknowledgment",
+            "record_disposition",
+            "close_case",
+        }
+    )
+
+
+def test_stdio_connection_identity_rejects_executable_keys_before_comparison() -> None:
+    """Catches calling attacker-defined key comparison while selecting the read server set."""
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    from recallops.agents.deep_supervisor import build_deep_supervisor
+    from recallops.mcp.gateway import StdioMCPGateway
+
+    comparisons = []
+
+    class UnsafeKey(str):
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            comparisons.append(True)
+            return str.__eq__(self, other)
+
+    gateway = StdioMCPGateway()
+    gateway.client.connections = {
+        UnsafeKey("registry"): gateway.client.connections["registry"],
+        "traceability": gateway.client.connections["traceability"],
+    }
+    with pytest.raises(ValueError, match="server identity"):
+        build_deep_supervisor(model=GenericFakeChatModel(messages=iter([])), read_gateway=gateway)
+    assert comparisons == []
