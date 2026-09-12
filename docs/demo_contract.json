@@ -1,7 +1,7 @@
 {
   "schema_version": "2.0",
   "runtime_integration_status": "implemented durable runtime and five-view UI",
-  "narration_scope": "expected verified-live route; demonstrated consent and receipts are deterministic; latest live smoke failed before review",
+  "narration_scope": "expected verified-live route; demonstrated consent and receipts are deterministic; latest live attempt timed out and reached explicit deterministic_fallback action_review, which the harness rejected without approval or confirmation",
   "duration_seconds": 295,
   "timing": {
     "evaluation_start": "04:00",

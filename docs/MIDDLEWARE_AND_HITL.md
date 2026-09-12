@@ -38,7 +38,7 @@ Each action uses two separate durable interrupts:
 
 `edit` may change rationale only and returns through verification/re-review. Scope, target IDs, evidence IDs, action type, case identity, and version are immutable. `reject` keeps the case open without execution. `escalate` ends safely. `cancel` at execution confirmation also writes nothing.
 
-After one receipt, the approval is invalidated, the Operations version increases, and the graph recomputes the next required action. That is why the deterministic flagship demonstration requires a second review and confirmation for the hold after the case-creation receipt. This is also the expected verified-live route; the latest failed live attempt never reached human review.
+After one receipt, the approval is invalidated, the Operations version increases, and the graph recomputes the next required action. That is why the deterministic flagship demonstration requires a second review and confirmation for the hold after the case-creation receipt. This is also the expected verified-live route. The latest provider timeout reached human action review only through explicit deterministic fallback; its verification is not live proof, and the harness did not approve or confirm.
 
 ## Full versioned lifecycle
 

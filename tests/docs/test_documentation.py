@@ -309,6 +309,13 @@ def mermaid_directed_path(
 
 
 class DocumentationContractTests(unittest.TestCase):
+    def test_latest_demo_timeout_routes_to_labelled_fallback_not_live_proof(self) -> None:
+        diagram = (IMAGES / "07_demo_story.mmd").read_text(encoding="utf-8")
+        self.assertIn("FAIL --> FALLBACK --> MODE", diagram)
+        self.assertIn("fallback verification is NOT live proof", diagram)
+        self.assertIn("harness did not approve or confirm", diagram)
+        self.assertNotIn("FALLBACK --> D", diagram)
+
     def test_presentation_png_encoding_is_canonical_uncompressed_deflate(self) -> None:
         namespace = runpy.run_path(str(ROOT / "scripts/render_presentation.py"))
         with tempfile.TemporaryDirectory() as temporary:

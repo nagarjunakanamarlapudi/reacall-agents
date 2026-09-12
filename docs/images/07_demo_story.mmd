@@ -19,7 +19,8 @@ flowchart TB
   I["04:45 Request closure<br/>finish by 04:55<br/>Open — closure blocked"]:::human
 
   A --> B --> C --> D --> E --> F --> G --> H --> J --> K --> I
-  FAIL["Latest real live attempt: FAILED<br/>gpt-5-mini / medium • 195.583s • 8 model calls<br/>83,995 tokens • recall complete; matching failed after one correction<br/>three read events; zero released claims / receipts<br/>no HITL or writes • passed=false"]:::human
+  FAIL["Latest live: execution_failure / timeout<br/>gpt-5-mini / medium • four lots • 371.975s<br/>7 completed model calls + 1 failed event • 82,420 tokens<br/>plan observed; recall complete; three matching reads<br/>sole correction timed out at 120.006s"]:::human
+  FALLBACK["Explicit deterministic_fallback<br/>review_required / action_review<br/>fallback verification is NOT live proof<br/>harness did not approve or confirm • zero write receipts"]:::block
   MODE["Presenter branch: stop failed live story here<br/>Later consent / receipts: separate deterministic demonstration<br/>Never attribute its results to OpenAI"]:::block
-  B -->|latest observed result| FAIL --> MODE
+  B -->|latest observed result| FAIL --> FALLBACK --> MODE
   NOTE["No A2A • agents never write directly<br/>internal closure ≠ FDA termination"]:::block --- H

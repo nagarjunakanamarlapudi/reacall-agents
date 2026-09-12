@@ -208,7 +208,7 @@ def architecture(output: Path) -> None:
     )
     draw.text(
         (64, 1030),
-        "Expected verified route. Latest live: matching failed after one correction; zero released claims, review or writes.",
+        "Expected verified route. Latest live timed out; fallback review is not live proof. Zero write receipts.",
         font=font(21),
         fill=MUTED,
     )
@@ -276,19 +276,19 @@ def demo(output: Path) -> None:
     draw.rounded_rectangle((64, 862, 1856, 1029), radius=18, fill="#e8e2f4")
     draw.text(
         (91, 885),
-        "Latest live: FAILED at matching after one correction. No released claims, HITL or writes.",
+        "Latest live: matching correction TIMEOUT → explicit deterministic fallback action review.",
         font=font(26, True),
         fill=INK,
     )
     draw.text(
         (91, 935),
-        "gpt-5-mini / medium • 195.583s • 8 completed model calls • 83,995 tokens • passed=false",
+        "gpt-5-mini / medium • 371.975s • 7 completed + 1 failed model event • 82,420 tokens",
         font=font(24),
         fill=MUTED,
     )
     draw.text(
         (91, 976),
-        "After failure, disclose the separate deterministic case for consent / receipts. Never present it as live success.",
+        "Fallback verification is NOT live proof. Harness did not approve or confirm. Zero write receipts.",
         font=font(24),
         fill=MUTED,
     )

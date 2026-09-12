@@ -61,7 +61,7 @@ Given a recall number and question, RecallOps makes five answers reviewable:
 
 ## Flagship and positive control
 
-The deterministic flagship mixed-scope case is intentionally not a happy path. `LOT-EXACT-170` retains 50 unaccounted units and `LOT-AMBIG-175` remains ambiguous, so that demonstrated lane ends **Open — closure blocked** even after two approved simulated writes. The evaluator’s scoped `LOT-PROBABLE-160` positive control has zero unaccounted units and exercises the complete disposition/tasks/acknowledgements/closure-review lifecycle. The latest real OpenAI attempt instead stopped at matching after one bounded correction: no released claims, no human review and no writes. See the [current evidence](README.md#what-is-implemented), not the expected workflow, for live status.
+The deterministic flagship mixed-scope case is intentionally not a happy path. `LOT-EXACT-170` retains 50 unaccounted units and `LOT-AMBIG-175` remains ambiguous, so that demonstrated lane ends **Open — closure blocked** even after two approved simulated writes. The evaluator’s scoped `LOT-PROBABLE-160` positive control has zero unaccounted units and exercises the complete disposition/tasks/acknowledgements/closure-review lifecycle. The latest real OpenAI attempt timed out during matching's sole correction. Explicit deterministic fallback reached action review, but its verification is not live proof; the harness rejected it without approval or confirmation, with zero write receipts. See the [current evidence](README.md#what-is-implemented), not the expected workflow, for live status.
 
 ## Scope boundary
 

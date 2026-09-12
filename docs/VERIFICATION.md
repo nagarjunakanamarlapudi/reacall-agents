@@ -645,11 +645,11 @@ and timestamps are observations from this final run; the safety rates, unsafe co
 quality deltas, orchestration quality/tool-call deltas, provenance boundaries, and pass/fail gates
 remain the asserted submission claims.
 
-## 2026-09-12 final live evidence and documentation scope
+## 2026-09-12 historical semantic-failure smoke and documentation scope
 
-The coordinator reported the following final real-provider smoke evidence against the hardened live investigation path. This documentation pass did not invoke OpenAI, inspect credentials, or rerun that provider attempt. Earlier timeout, schema and read-contract failures are separate historical attempts and are not added to these totals.
+The coordinator reported the following earlier real-provider smoke evidence. It is superseded as latest by the terminal timeout/fallback attempt below. This documentation pass did not invoke OpenAI, inspect credentials, or rerun that provider attempt. Earlier timeout, schema and read-contract failures are separate historical attempts and are not added to these totals.
 
-| Observation | Final failed attempt |
+| Observation | Historical semantic-failure attempt |
 |---|---|
 | Provider / model / reasoning effort | OpenAI / `gpt-5-mini` / `medium` |
 | Duration | 195.583 seconds |
@@ -665,6 +665,31 @@ The coordinator reported the following final real-provider smoke evidence agains
 
 Completed source-read events are not released verifier receipts. The smoke directly exercises bounded retrieval, the live service and (only after successful claims) independent verification; it does not execute durable HITL or Operations. Whole-agent live E2E would additionally require accepted claims to reach a durable human action review, separate execution confirmation, version-bound simulated receipts and closure evaluation. That proof remains outstanding. A deterministic two-consent-cycle demonstration proves those controls separately, not live completion.
 
-The current implementation adds shared four-lot UI/smoke scope, the 144-option bounded selector, explicit reasoning effort, scoped sealed reads, one fixed child-completion correction and exact compiled middleware hook identity checks. Subsequent prompt hardening and offline tests do not constitute another live measurement. The final documentation and diagrams describe these implemented controls and the expected verified-live route without claiming that the failed smoke reached it. Historical offline benchmark status `not_run_missing_credentials` remains attached to its original scorecard rather than being rewritten as current credential status.
+The implementation added shared four-lot UI/smoke scope, the 144-option bounded selector, explicit reasoning effort, scoped sealed reads, one fixed child-completion correction and exact compiled middleware hook identity checks. Offline tests do not constitute live measurements. Historical offline benchmark status `not_run_missing_credentials` remains attached to its original scorecard rather than being rewritten as current credential status.
 
 This documentation pass executed `uv run pytest tests/docs tests/notebooks -q --tb=short`: **68 passed in 228.12 seconds**. That includes the actual `render_diagrams.sh --verify` path, two canonical fresh renders and byte-identical committed PNG/SVG parity for eleven technical diagrams and both generated presentation PNGs. The seven initial changed contract checks first failed, then passed after implementation. Ruff check/format and patch whitespace checks passed. All ten changed PNGs were visually inspected; crowded headings/connectors were corrected without weakening the existing readability bounds. No provider call, `.env` change, or push was performed by this pass.
+
+## 2026-09-12 latest terminal real-provider attempt: timeout and fallback
+
+The coordinator supplied these safe observations from the terminal runtime harness after matching prompt hardening and privacy fixes. This documentation update did not call the provider, inspect credentials or rerun the attempt. This is separate from the one-case smoke command, which does not execute the durable HITL runtime.
+
+| Observation | Latest failed live attempt |
+|---|---|
+| Provider / model / reasoning effort | OpenAI / `gpt-5-mini` / `medium` |
+| Scope | `LOT-EXACT-170`, `LOT-PROBABLE-160`, `LOT-AMBIG-175`, `LOT-REJECT-190` |
+| Duration | 371.975 seconds |
+| Model events | 8 total: 7 completed model calls + 1 failed event |
+| Reported usage | 82,420 total tokens: 63,115 input + 19,305 output |
+| Plan / completed role | Exact four-role plan observed; recall intelligence completed |
+| Matching reads | `get_recall`, `find_candidate_products`, `match_lots` |
+| Terminal failure | Sole correction model call timed out at 120.006 seconds; `execution_failure` / `timeout` |
+| Runtime continuation | Explicit `deterministic_fallback`; `review_required` / `action_review` |
+| Verification ownership | Runtime independent verification belongs to fallback; NOT successful live proof |
+| Harness outcome | Rejected fallback as live proof; did not approve or confirm |
+| Operations state | Zero cases, write receipts, inventory holds and execution grants; one workflow identity ownership row is expected |
+| Evidence verdict | No successful live four-specialist investigation or durable live E2E |
+| Cost | Unavailable |
+
+The provider failure did not trigger another child correction attempt. The labelled deterministic fallback is a separate resilience route; reaching its review gate does not establish successful live claims or satisfy either human consent gate. The expected successful live route and the separately demonstrated deterministic dual-consent lifecycle remain distinct. Prior attempt measurements above are historical, not combined totals.
+
+This follow-up documentation update passed all **58 documentation tests in 217.80 seconds**, including the canonical double-render/committed PNG and SVG byte-parity check, plus **11 notebook tests in 5.59 seconds**. The new fallback-branch graph contract first failed, then passed. All three changed PNGs were visually inspected with no clipping or overlap; the architecture structure is unchanged. Ruff/format, whitespace and scoped credential-pattern diff checks passed. No provider call, `.env` edit or push was performed by this update.
