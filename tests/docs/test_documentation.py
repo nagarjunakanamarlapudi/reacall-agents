@@ -315,6 +315,22 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("fallback verification is NOT live proof", diagram)
         self.assertIn("harness did not approve or confirm", diagram)
         self.assertNotIn("FALLBACK --> D", diagram)
+        self.assertIn("recall-intelligence: get_recall", diagram)
+        self.assertIn("matching: find_candidate_products + match_lots", diagram)
+
+    def test_latest_evidence_identifies_runtime_harness_and_fallback_review(self) -> None:
+        for path in (ROOT / "README.md", DOCS / "SUBMISSION_CHECKLIST.md"):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("latest terminal runtime attempt", text)
+            self.assertNotIn("current smoke status", text)
+            self.assertNotIn("current provider smoke", text)
+        business = (DOCS / "BUSINESS_DOMAIN.md").read_text(encoding="utf-8")
+        self.assertIn("explicit deterministic fallback action_review", business)
+        self.assertNotIn("reached no human review", business)
+        for name in ("DEMO_WALKTHROUGH.md", "VERIFICATION.md"):
+            text = (DOCS / name).read_text(encoding="utf-8")
+            self.assertIn("recall-intelligence: `get_recall`", text)
+            self.assertIn("matching: `find_candidate_products` + `match_lots`", text)
 
     def test_presentation_png_encoding_is_canonical_uncompressed_deflate(self) -> None:
         namespace = runpy.run_path(str(ROOT / "scripts/render_presentation.py"))

@@ -19,7 +19,7 @@ flowchart TB
   I["04:45 Request closure<br/>finish by 04:55<br/>Open — closure blocked"]:::human
 
   A --> B --> C --> D --> E --> F --> G --> H --> J --> K --> I
-  FAIL["Latest live: execution_failure / timeout<br/>gpt-5-mini / medium • four lots • 371.975s<br/>7 completed model calls + 1 failed event • 82,420 tokens<br/>plan observed; recall complete; three matching reads<br/>sole correction timed out at 120.006s"]:::human
+  FAIL["Latest live: execution_failure / timeout<br/>gpt-5-mini / medium • four lots • 371.975s<br/>7 completed model calls + 1 failed event • 82,420 tokens<br/>plan observed; recall complete; three read events<br/>recall-intelligence: get_recall<br/>matching: find_candidate_products + match_lots<br/>sole correction timed out at 120.006s"]:::human
   FALLBACK["Explicit deterministic_fallback<br/>review_required / action_review<br/>fallback verification is NOT live proof<br/>harness did not approve or confirm • zero write receipts"]:::block
   MODE["Presenter branch: stop failed live story here<br/>Later consent / receipts: separate deterministic demonstration<br/>Never attribute its results to OpenAI"]:::block
   B -->|latest observed result| FAIL --> FALLBACK --> MODE

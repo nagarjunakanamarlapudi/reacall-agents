@@ -681,7 +681,7 @@ The coordinator supplied these safe observations from the terminal runtime harne
 | Model events | 8 total: 7 completed model calls + 1 failed event |
 | Reported usage | 82,420 total tokens: 63,115 input + 19,305 output |
 | Plan / completed role | Exact four-role plan observed; recall intelligence completed |
-| Matching reads | `get_recall`, `find_candidate_products`, `match_lots` |
+| Three observed read events | recall-intelligence: `get_recall`; matching: `find_candidate_products` + `match_lots` |
 | Terminal failure | Sole correction model call timed out at 120.006 seconds; `execution_failure` / `timeout` |
 | Runtime continuation | Explicit `deterministic_fallback`; `review_required` / `action_review` |
 | Verification ownership | Runtime independent verification belongs to fallback; NOT successful live proof |

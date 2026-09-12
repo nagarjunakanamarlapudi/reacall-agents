@@ -1,6 +1,6 @@
 # Submission Checklist
 
-Use this as the final reviewer/recording gate. A checked box means the referenced artifact or explicitly historical executed evidence is present; it does not assert a new live run. Command outcomes belong in [Verification](VERIFICATION.md). The current provider smoke failed at matching; successful four-specialist/HITL E2E remains unchecked below.
+Use this as the final reviewer/recording gate. A checked box means the referenced artifact or explicitly historical executed evidence is present; it does not assert a new live run. Command outcomes belong in [Verification](VERIFICATION.md). The latest terminal runtime attempt timed out at matching and reached unapproved explicit deterministic fallback review; the older provider smoke is historical. Successful four-specialist/HITL E2E remains unchecked below.
 
 ## Business and provenance
 
