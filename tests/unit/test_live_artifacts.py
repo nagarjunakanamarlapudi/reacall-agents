@@ -37,6 +37,91 @@ async def test_projection_preserves_classifications_quantities_and_removes_prose
         claims.matching.decisions[0].classification = "rejected"
 
 
+async def test_model_draft_action_identifiers_are_not_durable_claims(live_case, live_request):
+    raw = copy.deepcopy(live_case.raw)
+    for action in raw["containment-communications"]["proposed_actions"]:
+        action["action_id"] = "PRIVATE_DRAFT_ACTION_CANARY"
+    claims = module().project_specialist_claims(live_request, raw)
+    assert "PRIVATE_DRAFT_ACTION_CANARY" not in claims.model_dump_json()
+    assert all(
+        "action_id" not in action
+        for action in claims.containment.model_dump(mode="json")["proposed_actions"]
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "recall-intelligence.recall_number",
+        "recall-intelligence.predicate.upcs.0",
+        "recall-intelligence.predicate.plant_codes.0",
+        "recall-intelligence.official_products.0.upc",
+        "recall-intelligence.citations.0",
+        "product-lot-matching.decisions.0.product_id",
+        "product-lot-matching.decisions.0.lot_id",
+        "product-lot-matching.decisions.0.evidence_ids.0",
+        "product-lot-matching.confirmed_lot_ids.0",
+        "product-lot-matching.ambiguous_lot_ids.0",
+        "traceability-reconciliation.lot_ids.0",
+        "traceability-reconciliation.affected_facilities.0",
+        "traceability-reconciliation.coverage.0.lot_id",
+        "traceability-reconciliation.coverage.0.facility_ids.0",
+        "traceability-reconciliation.coverage.0.event_ids.0",
+        "traceability-reconciliation.coverage.0.forward_event_ids.0",
+        "traceability-reconciliation.coverage.0.backward_event_ids.0",
+        "traceability-reconciliation.coverage.0.inventory_evidence_ids.0",
+        "traceability-reconciliation.coverage.0.reconciliation_evidence_ids.0",
+        "traceability-reconciliation.coverage.0.facility_evidence.@key",
+        "traceability-reconciliation.coverage.0.facility_evidence.@value.0",
+        "traceability-reconciliation.forward_traces.@key",
+        "traceability-reconciliation.forward_traces.@value.0",
+        "traceability-reconciliation.backward_traces.@key",
+        "traceability-reconciliation.backward_traces.@value.0",
+        "traceability-reconciliation.reconciliations.0.lot_id",
+        "traceability-reconciliation.reconciliations.0.evidence_ids.0",
+        "traceability-reconciliation.reconciliations.0.component_evidence.received.0",
+        "traceability-reconciliation.evidence_ids.0",
+        "containment-communications.proposed_actions.0.target_ids.0",
+        "containment-communications.proposed_actions.0.evidence_ids.0",
+        "containment-communications.proposed_actions.0.evidence_by_target.@key",
+        "containment-communications.proposed_actions.0.evidence_by_target.@value.0",
+        "containment-communications.communication_drafts.0.target_ids.0",
+        "containment-communications.communication_drafts.0.evidence_ids.0",
+        "containment-communications.communication_drafts.0.evidence_by_target.@key",
+        "containment-communications.communication_drafts.0.evidence_by_target.@value.0",
+        "containment-communications.all_cited_evidence_ids.0",
+    ],
+)
+async def test_every_model_owned_identifier_is_source_bound_or_hashed(
+    live_case, live_request, path
+):
+    raw = copy.deepcopy(live_case.raw)
+    canary = "PRIVATE_IDENTIFIER_CANARY"
+    parent = raw
+    parts = path.split(".")
+    for part in parts[:-1]:
+        key = next(iter(parent)) if part == "@value" else int(part) if part.isdigit() else part
+        parent = parent[key]
+    last = parts[-1]
+    if last == "@key":
+        parent[canary] = parent.pop(next(iter(parent)))
+    else:
+        parent[int(last) if last.isdigit() else last] = canary
+    claims = module().project_specialist_claims(live_request, raw)
+    assert canary not in claims.model_dump_json(), path
+    assert "unresolved:" in claims.model_dump_json(), path
+
+
+async def test_parsed_gap_identifier_cannot_smuggle_private_text(live_case, live_request):
+    raw = copy.deepcopy(live_case.raw)
+    raw["traceability-reconciliation"]["evidence_gaps"].append(
+        "LOT-PRIVATE-CANARY: 50 unaccounted units"
+    )
+    claims = module().project_specialist_claims(live_request, raw)
+    assert "LOT-PRIVATE-CANARY" not in claims.model_dump_json()
+    assert claims.traceability.evidence_gaps[-1].lot_id.startswith("unresolved:")
+
+
 async def test_nested_claim_evidence_maps_are_immutable(live_case, live_request):
     claims = module().project_specialist_claims(live_request, live_case.raw)
     with pytest.raises(TypeError):

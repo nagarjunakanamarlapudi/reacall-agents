@@ -20,6 +20,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -105,7 +106,16 @@ def _identifier(value: Any) -> str:
     return value
 
 
-Identifier = Annotated[str, BeforeValidator(_identifier)]
+def _project_identifier(value: Any, info: ValidationInfo) -> str:
+    value = _identifier(value)
+    if info.context is not None and value not in info.context["source_ids"]:
+        # An unknown identifier is still a false claim, but never durable prose.
+        # The verifier compares this marker against independently resolved IDs.
+        return "unresolved:" + canonical_digest(value)
+    return value
+
+
+Identifier = Annotated[str, BeforeValidator(_project_identifier)]
 Identifiers = Annotated[tuple[Identifier, ...], Field(max_length=512)]
 
 
@@ -339,7 +349,6 @@ class TraceabilityClaims(SafeModel):
 
 
 class ActionClaim(SafeModel):
-    action_id: Identifier
     action_type: Literal[
         "create_case",
         "apply_inventory_hold",
@@ -727,6 +736,32 @@ def _gaps(values):
     return projected
 
 
+def _source_identifiers(request: LiveInvestigationRequest) -> frozenset[str]:
+    """Privacy allowlist from pinned records, not model claims or specialist oracles.
+
+    Membership only permits retaining an identifier. It does not establish its
+    type, lot relationship, citation relevance, or action authority; those still
+    require the independent verifier's exact source comparison.
+    """
+    from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+
+    dataset = load_demo_dataset(DATA_DIR)
+    recall = load_recall_snapshot(data_dir=DATA_DIR)
+    known = {request.case_id, recall.recall_number, f"openfda:{recall.recall_number}"}
+    for collection in ("products", "lots", "facilities", "events", "inventory_positions"):
+        for row in dataset[collection]:
+            known.update(
+                value
+                for key, value in row.items()
+                if isinstance(value, str) and (key.endswith("_id") or key in {"upc", "plant_code"})
+            )
+    # The public notice prints UPCs with spaces/dashes; retain only exact digit
+    # extractions. This is a lexical privacy check, not recall interpretation.
+    for match in re.finditer(r"\bUPC\s+((?:\d[\s-]*){12})", recall.payload["product_description"]):
+        known.add(re.sub(r"\D", "", match[1]))
+    return frozenset(known)
+
+
 def project_specialist_claims(
     request: LiveInvestigationRequest, artifacts: dict
 ) -> SpecialistClaims:
@@ -778,7 +813,9 @@ def project_specialist_claims(
             or action["expected_case_version"] != request.investigation_case_version
         ):
             raise ValueError("model action binding mismatch")
-        actions.append({key: value for key, value in action.items() if key != "rationale"})
+        actions.append(
+            {key: value for key, value in action.items() if key not in {"rationale", "action_id"}}
+        )
     payload = {
         "request_digest": request.request_digest,
         "context_digest": request.context.digest,
@@ -803,4 +840,6 @@ def project_specialist_claims(
             ],
         },
     }
-    return SpecialistClaims.model_validate_json(json.dumps(payload, allow_nan=False))
+    return SpecialistClaims.model_validate_json(
+        json.dumps(payload, allow_nan=False), context={"source_ids": _source_identifiers(request)}
+    )

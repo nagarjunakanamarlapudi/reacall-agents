@@ -11,6 +11,158 @@ from recallops.llm import LLMSettings
 from recallops.llm.live_reasoning import LiveReasoningService
 
 
+async def test_raw_provider_arguments_survive_real_sdk_and_graph_when_unambiguous(
+    raw_openai_script, live_request
+):
+    from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
+
+    responses = raw_openai_script()
+    result = await LiveReasoningService(LLMSettings(mode="openai", model="test-model")).run(
+        live_request, transport="direct"
+    )
+    assert result.status == "success"
+    assert "unresolved:" not in result.claims.model_dump_json()
+    assert len(responses) == 25
+    accepted = verify_live_investigation(
+        live_request,
+        result.claims,
+        await resolve_trusted_evidence(live_request),
+        receipts=result.receipts,
+    )
+    assert accepted.result.passed
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    [
+        ("RecallIntelligence", ("recall_number",), "OTHER"),
+        ("RecallIntelligence", ("predicate", "hazard"), "PRIVATE_DUPLICATE_CANARY"),
+        ("ProductLotAssessment", ("confirmed_lot_ids",), []),
+        ("ProductLotAssessment", ("decisions", 0, "product_score"), 0.0),
+        ("TraceabilityAssessment", ("lot_ids",), []),
+        ("TraceabilityAssessment", ("coverage", 0, "complete"), False),
+        ("ContainmentProposal", ("executed",), True),
+        ("ContainmentProposal", ("proposed_actions", 0, "expected_case_version"), 1),
+        ("SupervisorResponse", ("executed",), True),
+        ("write_todos", ("todos", 0, "status"), "completed"),
+        ("task", ("subagent_type",), "operations"),
+        ("get_recall", ("recall_number",), "OTHER"),
+    ],
+)
+async def test_raw_duplicate_arguments_stop_before_normalized_tool_consumption(
+    raw_openai_script, live_request, duplicate
+):
+    from langchain_openai.chat_models.base import _convert_dict_to_message
+
+    responses = raw_openai_script(duplicate=duplicate)
+    result = await LiveReasoningService(LLMSettings(mode="openai", model="test-model")).run(
+        live_request, transport="direct"
+    )
+    # Characterize the SDK boundary this regression protects: the raw conflicting
+    # keys disappear during conversion, leaving an apparently valid last value.
+    affected = next(
+        response["choices"][0]["message"]
+        for response in responses
+        if response["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == duplicate[0]
+    )
+    converted = _convert_dict_to_message(affected)
+    assert converted.tool_calls
+    assert result.status == "semantic_failure"
+    assert result.claims is None and result.receipts == ()
+    assert result.summary.fallback_used is False
+    assert responses[-1]["choices"][0]["message"] == affected
+    assert "PRIVATE_" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "PRIVATE_MALFORMED_PROVIDER_CANARY",
+        [],
+        {"choices": [None]},
+        {"choices": [{"message": None}]},
+        {"choices": [{"message": {"tool_calls": [None]}}]},
+        {"choices": [{"message": {"tool_calls": [{"type": "function"}]}}]},
+        {"choices": [{"message": {"tool_calls": [{"type": "function", "function": {}}]}}]},
+    ],
+)
+def test_malformed_provider_envelope_is_a_safe_semantic_error(monkeypatch, response):
+    from recallops.llm.openai_provider import build_chat_model
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-not-a-real-key")
+    model = build_chat_model(LLMSettings(mode="openai", model="test-model"))
+    # This raw-response hook is the boundary the live provider invokes before
+    # normalizing arguments. Missing envelope members must not become transport
+    # failures (and accidentally authorize a deterministic fallback).
+    with pytest.raises(ValueError) as caught:
+        model._create_chat_result(response)
+    assert "PRIVATE_" not in str(caught.value)
+
+
+async def test_streaming_entrypoint_cannot_bypass_raw_argument_guard(raw_openai_script):
+    import recallops.llm.live_reasoning as live
+
+    responses = raw_openai_script(duplicate=("write_todos", ("todos", 0, "status"), "completed"))
+    model = live.build_chat_model(LLMSettings(mode="openai", model="gpt-5.4"))
+    with pytest.raises(ValueError, match="duplicate JSON keys"):
+        async for _ in model.astream("Plan the fixed roles"):
+            pytest.fail("ambiguous provider output was streamed before validation")
+    assert len(responses) == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        r'{"executed":true,"\u0065xecuted":false}',
+        '{"outer":[{"inner":true,"inner":false}]}',
+        '{"value":NaN}',
+        '{"value":1e1000}',
+        '{"value":0} PRIVATE_TRAILING_CANARY',
+        "{" + '"value":' + "[" * 25 + "0" + "]" * 25 + "}",
+        '{"value":[' + ",".join("0" for _ in range(513)) + "]}",
+        '{"value":"' + "X" * 262_144 + '"}',
+    ],
+    ids=[
+        "escaped_duplicate",
+        "nested_duplicate",
+        "nan",
+        "overflow",
+        "trailing",
+        "depth",
+        "items",
+        "size",
+    ],
+)
+def test_raw_provider_guard_rejects_ambiguous_or_unbounded_json(monkeypatch, arguments):
+    from recallops.llm.openai_provider import build_chat_model
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-not-a-real-key")
+    model = build_chat_model(LLMSettings(mode="openai", model="test-model"))
+    with pytest.raises(ValueError) as caught:
+        model._create_chat_result(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "raw-guard",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "ContainmentProposal",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        )
+    assert "PRIVATE_" not in str(caught.value)
+
+
 @pytest.mark.parametrize("transport", ["direct", "stdio"])
 async def test_actual_specialist_results_and_sealed_receipts_are_returned(
     monkeypatch, live_case, live_request, transport

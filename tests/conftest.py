@@ -1,5 +1,6 @@
 """Source-backed live model fixtures; no provider or production authority is mocked."""
 
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -21,6 +22,94 @@ from recallops.services.traceability import TraceabilityService
 class SourceScriptModel(GenericFakeChatModel):
     def bind_tools(self, tools, **kwargs):
         return self
+
+
+@pytest.fixture
+async def raw_openai_script(monkeypatch, live_case):
+    """Replace only provider HTTP: keep OpenAI parsing and compiled agents real."""
+    import httpx
+    from openai import AsyncOpenAI
+
+    import recallops.llm.live_reasoning as live
+    from recallops.llm.openai_provider import build_chat_model
+
+    clients = []
+
+    def install(*, duplicate=None, raw=None):
+        messages = iter(live_case.script(raw).messages)
+        responses = []
+
+        def encode(value, path=()):
+            if isinstance(value, dict):
+                fields = []
+                for key, item in value.items():
+                    if duplicate and path + (key,) == duplicate[1]:
+                        fields.append(json.dumps(key) + ":" + json.dumps(duplicate[2]))
+                    fields.append(json.dumps(key) + ":" + encode(item, path + (key,)))
+                return "{" + ",".join(fields) + "}"
+            if isinstance(value, list):
+                return (
+                    "[" + ",".join(encode(item, path + (i,)) for i, item in enumerate(value)) + "]"
+                )
+            return json.dumps(value)
+
+        def respond(request):
+            assert request.url.path == "/v1/chat/completions"
+            assert not json.loads(request.content).get("stream")
+            message = next(messages)
+            calls = []
+            for call in message.tool_calls:
+                arguments = (
+                    encode(call["args"])
+                    if duplicate and call["name"] == duplicate[0]
+                    else json.dumps(call["args"])
+                )
+                calls.append(
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {"name": call["name"], "arguments": arguments},
+                    }
+                )
+            response = {
+                "id": "raw-provider-response",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "content": "PRIVATE_RAW_PROVIDER_CANARY",
+                            "tool_calls": calls,
+                        },
+                    }
+                ],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            }
+            responses.append(response)
+            return httpx.Response(200, json=response)
+
+        client = AsyncOpenAI(
+            api_key="test-not-a-real-key",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        clients.append(client)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-not-a-real-key")
+        monkeypatch.setattr(
+            live,
+            "build_chat_model",
+            lambda settings: build_chat_model(settings).model_copy(
+                update={"async_client": client.chat.completions}
+            ),
+        )
+        return responses
+
+    yield install
+    for client in clients:
+        await client.close()
 
 
 @pytest.fixture

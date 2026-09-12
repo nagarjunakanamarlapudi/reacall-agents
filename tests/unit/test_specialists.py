@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,27 @@ from pydantic import ValidationError
 
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
 from recallops.services.traceability import TraceabilityService
+
+
+@pytest.mark.parametrize("role_index", [0, 1, 2, 3])
+def test_delegation_ledger_rejects_duplicate_json_keys_for_every_specialist(live_case, role_index):
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from recallops.agents.deep_supervisor import DelegationGuardMiddleware
+
+    role = live_case.roles[role_index]
+    raw = live_case.raw[role]
+    first_key = next(iter(raw))
+    duplicate = "{" + json.dumps(first_key) + ":null," + json.dumps(raw)[1:]
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "task", "args": {"subagent_type": role}, "id": "draft-response"}],
+        ),
+        ToolMessage(content=duplicate, tool_call_id="draft-response"),
+    ]
+    with pytest.raises(ValueError, match="duplicate"):
+        DelegationGuardMiddleware.completed_artifacts(messages)
 
 
 @dataclass(frozen=True)

@@ -204,6 +204,7 @@ class DelegationGuardMiddleware(AgentMiddleware):
     @staticmethod
     def completed_artifacts(messages):
         from recallops.llm.artifacts import ROLE_MODELS, validate_artifact_shape
+        from recallops.llm.strict_json import load_bounded_json
 
         pending, artifacts = {}, {}
         for message in messages:
@@ -219,7 +220,7 @@ class DelegationGuardMiddleware(AgentMiddleware):
                     raise ValueError("specialist task did not succeed")
                 if not isinstance(message.content, str):
                     raise ValueError("specialist response is not structured")
-                raw = json.loads(message.content)
+                raw = load_bounded_json(message.content)
                 validate_artifact_shape(role, raw)
                 ROLE_MODELS[role].model_validate(raw)
                 artifacts[role] = raw

@@ -165,6 +165,7 @@ async def test_inner_graph_cannot_write_raw_messages_to_any_sqlite_namespace(
         decision["rationale"] = canary
     for action in raw["containment-communications"]["proposed_actions"]:
         action["rationale"] = canary
+        action["action_id"] = canary
     for draft in raw["containment-communications"]["communication_drafts"]:
         draft["subject"] = canary
         draft["body"] += canary
@@ -180,6 +181,7 @@ async def test_inner_graph_cannot_write_raw_messages_to_any_sqlite_namespace(
         with tracing_context(enabled=True, client=tracing_client):
             result = await start(tmp_path, live_case.scope)
         assert result.pending_interrupt["kind"] == "action_review"
+        assert result.pending_interrupt["action"]["action_id"] == "CASE-LIVE-create_case-v0"
         assert canary not in result.model_dump_json()
         assert telemetry
         assert canary not in "".join(telemetry)
@@ -201,6 +203,44 @@ async def test_inner_graph_cannot_write_raw_messages_to_any_sqlite_namespace(
         set_debug(original[0])
         set_verbose(original[1])
         set_llm_cache(original[2])
+
+
+@pytest.mark.parametrize("fault", ["raw_duplicate", "unknown_identifier", "case_identifier"])
+async def test_rejected_identifier_and_raw_argument_canaries_never_reach_sqlite(
+    monkeypatch, live_case, raw_openai_script, tmp_path, fault
+):
+    import recallops.llm.live_reasoning as live
+
+    canary = "PRIVATE_IDENTIFIER_CANARY"
+    if fault == "raw_duplicate":
+        raw_openai_script(duplicate=("ContainmentProposal", ("executed",), True))
+    else:
+        raw = live_case.raw
+        if fault == "unknown_identifier":
+            raw["recall-intelligence"]["citations"] = [canary]
+        else:
+            raw["containment-communications"]["proposed_actions"][0]["case_id"] = canary
+        monkeypatch.setattr(live, "build_chat_model", lambda settings: live_case.script(raw))
+    result = await start(tmp_path, live_case.scope)
+    assert result.pending_interrupt is None
+    assert result.case["status"] == "escalated"
+    assert result.case["verification"]["passed"] is False
+    assert result.case["investigation_source"] == "openai"
+    assert not result.case["action_queue"]
+    assert "PRIVATE_" not in result.model_dump_json()
+    assert not rows(tmp_path / "operations.sqlite", "receipts")
+    with sqlite3.connect(tmp_path / "checkpoint.sqlite") as connection:
+        for table in ("checkpoints", "writes"):
+            records = connection.execute(f'SELECT * FROM "{table}"').fetchall()
+            assert records
+            assert all(
+                b"PRIVATE_" not in (cell if isinstance(cell, bytes) else str(cell).encode())
+                for record in records
+                for cell in record
+            )
+        assert connection.execute("SELECT DISTINCT checkpoint_ns FROM checkpoints").fetchall() == [
+            ("",)
+        ]
 
 
 async def test_cancelled_live_run_is_durable_unfinished_and_never_implicitly_replayed(

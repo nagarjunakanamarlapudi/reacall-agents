@@ -247,12 +247,6 @@ def verify_live_investigation(
         for role in ("recall", "matching", "traceability", "containment"):
             supplied = getattr(claims, role).model_dump(mode="json")
             wanted = getattr(expected, role).model_dump(mode="json")
-            if role == "containment":
-                # Draft identifiers have no runtime authority. All target, type,
-                # version and citation claims still require exact source support.
-                for packet in (supplied, wanted):
-                    for action in packet["proposed_actions"]:
-                        action.pop("action_id")
             if supplied != wanted or (role == "matching" and not claims.matching.confirmed_lot_ids):
                 violation(f"{role}_mismatch", role)
             else:

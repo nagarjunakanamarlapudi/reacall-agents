@@ -34,6 +34,36 @@ async def test_source_backed_partial_containment_passes(live_case, live_request)
     assert accepted.projection["evidence_gaps"]
 
 
+async def test_verified_actions_use_source_owned_ids_not_model_draft_ids(live_case, live_request):
+    from recallops.llm.artifacts import project_specialist_claims
+
+    for action in live_case.raw["containment-communications"]["proposed_actions"]:
+        action["action_id"] = "PRIVATE_DRAFT_ACTION_CANARY"
+    claims = project_specialist_claims(live_request, live_case.raw)
+    evidence = await verifier().resolve_trusted_evidence(live_request)
+    accepted = verifier().verify_live_investigation(
+        live_request, claims, evidence, receipts=evidence.required_receipts
+    )
+    assert accepted.result.passed
+    assert "PRIVATE_DRAFT_ACTION_CANARY" not in claims.model_dump_json()
+    assert "PRIVATE_DRAFT_ACTION_CANARY" not in str(accepted.projection)
+
+
+async def test_hashed_unknown_identifier_still_fails_independent_verification(
+    live_case, live_request
+):
+    from recallops.llm.artifacts import project_specialist_claims
+
+    live_case.raw["recall-intelligence"]["citations"] = ["PRIVATE_IDENTIFIER_CANARY"]
+    claims = project_specialist_claims(live_request, live_case.raw)
+    evidence = await verifier().resolve_trusted_evidence(live_request)
+    accepted = verifier().verify_live_investigation(
+        live_request, claims, evidence, receipts=evidence.required_receipts
+    )
+    assert accepted.result.passed is False and accepted.projection is None
+    assert "PRIVATE_IDENTIFIER_CANARY" not in claims.model_dump_json()
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
