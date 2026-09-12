@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from recallops.agents.deep_supervisor import specialist_catalog
 from recallops.llm import LLMSettings
 
 
@@ -123,7 +124,7 @@ def test_prompt_fingerprint_covers_all_runtime_contracts(monkeypatch):
 
     baseline = canonical_digest(deep.live_prompt_contract())
     assert deep.live_prompt_fingerprint() == baseline
-    assert deep.live_prompt_contract()["contract_version"] == 1
+    assert deep.live_prompt_contract()["contract_version"] == 2
     for name in (
         "SUPERVISOR_PROMPT",
         "RECALL_INTELLIGENCE_PROMPT",
@@ -137,6 +138,62 @@ def test_prompt_fingerprint_covers_all_runtime_contracts(monkeypatch):
         with monkeypatch.context() as patch:
             patch.setattr(deep, name, getattr(deep, name) + " contract revision")
             assert canonical_digest(deep.live_prompt_contract()) != baseline, name
+
+
+@pytest.mark.parametrize(
+    "tool_name", sorted({name for row in specialist_catalog() for name in row.allowed_tool_names})
+)
+@pytest.mark.parametrize("changed", ["description", "input_schema"])
+def test_every_sealed_read_definition_change_alters_prompt_fingerprint(
+    monkeypatch, tool_name, changed
+):
+    from pydantic import BaseModel
+
+    import recallops.agents.deep_supervisor as deep
+
+    baseline = deep.live_prompt_fingerprint()
+    if changed == "description":
+        original = deep._capability_description
+        monkeypatch.setattr(
+            deep,
+            "_capability_description",
+            lambda name: original(name) + " revised" if name == tool_name else original(name),
+        )
+    else:
+
+        class ChangedInput(BaseModel):
+            changed_argument: str
+
+        original = deep._capability_args_schema
+        monkeypatch.setattr(
+            deep,
+            "_capability_args_schema",
+            lambda name: ChangedInput if name == tool_name else original(name),
+        )
+    assert deep.live_prompt_fingerprint() != baseline
+
+
+def test_fingerprint_read_definitions_match_actual_compiled_tool_surfaces():
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    import recallops.agents.deep_supervisor as deep
+    from recallops.config import Settings
+
+    graph = deep.build_deep_supervisor(
+        model=GenericFakeChatModel(messages=iter([])),
+        _read_source=deep._make_read_config("direct", Settings()),
+    ).graph
+    definitions = deep.live_prompt_contract()["read_tools"]
+    assert set(definitions) == {
+        name for row in specialist_catalog() for name in row.allowed_tool_names
+    }
+    for child in deep._compiled_subagent_graphs(graph).values():
+        for name, tool in deep._compiled_tools(child).items():
+            if name in definitions:
+                assert definitions[name] == {
+                    "description": tool.description,
+                    "input_schema": tool.args_schema.model_json_schema(),
+                }
 
 
 async def test_builtin_and_legacy_evaluation_metadata_share_composed_fingerprint():

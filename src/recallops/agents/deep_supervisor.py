@@ -740,11 +740,20 @@ def _profile_key(model: str | BaseChatModel) -> str:
 def live_prompt_contract() -> dict[str, Any]:
     """Exact application-owned instructions; bound evidence has its own request digest."""
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         "supervisor": SUPERVISOR_PROMPT + SUPERVISOR_RUNTIME_PROMPT,
         "request": INVESTIGATION_REQUEST_PROMPT,
         "delegation": DELEGATION_CONTEXT_PROMPT,
         "supervisor_response_schema": _explicit_response_schema(SupervisorResponse),
+        "read_tools": {
+            name: {
+                "description": _capability_description(name),
+                "input_schema": _capability_args_schema(name).model_json_schema(),
+            }
+            for name in sorted(
+                {tool for row in specialist_catalog() for tool in row.allowed_tool_names}
+            )
+        },
         "specialists": [
             {
                 "name": row.name,
