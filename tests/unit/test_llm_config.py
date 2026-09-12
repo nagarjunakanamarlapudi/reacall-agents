@@ -193,18 +193,47 @@ def test_invalid_timeout_retry_values_fail_without_echo(monkeypatch, name, value
         ("AuthenticationError", "authentication"),
         ("RateLimitError", "rate_limit"),
         ("APITimeoutError", "timeout"),
-        ("OpenAITimeoutError", "timeout"),
         ("APIResponseValidationError", "invalid_response"),
-        ("RuntimeError", "provider_error"),
     ],
 )
+@pytest.mark.parametrize("subclass", [False, True])
 def test_provider_errors_are_categorized_without_exposing_their_text(
-    error_name: str, category: str
+    error_name: str, category: str, subclass: bool
 ) -> None:
     """This catches an error boundary that could surface provider or credential text."""
-    error = type(error_name, (Exception,), {})("credential-marker")
+    import httpx
+    import openai
+
+    error_type = getattr(openai, error_name)
+    if subclass:
+        error_type = type("SpecializedProviderError", (error_type,), {})
+    request = httpx.Request("POST", "https://example.invalid/")
+    response = httpx.Response(400, request=request)
+    if error_name == "APITimeoutError":
+        error = error_type(request=request)
+    elif error_name == "APIResponseValidationError":
+        error = error_type(response, body={"private": "credential-marker"})
+    else:
+        error = error_type("credential-marker", response=response, body=None)
 
     actual_category, display_message = sanitize_llm_error(error)
 
     assert actual_category == category
     assert "credential-marker" not in display_message
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "AuthenticationError",
+        "RateLimitError",
+        "APITimeoutError",
+        "OpenAITimeoutError",
+        "APIResponseValidationError",
+    ],
+)
+def test_provider_error_name_impostors_remain_generic(name):
+    error = type(name, (Exception,), {})("credential-marker")
+    category, message = sanitize_llm_error(error)
+    assert category == "provider_error"
+    assert "credential-marker" not in message

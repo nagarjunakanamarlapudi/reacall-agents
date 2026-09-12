@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
+from openai import APIResponseValidationError, APITimeoutError, AuthenticationError, RateLimitError
 from openai import BaseModel as OpenAIResponse
 from pydantic import SecretStr
 
@@ -71,14 +72,13 @@ def build_chat_model(settings: LLMSettings) -> BaseChatModel:
 
 def sanitize_llm_error(error: BaseException) -> tuple[str, str]:
     """Classify provider failures without forwarding raw provider text or credentials."""
-    error_name = type(error).__name__
-    if error_name == "AuthenticationError":
+    if isinstance(error, AuthenticationError):
         category = "authentication"
-    elif error_name == "RateLimitError":
+    elif isinstance(error, RateLimitError):
         category = "rate_limit"
-    elif error_name in {"APITimeoutError", "OpenAITimeoutError"}:
+    elif isinstance(error, APITimeoutError):
         category = "timeout"
-    elif error_name == "APIResponseValidationError":
+    elif isinstance(error, APIResponseValidationError):
         category = "invalid_response"
     else:
         category = "provider_error"

@@ -128,11 +128,13 @@ async def test_original_child_response_cannot_be_laundered_by_sdk_coercion(
 async def test_provider_failure_is_sanitized_and_service_retains_no_model(
     monkeypatch, live_request
 ):
-    class AuthenticationError(Exception):
-        pass
+    import httpx
+    from openai import AuthenticationError
+
+    response = httpx.Response(401, request=httpx.Request("POST", "https://example.invalid/"))
 
     def fail(settings):
-        raise AuthenticationError(PRIVATE)
+        raise AuthenticationError(PRIVATE, response=response, body=None)
 
     monkeypatch.setattr(live, "build_chat_model", fail)
     service = live.LiveReasoningService(LLMSettings(mode="openai", model="test-model"))
@@ -224,12 +226,14 @@ async def test_budget_exhaustion_is_bounded_and_discards_partial_claims(
 
 
 async def test_model_failure_after_start_is_sanitized(monkeypatch, live_case, live_request):
-    class RateLimitError(Exception):
-        pass
+    import httpx
+    from openai import RateLimitError
+
+    response = httpx.Response(429, request=httpx.Request("POST", "https://example.invalid/"))
 
     class FailingModel(type(live_case.script())):
         def _generate(self, *args, **kwargs):
-            raise RateLimitError(PRIVATE)
+            raise RateLimitError(PRIVATE, response=response, body=None)
 
     result = await runner(monkeypatch, FailingModel(messages=iter([]))).run(
         live_request, transport="direct"
@@ -393,7 +397,7 @@ async def test_global_console_settings_cannot_log_private_content(
         set_verbose(original[1])
 
 
-async def test_overlapping_live_runs_keep_console_disabled_until_last_exit(
+async def test_overlapping_live_runs_leave_unrelated_console_settings_unchanged(
     monkeypatch, live_case, live_request, capsys
 ):
     from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
@@ -428,7 +432,7 @@ async def test_overlapping_live_runs_keep_console_disabled_until_last_exit(
     try:
         one = await asyncio.wait_for(first, 10)
         assert one.status == "success"
-        assert (get_debug(), get_verbose()) == (False, False)
+        assert (get_debug(), get_verbose()) == (True, True)
         first_finished.set()
         two = await asyncio.wait_for(second, 10)
         assert two.status == "success"
@@ -442,6 +446,110 @@ async def test_overlapping_live_runs_keep_console_disabled_until_last_exit(
             if not task.done():
                 task.cancel()
         await asyncio.gather(first, second, return_exceptions=True)
+        set_debug(original[0])
+        set_verbose(original[1])
+
+
+@pytest.mark.parametrize("count", [1, 2])
+@pytest.mark.parametrize("debug,verbose", [(True, False), (False, True), (True, True)])
+async def test_mid_run_console_toggle_cannot_leak_or_be_overwritten(
+    monkeypatch, live_case, live_request, capsys, count, debug, verbose
+):
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+    started = [asyncio.Event() for _ in range(count)]
+    release = asyncio.Event()
+    base = live_case.script()
+
+    class PausedModel(type(base)):
+        index: int
+
+        async def _agenerate(self, *args, **kwargs):
+            started[self.index].set()
+            await release.wait()
+            return await super()._agenerate(*args, **kwargs)
+
+    models = iter(
+        PausedModel(messages=live_case.script().messages, index=index) for index in range(count)
+    )
+    monkeypatch.setattr(live, "build_chat_model", lambda settings: next(models))
+    service = live.LiveReasoningService(LLMSettings(mode="openai", model="test-model"))
+    original = get_debug(), get_verbose()
+    set_debug(False)
+    set_verbose(False)
+    tasks = [
+        asyncio.create_task(service.run(live_request, transport="direct")) for _ in range(count)
+    ]
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in started)), 10)
+        # This is unrelated application work, outside every isolated live context.
+        set_debug(debug)
+        set_verbose(verbose)
+        public = "UNRELATED_PUBLIC_TRACE"
+        await GenericFakeChatModel(messages=iter([AIMessage(content=public)])).ainvoke(public)
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), 15)
+        assert all(result.status == "success" and len(result.receipts) == 15 for result in results)
+        assert all(result.summary.total_tokens == 125 for result in results)
+        captured = capsys.readouterr()
+        leaked = PRIVATE in captured.out + captured.err
+        assert not leaked
+        if debug:
+            assert public in captured.out
+        assert (get_debug(), get_verbose()) == (debug, verbose)
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        set_debug(original[0])
+        set_verbose(original[1])
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_mid_run_failure_or_cancellation_does_not_restore_stale_settings(
+    monkeypatch, live_case, live_request, capsys, cancel
+):
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class PausedFailure(type(live_case.script())):
+        async def _agenerate(self, *args, **kwargs):
+            started.set()
+            await release.wait()
+            raise TimeoutError(PRIVATE)
+
+    service = runner(monkeypatch, PausedFailure(messages=iter([])))
+    original = get_debug(), get_verbose()
+    set_debug(False)
+    set_verbose(False)
+    task = asyncio.create_task(service.run(live_request, transport="direct"))
+    try:
+        await asyncio.wait_for(started.wait(), 10)
+        set_debug(True)
+        set_verbose(True)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            result = await asyncio.wait_for(task, 10)
+            assert result.status == "execution_failure"
+            assert result.summary.error_category == "timeout"
+        captured = capsys.readouterr()
+        leaked = PRIVATE in captured.out + captured.err
+        assert not leaked
+        assert (get_debug(), get_verbose()) == (True, True)
+        assert live.READ_TOOL_OBSERVATIONS.get() is None
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         set_debug(original[0])
         set_verbose(original[1])
 

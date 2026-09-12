@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
-from contextlib import contextmanager
 from contextvars import Context
 from dataclasses import replace
-from threading import Lock
 from time import perf_counter
 from typing import Any, Literal
 from uuid import UUID
 
 from langchain.agents.structured_output import StructuredOutputError
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import LLMResult
 from langgraph.errors import GraphRecursionError
@@ -53,6 +49,7 @@ from recallops.llm.artifacts import (
     project_specialist_claims,
     source_revision,
 )
+from recallops.llm.private_callbacks import private_callbacks
 
 _SPECIALIST_RESPONSES = {
     "recall-intelligence": RecallIntelligence,
@@ -60,35 +57,6 @@ _SPECIALIST_RESPONSES = {
     "traceability-reconciliation": TraceabilityAssessment,
     "containment-communications": ContainmentProposal,
 }
-
-_CONSOLE_LOCK = Lock()
-_CONSOLE_USERS = 0
-_CONSOLE_SETTINGS = (False, False)
-
-
-@contextmanager
-def _suppress_console_tracing() -> Iterator[None]:
-    """Keep process-global console tracing off until all overlapping live calls exit.
-
-    The lock protects only entry/exit bookkeeping, never an await. This works across
-    event loops and threads without serializing model calls. Other LangChain work
-    temporarily shares the suppressed console settings because the SDK flags are global.
-    """
-    global _CONSOLE_USERS, _CONSOLE_SETTINGS
-    with _CONSOLE_LOCK:
-        if _CONSOLE_USERS == 0:
-            _CONSOLE_SETTINGS = get_debug(), get_verbose()
-        set_debug(False)
-        set_verbose(False)
-        _CONSOLE_USERS += 1
-    try:
-        yield
-    finally:
-        with _CONSOLE_LOCK:
-            _CONSOLE_USERS -= 1
-            if _CONSOLE_USERS == 0:
-                set_debug(_CONSOLE_SETTINGS[0])
-                set_verbose(_CONSOLE_SETTINGS[1])
 
 
 class _SafeCallbacks(BaseCallbackHandler):
@@ -239,7 +207,7 @@ class LiveReasoningService:
             request = LiveInvestigationRequest.model_validate_json(request.model_dump_json())
             if transport not in {"direct", "stdio"} or source_revision() != request.source_digest:
                 raise ValueError("Invalid live investigation binding")
-            with _suppress_console_tracing(), tracing_context(enabled=False):
+            with private_callbacks(callbacks), tracing_context(enabled=False):
                 model = build_chat_model(self.settings).model_copy(
                     update={"cache": False, "callbacks": None, "verbose": False}
                 )
