@@ -20,11 +20,9 @@ CASES = DATA_DIR / "evals" / "orchestration_cases.json"
 
 @pytest.mark.parametrize("failed", [False, True])
 @pytest.mark.parametrize("read_name", ["get_recall", "search_recalls"])
-async def test_builtin_live_projects_shared_observations_without_replaying_workers(
+async def test_legacy_count_only_observations_never_earn_evidence_credit(
     tmp_path, monkeypatch, failed, read_name
 ):
-    from recallops.evaluation import openai_live_adapter
-    from recallops.llm import LLMSettings
     from recallops.llm.live_reasoning import LiveExecutionEvent, LiveReasoningSummary
 
     async def observed(self, question, *, transport):
@@ -47,9 +45,25 @@ async def test_builtin_live_projects_shared_observations_without_replaying_worke
             * 2,
         )
 
-    monkeypatch.setattr(openai_live_adapter.LiveReasoningService, "run", observed)
-    factory = openai_live_adapter.build_openai_live_factory(
-        LLMSettings(mode="openai", model="test-model")
+    from recallops.evaluation.orchestration_benchmark import (
+        LIVE_READ_TOOLS,
+        LiveProgram,
+        LiveRunnerFactory,
+        LiveUsage,
+        _capture_reasoning_summary,
+    )
+
+    async def legacy(inputs, capture):
+        summary = await observed(
+            None, json.dumps(inputs.model_dump(mode="json")), transport="direct"
+        )
+        _capture_reasoning_summary(capture, summary)
+        return LiveUsage(tokens=summary.total_tokens)
+
+    factory = LiveRunnerFactory(
+        provider="openai",
+        model="test-model",
+        factory=lambda: LiveProgram(invoke=legacy, exposed_tool_names=LIVE_READ_TOOLS),
     )
     target = tmp_path / "shared-live.json"
     report = await run_orchestration_benchmark(CASES, target, live_model=factory)
@@ -85,6 +99,69 @@ def test_builtin_live_rejects_deterministic_settings():
 
     with pytest.raises(ValueError, match="openai"):
         build_openai_live_factory(LLMSettings())
+
+
+@pytest.mark.parametrize("poisoned", [False, True])
+async def test_builtin_live_evaluation_awards_only_independently_verified_facts(
+    monkeypatch, live_case, poisoned
+):
+    import recallops.llm.live_reasoning as live
+    from recallops.evaluation import orchestration_benchmark as benchmark
+    from recallops.evaluation.openai_live_adapter import build_openai_live_factory
+    from recallops.evaluation.orchestration_schema import InvestigationInput
+    from recallops.llm import LLMSettings
+
+    inputs = InvestigationInput(
+        id="CASE-LIVE",
+        question="Investigate H-1230-2026 eggs recall",
+        recall_number="H-1230-2026",
+        intent="containment",
+        lot_ids=tuple(live_case.scope[:3]),
+    )
+    raw = live_case.raw
+    raw[live_case.roles[1]]["decisions"] = [
+        row for row in raw[live_case.roles[1]]["decisions"] if row["lot_id"] in inputs.lot_ids
+    ]
+    if poisoned:
+        raw[live_case.roles[1]]["decisions"][0]["classification"] = "probable"
+    monkeypatch.setattr(live, "build_chat_model", lambda settings: live_case.script(raw))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("deterministic worker replayed")
+
+    for method in ("intake", "matching_task", "lineage", "reconciliation", "containment"):
+        monkeypatch.setattr(benchmark.InvestigationSession, method, forbidden)
+    capture = benchmark.LiveCapture()
+    controller = benchmark._LiveController(
+        benchmark.InvestigationSession(inputs, 16, sealed=True),
+        capture,
+        tuple(live_case.roles),
+        "Investigate the supplied case",
+    )
+    token = benchmark._LIVE_CONTROLLER.set(controller)
+    reads_token = benchmark._CASE_READS.set(([], 16))
+    try:
+        factory = build_openai_live_factory(LLMSettings(mode="openai", model="test-model"))
+        usage = await factory.factory().invoke(inputs, capture)
+        observation = controller.observation
+        assert observation is not None
+        assert usage.tokens > 0
+        if poisoned:
+            assert observation.evidence_facts == ()
+            assert observation.completion_criteria == ()
+            assert observation.safe_stop == "error"
+        else:
+            assert "classification:LOT-EXACT-170:exact" in observation.evidence_facts
+            assert "quantity:LOT-EXACT-170:received:1200" in observation.evidence_facts
+            assert "scope_classified" in observation.completion_criteria
+            assert "confirmed_holds_supported" in observation.completion_criteria
+            assert all(row.input_sha256 is not None for row in observation.tool_calls)
+            assert observation.tool_calls[0].input_sha256 == canonical_sha256(
+                {"recall_number": "H-1230-2026"}
+            )
+    finally:
+        benchmark._CASE_READS.reset(reads_token)
+        benchmark._LIVE_CONTROLLER.reset(token)
 
 
 @pytest.fixture

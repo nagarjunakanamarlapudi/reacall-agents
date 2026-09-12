@@ -31,7 +31,15 @@ from recallops.agents.specialists import (
 )
 from recallops.agents.state import RecallOpsGraphState
 from recallops.agents.telemetry import TraceRecorder
+from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
 from recallops.data.loaders import load_recall_snapshot
+from recallops.llm.artifacts import (
+    LiveInvestigationResult,
+    VerificationResult,
+    VerificationViolation,
+    build_live_request,
+)
+from recallops.llm.live_reasoning import LiveReasoningService
 from recallops.mcp.gateway import DirectGateway, Gateway
 from recallops.models import (
     ApprovalBinding,
@@ -497,6 +505,8 @@ def build_workflow(
     operations_service: OperationsService | None = None,
     authorization_broker: _WorkflowAuthorizationBroker | None = None,
     checkpointer: BaseCheckpointSaver,
+    live_reasoning: LiveReasoningService | None = None,
+    live_transport: str = "direct",
 ) -> Any:
     """Compile the explicit coordinator with trusted dependencies in node closures."""
     if not isinstance(checkpointer, BaseCheckpointSaver):
@@ -551,6 +561,9 @@ def build_workflow(
             status="investigating",
             case_version=0,
             source_mode="snapshot",
+            investigation_schema_version=1,
+            investigation_source="openai" if live_reasoning is not None else "deterministic",
+            live_claims=None,
             specialist_outputs={},
             plan_todo_cursor=0,
             completed_todo_ids=[],
@@ -625,7 +638,85 @@ def build_workflow(
         )
 
     def route_after_retrieval(state: RecallOpsGraphState) -> str:
-        return "end" if state.get("status") == "escalated" else "continue"
+        return (
+            "end"
+            if state.get("status") == "escalated"
+            else "live"
+            if live_reasoning
+            else "continue"
+        )
+
+    def live_request(state):
+        request = build_live_request(
+            case_id=state["case_id"],
+            thread_id=state["thread_id"],
+            case_version=0,
+            recall_number=state["recall_number"],
+            question=state["question"],
+            scope_lot_ids=state.get("scope_lot_ids", []),
+            rag_result=state["rag_result"],
+        )
+        if request.source_digest != state.get("source_digest"):
+            raise ValueError("investigation source revision mismatch")
+        return request
+
+    async def prepare_live_investigation(state):
+        try:
+            request = live_request(state)
+            return _node(
+                "prepare_live_investigation",
+                live_run={
+                    "status": "started",
+                    "run_id": request.run_id,
+                    "request_digest": request.request_digest,
+                    "context_digest": request.context.digest,
+                    "source_digest": request.source_digest,
+                    "model": live_reasoning.settings.model,
+                },
+            )
+        except Exception:
+            return _node(
+                "prepare_live_investigation",
+                status="escalated",
+                failure_state={"stage": "live_investigate", "code": "source_binding_failed"},
+            )
+
+    async def live_investigate(state):
+        try:
+            request = live_request(state)
+            result = await live_reasoning.run(request, transport=live_transport)
+            result = LiveInvestigationResult.model_validate_json(result.model_dump_json())
+            if (
+                any(
+                    getattr(result, key) != getattr(request, key)
+                    for key in ("request_digest", "source_digest", "run_id")
+                )
+                or result.context_digest != request.context.digest
+            ):
+                raise ValueError("result binding mismatch")
+        except Exception:
+            # The service classifies execution failures. Any escaping contract or
+            # implementation error stops closed without echoing provider payloads.
+            return _node(
+                "live_investigate",
+                live_claims=None,
+                live_run={**state["live_run"], "status": "semantic_failure"},
+            )
+        run = result.model_dump(mode="json", exclude={"claims"})
+        if result.status == "execution_failure":
+            run["summary"]["fallback_used"] = True
+            return _node(
+                "live_investigate",
+                investigation_source="deterministic_fallback",
+                live_run=run,
+                live_claims=None,
+                warnings=["OpenAI execution failed; deterministic fallback used."],
+            )
+        return _node(
+            "live_investigate",
+            live_run=run,
+            live_claims=result.claims.model_dump(mode="json") if result.claims else None,
+        )
 
     async def plan(state: RecallOpsGraphState) -> dict[str, Any]:
         try:
@@ -1032,6 +1123,41 @@ def build_workflow(
         )
 
     async def verify(state: RecallOpsGraphState) -> dict[str, Any]:
+        if state.get("investigation_source") == "openai":
+            try:
+                request = live_request(state)
+                result = LiveInvestigationResult.model_validate_json(
+                    json.dumps({**state["live_run"], "claims": state.get("live_claims")})
+                )
+                if result.status != "success":
+                    raise ValueError("incomplete model evidence")
+                accepted = verify_live_investigation(
+                    request,
+                    result.claims,
+                    await resolve_trusted_evidence(request, gateway=trusted_gateway),
+                    receipts=result.receipts,
+                )
+                return _node(
+                    "verify",
+                    verification=accepted.result.model_dump(mode="json"),
+                    **(accepted.projection or {"status": "escalated"}),
+                )
+            except Exception:
+                binding = state["live_run"]
+                failed = VerificationResult(
+                    run_id=binding["run_id"],
+                    request_digest=binding["request_digest"],
+                    claims_digest=binding.get("claims_digest") or "0" * 64,
+                    context_digest=binding["context_digest"],
+                    source_digest=binding["source_digest"],
+                    passed=False,
+                    criteria=(),
+                    violations=(VerificationViolation(code="invalid_claims", path="claims"),),
+                    evidence_gaps=(),
+                )
+                return _node(
+                    "verify", status="escalated", verification=failed.model_dump(mode="json")
+                )
         violations: list[str] = []
         try:
             value, cursor, completed, order = validated_dispatch_state(state)
@@ -1061,6 +1187,7 @@ def build_workflow(
             "verify",
             verification={
                 "passed": True,
+                "investigation_source": state.get("investigation_source", "deterministic"),
                 "verifier": "independent-deterministic-policy-verifier",
                 "authoritative_controls": [
                     "predicate matching",
@@ -1654,6 +1781,8 @@ def build_workflow(
     graph = StateGraph(RecallOpsGraphState)
     graph.add_node("intake", intake)
     graph.add_node("retrieve_context", retrieve_context)
+    graph.add_node("prepare_live_investigation", prepare_live_investigation)
+    graph.add_node("live_investigate", live_investigate)
     graph.add_node("plan", plan)
     graph.add_node("dispatch_specialist", dispatch_specialist)
     graph.add_node("regulatory_intake", regulatory_intake)
@@ -1677,7 +1806,23 @@ def build_workflow(
     graph.add_edge(START, "intake")
     graph.add_edge("intake", "retrieve_context")
     graph.add_conditional_edges(
-        "retrieve_context", route_after_retrieval, {"continue": "plan", "end": END}
+        "retrieve_context",
+        route_after_retrieval,
+        {"continue": "plan", "live": "prepare_live_investigation", "end": END},
+    )
+    graph.add_conditional_edges(
+        "prepare_live_investigation",
+        lambda state: "end" if state.get("status") == "escalated" else "run",
+        {"end": END, "run": "live_investigate"},
+    )
+    graph.add_conditional_edges(
+        "live_investigate",
+        lambda state: (
+            "fallback"
+            if state.get("investigation_source") == "deterministic_fallback"
+            else "verify"
+        ),
+        {"fallback": "plan", "verify": "verify"},
     )
     graph.add_conditional_edges(
         "plan", route_after_plan, {"dispatch": "dispatch_specialist", "end": END}

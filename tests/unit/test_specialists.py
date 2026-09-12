@@ -2416,22 +2416,11 @@ def test_delegation_guard_requires_one_runtime_delegation_per_fixed_specialist()
             {"messages": [AIMessage(content="", tool_calls=[calls[1]])], "plan_written": True},
             Runtime(),
         )
-    update = guard.after_model(
-        {
-            "messages": [AIMessage(content="", tool_calls=calls)],
-            "plan_written": True,
-        },
-        Runtime(),
-    )
-    assert update == {
-        "delegated_specialists": [
-            "recall-intelligence",
-            "product-lot-matching",
-            "traceability-reconciliation",
-            "containment-communications",
-        ],
-        "plan_written": True,
-    }
+    with pytest.raises(ValueError, match="one task"):
+        guard.after_model(
+            {"messages": [AIMessage(content="", tool_calls=calls)], "plan_written": True},
+            Runtime(),
+        )
 
     with pytest.raises(ValueError, match="plan must precede"):
         guard.after_model(
@@ -2439,7 +2428,7 @@ def test_delegation_guard_requires_one_runtime_delegation_per_fixed_specialist()
             Runtime(),
         )
 
-    with pytest.raises(ValueError, match="duplicate specialist delegation"):
+    with pytest.raises(ValueError, match="one task"):
         guard.after_model(
             {
                 "messages": [AIMessage(content="", tool_calls=[calls[0], calls[0]])],

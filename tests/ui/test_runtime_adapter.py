@@ -21,6 +21,7 @@ from recallops.ui.adapter import (
 from recallops.ui.presenters import (
     APPROVAL_JUSTIFICATION,
     build_match_rows,
+    build_reasoning_presentation,
     build_retrieval_rows,
     can_simulate,
     reduce_case_snapshot,
@@ -28,52 +29,56 @@ from recallops.ui.presenters import (
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["completed", "failed", "exception"])
+@pytest.mark.parametrize("outcome", ["completed", "failed", "semantic_failure"])
 async def test_live_reasoning_runs_once_and_survives_reload_without_authority_changes(
-    tmp_path: Path, outcome: str
+    tmp_path: Path, outcome: str, monkeypatch, live_case
 ) -> None:
     """Catch duplicate provider runs, lost summaries, hidden fallback, and checkpoint pollution."""
     checkpoint = tmp_path / "checkpoints.sqlite3"
     operations = tmp_path / "operations.sqlite3"
     calls = []
 
-    class LiveService:
-        async def run(self, question, *, transport):
-            calls.append((question, transport))
-            async with RecallOpsRuntime.open(
-                checkpoint_path=checkpoint, operations_path=operations
-            ) as runtime:
-                assert await runtime.get_case(thread_id=opened["thread_id"]) is None
-            if outcome == "exception":
-                raise RuntimeError("sk-secret-do-not-persist provider payload")
-            return LiveReasoningSummary(
-                model="test-model",
-                status=outcome,
-                duration_ms=12,
-                fallback_used=outcome == "failed",
-                error_category="timeout" if outcome == "failed" else None,
-                plan=["recall-intelligence"],
-                total_tokens=40,
-            )
+    import recallops.llm.live_reasoning as live
+
+    def model(settings):
+        calls.append(settings.model)
+        with sqlite3.connect(checkpoint) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] > 1
+        if outcome == "failed":
+            raise TimeoutError("sk-secret-do-not-persist provider payload")
+        raw = live_case.raw
+        for action in raw[live_case.roles[3]]["proposed_actions"]:
+            action["case_id"] = opened["case_id"]
+        if outcome == "semantic_failure":
+            raw[live_case.roles[1]]["decisions"][0]["classification"] = "probable"
+        return live_case.script(raw)
+
+    monkeypatch.setattr(live, "build_chat_model", model)
 
     adapter = DurableRuntimeAdapter(
         checkpoint_path=checkpoint,
         operations_path=operations,
         llm_settings=LLMSettings(mode="openai", model="test-model"),
-        live_reasoning=LiveService(),
     )
     opened = await adapter.open_case("H-1230-2026")
+    opened["scope_lot_ids"] = live_case.scope
     assert opened["reasoning_mode"] == "openai"
     assert opened["llm_status"] == "ready"
     assert opened["llm_run"] is None
     reviewed = await adapter.run_investigation(opened)
-    assert calls == [(opened["question"], "direct")]
-    assert reviewed["llm_status"] == ("completed" if outcome == "completed" else "failed")
-    assert reviewed["llm_run"]["fallback_used"] is (outcome != "completed")
-    if outcome != "completed":
+    assert calls == ["test-model"]
+    assert reviewed["llm_status"] == (
+        "verification_failed" if outcome == "semantic_failure" else outcome
+    )
+    assert reviewed["llm_run"]["fallback_used"] is (outcome == "failed")
+    if outcome == "failed":
         assert any("deterministic fallback" in item.lower() for item in reviewed["warnings"])
     assert "sk-secret" not in json.dumps(reviewed)
-    assert reviewed["pending_interrupt"]["kind"] == "action_review"
+    if outcome == "semantic_failure":
+        assert reviewed["pending_interrupt"] is None
+        assert reviewed["verification"]["passed"] is False
+    else:
+        assert reviewed["pending_interrupt"]["kind"] == "action_review"
     assert _receipt_count(operations) == 0
 
     # A stale intake snapshot cannot invoke the model or restart the durable graph.
@@ -83,6 +88,10 @@ async def test_live_reasoning_runs_once_and_survives_reload_without_authority_ch
     restored = await restarted.load_case(reviewed["thread_id"])
     assert restored["llm_run"] == reviewed["llm_run"]
     assert restored["reasoning_mode"] == "openai"
+    if outcome == "semantic_failure":
+        assert restored["llm_status"] == "verification_failed"
+        assert restored["verification"]["passed"] is False
+        return
     approved = await restarted.resume_review(
         restored,
         decision="approve",
@@ -97,13 +106,36 @@ async def test_live_reasoning_runs_once_and_survives_reload_without_authority_ch
         checkpoint_path=checkpoint, operations_path=operations
     ) as runtime:
         raw = await runtime.get_case(thread_id=reviewed["thread_id"])
-    assert "llm_run" not in raw.case
-    assert "reasoning_mode" not in raw.case
+    assert raw.case["requested_reasoning_mode"] == "openai"
+    assert raw.case["live_run"]["summary"] == reviewed["llm_run"]
+    assert (raw.case["live_claims"] is not None) is (outcome == "completed")
     for key in ("case_version", "verification"):
         assert approved[key] == json.loads(raw.model_dump_json())["case"][key]
     assert approved["receipts"] == list(raw.case["write_receipts"]) == []
     for key, value in json.loads(raw.model_dump_json())["pending_interrupt"].items():
         assert approved["pending_interrupt"][key] == value
+
+
+async def test_source_binding_stop_is_not_displayed_as_a_deterministic_fallback(
+    tmp_path, monkeypatch
+):
+    import recallops.agents.workflow as workflow
+
+    def unavailable(**kwargs):
+        raise ValueError("PRIVATE_SOURCE_BINDING_CANARY")
+
+    monkeypatch.setattr(workflow, "build_live_request", unavailable)
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        llm_settings=LLMSettings(mode="openai", model="test-model"),
+    )
+    result = await adapter.run_investigation(await adapter.open_case("H-1230-2026"))
+    assert result["pending_interrupt"] is None
+    assert result["investigation_source"] == "openai"
+    assert result["llm_status"] == "verification_failed"
+    assert not build_reasoning_presentation(reduce_case_snapshot(result))["warning"]
+    assert "PRIVATE_SOURCE_BINDING_CANARY" not in json.dumps(result)
 
 
 def _receipt_count(path: Path) -> int:
@@ -139,8 +171,10 @@ async def test_corrupt_telemetry_cannot_block_authoritative_load_review_or_commi
                 model="gpt-4.1",
                 status="completed",
                 duration_ms=10,
-                plan=["sk-canary-private-credential"],
-            ).model_dump_json()
+                plan=[],
+            ).model_dump(mode="json")
+            payload["plan"] = ["sk-canary-private-credential"]
+            payload = json.dumps(payload)
         with sqlite3.connect(adapter.reasoning_store.path) as connection:
             connection.execute("UPDATE reasoning_summaries SET summary_json = ?", (payload,))
 
@@ -159,9 +193,9 @@ async def test_corrupt_telemetry_cannot_block_authoritative_load_review_or_commi
     assert created["receipts"][0]["action_type"] == "create_case"
     assert _receipt_count(adapter.operations_path) == 1
     for result in (restored, approved, created):
-        assert result["llm_status"] == "unavailable"
+        assert result["llm_status"] == "not_run"
         assert result["llm_run"] is None
-        assert any("reasoning telemetry unavailable" in item.lower() for item in result["warnings"])
+        assert result["reasoning_mode"] == "deterministic"
         assert "canary-private-credential" not in json.dumps(result)
 
 
@@ -506,7 +540,7 @@ async def test_durable_adapter_projects_runtime_and_survives_reopen(tmp_path: Pa
         "Product & Lot Matching",
         "Traceability",
         "Containment",
-        "Independent Verification/Critic",
+        "Independent Evidence Verification",
     ]
     assert reviewed["specialist_execution_order"] == [
         "recall-intelligence",

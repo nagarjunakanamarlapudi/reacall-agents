@@ -14,7 +14,6 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from time import perf_counter
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -22,8 +21,7 @@ from recallops.agents.planner import plan_investigation
 from recallops.agents.runtime import RecallOpsRuntime
 from recallops.agents.specialists import investigate_recall
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
-from recallops.llm import LLMSettings, sanitize_llm_error
-from recallops.llm.live_reasoning import LiveReasoningService, LiveReasoningSummary
+from recallops.llm import LLMSettings
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
@@ -166,7 +164,6 @@ class DurableRuntimeAdapter:
         operations_path: Path | str,
         transport: Literal["direct", "stdio"] = "direct",
         repository_paths: RepositoryPaths | None = None,
-        live_reasoning: LiveReasoningService | None = None,
         llm_settings: LLMSettings | None = None,
     ) -> None:
         if transport not in {"direct", "stdio"}:
@@ -175,7 +172,6 @@ class DurableRuntimeAdapter:
         self.operations_path = Path(operations_path).expanduser().resolve()
         self.repository_paths = repository_paths or RepositoryPaths(PROJECT_ROOT)
         self.llm_settings = llm_settings or LLMSettings()
-        self.live_reasoning = live_reasoning
         self.reasoning_store = ReasoningStore(self.checkpoint_path.parent / "reasoning.sqlite3")
         self.transport = transport
         self.transport_label = (
@@ -282,13 +278,16 @@ class DurableRuntimeAdapter:
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
             transport=self.transport,
+            llm_settings=self.llm_settings,
         ) as runtime:
             # The browser may still hold the intake snapshot after a completed run.
             existing = await runtime.get_case(thread_id=current["thread_id"])
             if existing is not None:
                 history = await runtime.get_case_history(thread_id=current["thread_id"])
                 return self._normalize_result(existing, history=history)
-            await self._run_live_reasoning(current)
+            if self.llm_settings.mode == "openai":
+                # A legacy unfinished attempt must still prevent implicit replay.
+                self.reasoning_store.get(current["thread_id"])
             applied = self._arm_failure(runtime, current, stage="run")
             result = await runtime.start_case(
                 recall_number=current["recall_number"],
@@ -519,6 +518,38 @@ class DurableRuntimeAdapter:
         projected["checkpoint_history"] = normalize_runtime_history(history)
         projected["transport_mode"] = self.transport_label
         projected["evaluation_report"] = self._evaluation_report()
+        state = (
+            result.model_dump(mode="json")["case"]
+            if hasattr(result, "model_dump")
+            else result["case"]
+        )
+        if state.get("investigation_schema_version") == 1:
+            mode = state.get("requested_reasoning_mode", "deterministic")
+            run = state.get("live_run", {})
+            summary = run.get("summary")
+            status = "not_run"
+            if mode == "openai":
+                status = (
+                    "interrupted"
+                    if run.get("status") == "started"
+                    else (
+                        "verification_failed"
+                        if state.get("investigation_source") == "openai"
+                        and state.get("verification", {}).get("passed") is not True
+                        else summary.get("status", "failed")
+                        if summary
+                        else "failed"
+                    )
+                )
+            projected.update(
+                reasoning_mode=mode,
+                model_mode=mode,
+                llm_status=status,
+                llm_model=summary.get("model", "") if summary else run.get("model", ""),
+                llm_run=summary,
+                investigation_source=state.get("investigation_source"),
+            )
+            return projected
         try:
             summary = self.reasoning_store.get(projected["thread_id"])
         except (
@@ -549,32 +580,6 @@ class DurableRuntimeAdapter:
                 "No live success is claimed. Human review is still required."
             )
         return projected
-
-    async def _run_live_reasoning(self, current: Mapping[str, Any]) -> None:
-        if self.llm_settings.mode != "openai":
-            return
-        thread_id = current["thread_id"]
-        if not self.reasoning_store.claim(thread_id):
-            self.reasoning_store.get(thread_id)
-            return
-        started_at = perf_counter()
-        try:
-            if self.live_reasoning is None:
-                raise RuntimeError("Live reasoning service unavailable")
-            summary = await self.live_reasoning.run(current["question"], transport=self.transport)
-            summary = LiveReasoningSummary.model_validate(summary.model_dump(mode="json"))
-        except Exception as error:
-            category, _ = sanitize_llm_error(error)
-            summary = LiveReasoningSummary(
-                model=self.llm_settings.model,
-                status="failed",
-                fallback_used=True,
-                error_category=category,
-                duration_ms=(perf_counter() - started_at) * 1000,
-            )
-        if summary.status == "failed":
-            summary = summary.model_copy(update={"fallback_used": True})
-        self.reasoning_store.finish(thread_id, summary)
 
     def _evaluation_report(self) -> dict[str, Any]:
         return _load_committed_evaluation_report(self.repository_paths)
@@ -1854,6 +1859,16 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     planned_order = [
         role for role in state.get("specialist_execution_order", []) if role in rows_by_role
     ]
+    if state.get("investigation_source") == "openai":
+        planned_order = list(
+            state.get("live_run", {}).get("summary", {}).get("specialist_sequence", [])
+        )
+        for role, row in rows_by_role.items():
+            row["status"] = (
+                "verified" if state.get("verification", {}).get("passed") is True else "rejected"
+            )
+            if row["status"] == "rejected":
+                row["summary"] = "Model artifact was not accepted by independent verification."
     if not planned_order:
         planned_order = [
             item.get("specialist")
@@ -1863,7 +1878,7 @@ def _project_specialists(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows = [rows_by_role[role] for role in planned_order]
     rows.append(
         {
-            "specialist": "Independent Verification/Critic",
+            "specialist": "Independent Evidence Verification",
             "purpose": "Verify citations, policy controls, contradictions and closure posture.",
             "status": "complete"
             if state.get("verification", {}).get("passed") is True

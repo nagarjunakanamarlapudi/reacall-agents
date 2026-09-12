@@ -1,4 +1,4 @@
-"""Advisory summaries stored separately from authority-bearing graph checkpoints."""
+"""Legacy advisory summaries; new live evidence and mode belong to graph checkpoints."""
 
 import math
 import re

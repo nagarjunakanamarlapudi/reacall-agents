@@ -696,8 +696,8 @@ class ClosedRetrievalGateway:
         return cls("direct", _factory_token=_GATEWAY_FACTORY_TOKEN, data_dir=data_dir)
 
     @classmethod
-    def stdio(cls) -> ClosedRetrievalGateway:
-        return cls("stdio", _factory_token=_GATEWAY_FACTORY_TOKEN)
+    def stdio(cls, *, data_dir: Path | None = None) -> ClosedRetrievalGateway:
+        return cls("stdio", _factory_token=_GATEWAY_FACTORY_TOKEN, data_dir=data_dir)
 
     async def call(
         self,

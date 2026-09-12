@@ -28,6 +28,9 @@ from recallops.agents.workflow import (
     _execute_workflow,
     build_workflow,
 )
+from recallops.llm import LLMSettings
+from recallops.llm.artifacts import source_revision
+from recallops.llm.live_reasoning import LiveReasoningService
 from recallops.mcp.gateway import DirectGateway, StdioMCPGateway
 from recallops.paths import DATA_DIR, PROJECT_ROOT
 from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
@@ -347,12 +350,14 @@ class RecallOpsRuntime:
         checkpointer: AsyncSqliteSaver,
         checkpoint_key: str,
         authorization_broker: _WorkflowAuthorizationBroker,
+        reasoning_mode: str = "deterministic",
     ) -> None:
         _RUNTIME_WORKFLOWS[self] = workflow
         _RUNTIME_AUTHORIZERS[self] = authorization_broker
         self._failures = failures
         self._checkpointer = checkpointer
         self._checkpoint_key = checkpoint_key
+        self._reasoning_mode = reasoning_mode
 
     @classmethod
     def _active_lock_count(cls) -> int:
@@ -384,10 +389,15 @@ class RecallOpsRuntime:
         checkpoint_path: Path | str,
         operations_path: Path | str,
         transport: Literal["direct", "stdio"] = "direct",
+        llm_settings: LLMSettings | None = None,
     ) -> AsyncIterator[RecallOpsRuntime]:
         """Open both durable stores and close the async checkpointer explicitly."""
         if transport not in {"direct", "stdio"}:
             raise ValueError("transport must be 'direct' or 'stdio'")
+        if llm_settings is not None and type(llm_settings) is not LLMSettings:
+            raise TypeError("llm_settings must be exact non-secret LLMSettings")
+        settings = llm_settings or LLMSettings()
+        live_reasoning = LiveReasoningService(settings) if settings.mode == "openai" else None
         checkpoint = Path(checkpoint_path).expanduser().resolve()
         operations = Path(operations_path).expanduser().resolve()
         checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -414,7 +424,7 @@ class RecallOpsRuntime:
                 traceability=traceability,
                 operations=operations_service,
             )
-            retrieval_gateway = ClosedRetrievalGateway.direct()
+            retrieval_gateway = ClosedRetrievalGateway.direct(data_dir=DATA_DIR)
         else:
             environment = {
                 **os.environ,
@@ -439,7 +449,7 @@ class RecallOpsRuntime:
                     "operations": connection("recallops.mcp.operations_server"),
                 }
             )
-            retrieval_gateway = ClosedRetrievalGateway.stdio()
+            retrieval_gateway = ClosedRetrievalGateway.stdio(data_dir=DATA_DIR)
         failures = FailureController()
         retriever = AgenticRetriever(retrieval_gateway)
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint)) as saver:
@@ -451,6 +461,8 @@ class RecallOpsRuntime:
                 operations_service=operations_service,
                 authorization_broker=authorization_broker,
                 checkpointer=saver,
+                live_reasoning=live_reasoning,
+                live_transport=transport,
             )
             yield cls(
                 workflow=graph,
@@ -458,6 +470,7 @@ class RecallOpsRuntime:
                 checkpointer=saver,
                 checkpoint_key=str(checkpoint),
                 authorization_broker=authorization_broker,
+                reasoning_mode=settings.mode,
             )
 
     @staticmethod
@@ -560,6 +573,8 @@ class RecallOpsRuntime:
             "recall_number": recall_number,
             "question": question,
             "scope_lot_ids": scope,
+            "requested_reasoning_mode": self._reasoning_mode,
+            "source_digest": source_revision(),
         }
         request_digest = _mutation_request_digest(
             case_id=generated_case,

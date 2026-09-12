@@ -1,16 +1,18 @@
 """Explicit OpenAI opt-in using the same read-only reasoning service as the UI."""
 
-import json
-
+from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
 from recallops.evaluation.orchestration_benchmark import (
     LIVE_READ_TOOLS,
     LiveProgram,
     LiveRunnerFactory,
     LiveUsage,
-    _capture_reasoning_summary,
+    _capture_live_investigation,
 )
 from recallops.llm import LLMSettings
+from recallops.llm.artifacts import build_live_request
 from recallops.llm.live_reasoning import LiveReasoningService
+from recallops.paths import DATA_DIR
+from recallops.retrieval.agentic import AgenticRetriever, ClosedRetrievalGateway
 
 
 def build_openai_live_factory(settings: LLMSettings) -> LiveRunnerFactory:
@@ -20,12 +22,35 @@ def build_openai_live_factory(settings: LLMSettings) -> LiveRunnerFactory:
 
     async def invoke(inputs, capture):
         # Pass investigation inputs only, never the corpus expectations or grading oracle.
-        question = "Investigate this read-only evaluation scope: " + json.dumps(
-            inputs.model_dump(mode="json"), sort_keys=True
+        retriever = AgenticRetriever(ClosedRetrievalGateway.direct(data_dir=DATA_DIR))
+        rag = await retriever.resume(
+            retriever.start(
+                inputs.question, authoritative_facts={"recall_number": inputs.recall_number}
+            )
         )
-        summary = await LiveReasoningService(settings).run(question, transport="direct")
-        _capture_reasoning_summary(capture, summary)
-        return LiveUsage(tokens=summary.total_tokens)
+        request = build_live_request(
+            case_id=inputs.id,
+            thread_id=f"EVAL-{inputs.id}",
+            case_version=0,
+            recall_number=inputs.recall_number,
+            question=inputs.question,
+            scope_lot_ids=list(inputs.lot_ids),
+            rag_result=rag.model_dump(mode="json"),
+        )
+        result = await LiveReasoningService(settings).run(request, transport="direct")
+        accepted = None
+        if result.status == "success":
+            try:
+                accepted = verify_live_investigation(
+                    request,
+                    result.claims,
+                    await resolve_trusted_evidence(request),
+                    receipts=result.receipts,
+                )
+            except Exception:
+                pass  # No source support means no evidence or completion credit.
+        _capture_live_investigation(capture, result, accepted)
+        return LiveUsage(tokens=result.summary.total_tokens)
 
     return LiveRunnerFactory(
         provider=settings.provider,

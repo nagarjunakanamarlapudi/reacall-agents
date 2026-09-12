@@ -103,8 +103,10 @@ def test_model_identifier_rejects_credential_prefixes_without_helpful_secret_wor
     store = ReasoningStore(tmp_path / "reasoning.sqlite3")
     store.claim("thread-1")
     payload = LiveReasoningSummary(
-        model=canary, status="completed", duration_ms=1
-    ).model_dump_json()
+        model="test-model", status="completed", duration_ms=1
+    ).model_dump(mode="json")
+    payload["model"] = canary
+    payload = json.dumps(payload)
     with sqlite3.connect(store.path) as connection:
         connection.execute("UPDATE reasoning_summaries SET summary_json = ?", (payload,))
     with pytest.raises(RuntimeError, match="Reasoning telemetry unavailable") as error:

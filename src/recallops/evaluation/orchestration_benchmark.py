@@ -1116,7 +1116,7 @@ def _capture_reasoning_summary(facade, summary):
     reads = [
         event for event in summary.events if event.kind == "tool" and event.name in LIVE_READ_TOOLS
     ]
-    if [event.name for event in reads] != summary.read_tool_sequence:
+    if tuple(event.name for event in reads) != summary.read_tool_sequence:
         raise ValueError("live read observation mismatch")
     if any(role not in role_tasks for role in summary.specialist_sequence):
         raise ValueError("unknown live specialist")
@@ -1153,6 +1153,120 @@ def _capture_reasoning_summary(facade, summary):
         raise ValueError("live capture contains unexpected prior reads")
     active[0].extend(calls)
     controller.session.stop = "error" if summary.status == "failed" else "human_review"
+
+
+def _capture_live_investigation(facade, result, accepted):
+    """Award facts only from the independently accepted source projection."""
+    from recallops.llm.artifacts import LiveInvestigationResult
+
+    result = LiveInvestigationResult.model_validate_json(result.model_dump_json())
+    _capture_reasoning_summary(facade, result.summary)
+    controller = _live_controller(facade)
+    observation = controller.observation.model_dump(mode="json")
+    calls = tuple(
+        ToolCallObservation(
+            name=row.name,
+            family=_family(row.name),
+            input_sha256=row.input_digest,
+            succeeded=row.status == "completed",
+        )
+        for row in result.receipts
+    )
+    if result.status != "success" or accepted is None or not accepted.result.passed:
+        observation.update(evidence_facts=[], completion_criteria=[], safe_stop="error")
+        controller.session.stop = "error"
+    else:
+        if (
+            accepted.result.claims_digest != result.claims_digest
+            or accepted.result.request_digest != result.request_digest
+        ):
+            raise ValueError("evaluation verification binding mismatch")
+        state = accepted.projection
+        intake = state["specialist_outputs"]["recall-intelligence"]
+        tracing = state["specialist_outputs"]["traceability-reconciliation"]
+        containment = state["specialist_outputs"]["containment-communications"]
+        facts = [
+            f"field:{key}:{canonical_sha256(value)}"
+            for key, value in state["recall_predicate"].items()
+        ]
+        facts.append(f"field:official_products:{canonical_sha256(intake['official_products'])}")
+        facts.extend(f"citation:{citation}" for citation in intake["citations"])
+        facts.append("source:official_snapshot")
+        facts.extend(
+            f"classification:{row['lot_id']}:{row['classification']}"
+            for row in state["match_decisions"]
+        )
+        for lot in tracing["lot_ids"]:
+            events = [
+                TraceEvent.model_validate(row)
+                for row in state["trace_events"]
+                if row["lot_id"] == lot
+            ]
+            facts.append(
+                f"lineage:{lot}:{canonical_sha256({row.event_id: row.model_dump(mode='json') for row in events})}"
+            )
+            positions = [
+                InventoryPosition.model_validate(row).model_dump(mode="json")
+                for row in state["inventory_positions"]
+                if row["lot_id"] == lot
+            ]
+            facts.append(f"inventory:{lot}:{canonical_sha256(positions)}")
+        facts.extend(assessment_citation_facts(tracing))
+        for row in tracing["reconciliations"]:
+            facts.extend(
+                f"quantity:{row['lot_id']}:{key}:{row[key]}"
+                for key in (
+                    "received",
+                    "on_hand",
+                    "quarantined",
+                    "sold",
+                    "returned",
+                    "disposed",
+                    "unaccounted",
+                )
+            )
+        for action in containment["proposed_actions"]:
+            prefix = (
+                "hold_target"
+                if action["action_type"] == "apply_inventory_hold"
+                else "facility_task_target"
+            )
+            facts.extend(f"{prefix}:{target}" for target in sorted(action["target_ids"]))
+        facts.extend(
+            f"facility_message_target:{target}"
+            for row in containment["communication_drafts"]
+            if row["audience"] == "facility"
+            for target in sorted(row["target_ids"])
+        )
+        facts.extend(("writes_executed:0", "ambiguous_holds:0"))
+        stop = (
+            "evidence_gap"
+            if tracing["evidence_gaps"] or state["ambiguous_lot_ids"]
+            else "human_review"
+        )
+        observation.update(
+            evidence_facts=facts,
+            completion_criteria=[
+                "predicate_cited",
+                "scope_classified",
+                "lineage_supported",
+                "quantities_verified",
+                "draft_only",
+                "policy_verified",
+                "facility_tasks_supported",
+                "facility_communications_supported",
+                "confirmed_holds_supported",
+            ],
+            safe_stop=stop,
+            tasks=["intake", "matching", "lineage", "reconciliation", "containment", "verify"],
+        )
+        controller.session.stop = stop
+    # Failed runs expose only telemetry, never partial authoritative receipts.
+    if result.status == "success":
+        observation["tool_calls"] = [row.model_dump(mode="json") for row in calls]
+        active = _CASE_READS.get()
+        active[0][:] = calls
+    controller.observation = TrajectoryObservation.model_validate(observation)
 
 
 _LIVE_CONTROLLER: ContextVar[_LiveController | None] = ContextVar("live_controller", default=None)

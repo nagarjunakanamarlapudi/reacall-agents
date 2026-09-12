@@ -12,7 +12,6 @@ from typing import Any
 import streamlit as st
 
 from recallops.llm import get_llm_settings, load_project_env
-from recallops.llm.live_reasoning import LiveReasoningService
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
 from recallops.ui.evaluation_reports import EvaluationProjection, load_evaluation_scorecard
@@ -68,7 +67,6 @@ def _build_adapter():
         transport=transport,
         repository_paths=RepositoryPaths(repository_root),
         llm_settings=settings,
-        live_reasoning=LiveReasoningService(settings) if settings.mode == "openai" else None,
     )
 
 

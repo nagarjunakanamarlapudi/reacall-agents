@@ -40,6 +40,12 @@ class RecallOpsGraphState(TypedDict, total=False):
     status: str
     case_version: int
     source_mode: str
+    investigation_schema_version: int
+    requested_reasoning_mode: str
+    investigation_source: str
+    source_digest: str
+    live_run: dict[str, Any]
+    live_claims: dict[str, Any] | None
     plan: dict[str, Any]
     plan_todo_cursor: int
     completed_todo_ids: list[str]
