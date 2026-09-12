@@ -22,6 +22,7 @@ from recallops.agents.deep_supervisor import (
     _make_read_config,
     _make_sealed_capability,
     build_deep_supervisor,
+    live_prompt_fingerprint,
 )
 from recallops.agents.planner import InvestigationPlan, plan_investigation
 from recallops.agents.prompts import (
@@ -1071,8 +1072,14 @@ class LiveRunnerFactory:
     factory: Callable[[], LiveProgram]
     repetitions: int = 1
     prompt: str = SUPERVISOR_PROMPT
+    prompt_sha256: str | None = None
 
     def __post_init__(self):
+        if self.prompt_sha256 is not None and (
+            type(self.prompt_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", self.prompt_sha256) is None
+        ):
+            raise ValueError("invalid live prompt fingerprint")
         if type(self.repetitions) is not int or not 1 <= self.repetitions <= 3:
             raise ValueError("live repetitions must be 1 through 3")
         if type(self.provider) is not str or not re.fullmatch(r"[A-Za-z0-9_.-]+", self.provider):
@@ -1363,14 +1370,14 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
             error_code=code,
             provider=provider,
             model_sha256=canonical_sha256(identifier),
-            prompt_sha256=canonical_sha256(SUPERVISOR_PROMPT),
+            prompt_sha256=live_prompt_fingerprint(),
             duration_ms=(perf_counter() - started) * 1000.0,
         )
 
     metadata = dict(
         provider=model.provider,
         model_sha256=canonical_sha256(model.model),
-        prompt_sha256=canonical_sha256(model.prompt),
+        prompt_sha256=model.prompt_sha256 or canonical_sha256(model.prompt),
     )
     try:
         program = model.factory()

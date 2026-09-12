@@ -1,5 +1,6 @@
 """Explicit OpenAI opt-in using the same read-only reasoning service as the UI."""
 
+from recallops.agents.deep_supervisor import live_prompt_fingerprint
 from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
 from recallops.evaluation.orchestration_benchmark import (
     LIVE_READ_TOOLS,
@@ -56,4 +57,5 @@ def build_openai_live_factory(settings: LLMSettings) -> LiveRunnerFactory:
         provider=settings.provider,
         model=settings.model,
         factory=lambda: LiveProgram(invoke=invoke, exposed_tool_names=LIVE_READ_TOOLS),
+        prompt_sha256=live_prompt_fingerprint(),
     )

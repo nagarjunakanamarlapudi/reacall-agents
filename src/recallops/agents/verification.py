@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
+from recallops.agents.read_scope import scoped_lot_rows
 from recallops.agents.specialists import (
     assess_product_lots,
     assess_traceability,
@@ -78,6 +79,8 @@ async def resolve_trusted_evidence(
         if name in {"find_candidate_products", "match_lots"}:
             model = CandidateProduct if name == "find_candidate_products" else LotMatch
             result = [_json(model.model_validate(row)) for row in result]
+        if name == "match_lots":
+            result = scoped_lot_rows(result, request.scope_lot_ids)
         receipts.append(
             ReadEvidenceReceipt(
                 name=name,

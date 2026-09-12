@@ -3,7 +3,7 @@
 from pathlib import Path
 from time import perf_counter
 
-from recallops.agents.deep_supervisor import SUPERVISOR_PROMPT
+from recallops.agents.deep_supervisor import live_prompt_fingerprint
 from recallops.agents.verification import resolve_trusted_evidence, verify_live_investigation
 from recallops.llm import LLMSettings
 from recallops.llm.artifacts import ROLES, build_live_request, canonical_digest
@@ -57,7 +57,7 @@ async def run_live_smoke(settings: LLMSettings, output_path: Path) -> dict:
             "recall_number": request.recall_number,
             "provider": summary.provider,
             "model_sha256": canonical_digest(settings.model),
-            "prompt_sha256": canonical_digest(SUPERVISOR_PROMPT),
+            "prompt_sha256": live_prompt_fingerprint(),
             "source_sha256": request.source_digest,
             "request_sha256": result.request_digest,
             "claims_sha256": canonical_digest(result.claims.model_dump(mode="json"))
@@ -71,6 +71,15 @@ async def run_live_smoke(settings: LLMSettings, output_path: Path) -> dict:
             "ordered_specialists": tuple(summary.specialist_sequence) == ROLES,
             "specialist_count": len(summary.specialist_sequence),
             "read_receipt_count": len(result.receipts),
+            "read_tool_sequence": list(summary.read_tool_sequence),
+            "events": [
+                {
+                    "kind": event.kind,
+                    "status": event.status,
+                    **({"name": event.name} if event.kind == "tool" else {}),
+                }
+                for event in summary.events
+            ],
             "model_call_count": sum(event.kind == "model" for event in summary.events),
             "tokens": summary.total_tokens,
             "cost": None,
