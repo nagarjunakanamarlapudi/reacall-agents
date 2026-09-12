@@ -37,6 +37,12 @@ The header uses `Reasoning mode`, not `Model mode`. In live mode it shows `OpenA
 
 If a model call fails, the UI records a sanitized error category and visibly labels any deterministic fallback. Fallback output cannot be represented as a successful live-model run.
 
+## Diagram narrative
+
+The primary product and architecture diagrams present OpenAI as the only reasoning engine. They show LLM planning, Deep Agents delegation, agentic RAG, the four LLM specialist roles, critic/rewrite, and structured synthesis. They must not depict a deterministic planner or deterministic specialist lane as an alternative agent architecture.
+
+Deterministic elements may appear only as non-reasoning control infrastructure: LangGraph state and routing, schema validation, independent policy/evidence verification, HITL interrupts, version and digest binding, idempotency, and the Operations MCP write guard. Model outage and deterministic fallback behavior belongs in a separate operations/resilience view and supporting text, not in the primary architecture narrative.
+
 ## Evaluation
 
 The same provider construction is shared by the Streamlit workflow and `make eval-model`; no separate demo-only adapter is allowed. Live evaluation records provider, a model identifier or digest, prompt digest, duration, task/delegation/tool metrics, and token usage where available. It never records credentials or raw private reasoning.
