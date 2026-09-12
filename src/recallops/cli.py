@@ -45,6 +45,9 @@ def _parser() -> argparse.ArgumentParser:
     orchestration.add_argument("--cases", type=Path)
     orchestration.add_argument("--run", action="store_true", help="Regenerate before summarizing")
     orchestration.add_argument(
+        "--openai", action="store_true", help="Use the shared OpenAI live service (opt-in only)"
+    )
+    orchestration.add_argument(
         "--live-adapter",
         metavar="MODULE:ATTRIBUTE",
         help="Explicit LiveRunnerFactory object or zero-argument factory (opt-in only)",
@@ -57,6 +60,7 @@ def _parser() -> argparse.ArgumentParser:
     scorecard.add_argument("--retrieval-report", type=Path)
     scorecard.add_argument("--orchestration-report", type=Path)
     subcommands.add_parser("mcp-config", help="Print safe stdio MCP configuration")
+    subcommands.add_parser("llm-check", help="Require configured OpenAI mode and credentials")
     return parser
 
 
@@ -260,6 +264,7 @@ def _eval_orchestration(
     *,
     run: bool,
     live_adapter: str | None,
+    openai: bool = False,
 ) -> int:
     from recallops.evaluation.orchestration_benchmark import (
         load_orchestration_report,
@@ -269,8 +274,16 @@ def _eval_orchestration(
     cases = _case_path(report_path, case_path, "orchestration_cases.json")
     if live_adapter is not None and not run:
         return _unverified("Orchestration evaluation", ValueError("--live-adapter requires --run"))
+    if openai and (not run or live_adapter is not None):
+        return _unverified(
+            "Orchestration evaluation", ValueError("--openai requires --run and no --live-adapter")
+        )
     try:
         adapter = _load_live_adapter(live_adapter) if live_adapter is not None else None
+        if openai:
+            from recallops.evaluation.openai_live_adapter import build_openai_live_factory
+
+            adapter = build_openai_live_factory(_openai_settings())
         if run:
             report = asyncio.run(
                 _atomic_benchmark(
@@ -345,9 +358,26 @@ def _mcp_config() -> int:
     return 0
 
 
+def _openai_settings():
+    from recallops.llm.config import get_llm_settings, load_project_env
+
+    load_project_env()
+    settings = get_llm_settings()
+    if settings.mode != "openai":
+        raise ValueError("RECALLOPS_MODEL_MODE must be openai for this command")
+    return settings
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "llm-check":
+            try:
+                _openai_settings()
+            except ValueError as error:
+                return _unverified("OpenAI configuration", error)
+            print("OpenAI configuration is ready")
+            return 0
         if args.command == "data-validate":
             return _data_validate()
         if args.command == "demo":
@@ -362,6 +392,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.cases,
                 run=args.run,
                 live_adapter=args.live_adapter,
+                openai=args.openai,
             )
         if args.command == "eval-scorecard":
             return _eval_scorecard(

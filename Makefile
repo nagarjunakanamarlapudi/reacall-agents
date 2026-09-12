@@ -10,6 +10,7 @@ export LIVE_MODEL_ADAPTER
 PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 EVAL_DIR := $(PROJECT_ROOT)/data/evals
 UV_PROJECT := uv run --project "$(PROJECT_ROOT)"
+UV_LIVE := $(UV_PROJECT) $(if $(wildcard $(PROJECT_ROOT)/.env),--env-file "$(PROJECT_ROOT)/.env")
 SCORECARD := $(EVAL_DIR)/scorecard.json
 SUITE_REPORTS := \
 	$(EVAL_DIR)/report.json \
@@ -17,7 +18,7 @@ SUITE_REPORTS := \
 	$(EVAL_DIR)/orchestration_report.json
 
 .PHONY: \
-	help setup data-validate demo ui ui-stdio \
+	help setup data-validate demo ui ui-stdio ui-openai \
 	mcp-config mcp-smoke eval-fast eval-safety eval-retrieval \
 	eval-orchestration eval eval-summary eval-model \
 	demo-data notebooks diagrams \
@@ -34,6 +35,7 @@ help:
 		'  make demo               Run the credential-free flagship CLI demo' \
 		'  make ui                 Start the durable Streamlit command center' \
 		'  make ui-stdio           Start Streamlit with real stdio MCP subprocesses' \
+		'  make ui-openai          Start Streamlit with required OpenAI configuration' \
 		'' \
 		'MCP, evaluation, and generated artifacts:' \
 		'  make mcp-config         Print the three-server MCP configuration' \
@@ -44,7 +46,7 @@ help:
 		'  make eval-orchestration Run and verify the 24-case offline comparison' \
 		'  make eval               Run all deterministic suites and build the scorecard' \
 		'  make eval-summary       Validate and summarize the combined scorecard' \
-		'  make eval-model         Opt in to a configured read-only live model adapter' \
+		'  make eval-model         Run shared OpenAI evaluation (or an explicit custom adapter)' \
 		'  make demo-data          Regenerate the deterministic synthetic dataset' \
 		'  make notebooks          Rebuild and execute all seven teaching notebooks' \
 		'  make diagrams           Verify Mermaid double-render and SVG parity' \
@@ -83,6 +85,10 @@ ui:
 
 ui-stdio:
 	RECALLOPS_RUNTIME_DIR="$(RUNTIME_DIR)" RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py --server.port "$(PORT)"
+
+ui-openai:
+	@$(UV_LIVE) recallops llm-check
+	RECALLOPS_RUNTIME_DIR="$(RUNTIME_DIR)" $(UV_LIVE) streamlit run "$(PROJECT_ROOT)/src/recallops/ui/app.py" --server.port "$(PORT)"
 
 mcp-config:
 	@uv run recallops mcp-config
@@ -136,10 +142,10 @@ eval-summary: $(SCORECARD)
 eval-model:
 	@set -eu; \
 	if [ -z "$${LIVE_MODEL_ADAPTER}" ]; then \
-		printf '%s\n' 'LIVE_MODEL_ADAPTER is required (MODULE:ATTRIBUTE for a configured LiveRunnerFactory with provider credentials).'; \
-		exit 2; \
+		$(UV_LIVE) recallops eval-orchestration --run --openai --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
+	else \
+		$(UV_LIVE) recallops eval-orchestration --run --live-adapter "$${LIVE_MODEL_ADAPTER}" --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
 	fi; \
-	$(UV_PROJECT) recallops eval-orchestration --run --live-adapter "$${LIVE_MODEL_ADAPTER}" --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
 	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"; \
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 

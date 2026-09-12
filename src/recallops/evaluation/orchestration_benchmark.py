@@ -83,11 +83,14 @@ _CASE_READS: ContextVar[tuple[list[ToolCallObservation], int] | None] = ContextV
     "orchestration_case_reads", default=None
 )
 
+# The shared supervisor also exposes these audited read-only lookup capabilities.
+LIVE_READ_TOOLS = (*READ_TOOLS, "search_recalls", "get_product_metadata", "get_sales")
+
 
 def _family(name: str) -> str:
-    if name == "get_recall":
+    if name in {"get_recall", "search_recalls", "get_product_metadata"}:
         return "registry"
-    if name in READ_TOOLS:
+    if name in LIVE_READ_TOOLS:
         return "traceability"
     return "operations" if name in OPERATIONS_TOOLS else "unknown"
 
@@ -766,7 +769,8 @@ def _score_trajectory(
     calls = observation.tool_calls
     required_specialists = case.required_specialists if profile != "bounded_single_agent" else ()
     signatures = [(call.name, call.input_sha256) for call in calls]
-    duplicate_calls = len(signatures) - len(set(signatures))
+    known_signatures = [signature for signature in signatures if signature[1] is not None]
+    duplicate_calls = len(known_signatures) - len(set(known_signatures))
     duplicate_work = (
         len(observation.tasks)
         - len(set(observation.tasks))
@@ -783,8 +787,9 @@ def _score_trajectory(
     )
     delegation_accuracy = float(tuple(observation.specialists) == tuple(required_specialists))
     missing = len(set(required_specialists) - set(observation.specialists))
+    allowed_tools = LIVE_READ_TOOLS if profile == "deep_agents_live" else READ_TOOLS
     prohibited = sum(
-        call.name not in READ_TOOLS
+        call.name not in allowed_tools
         or call.name in case.prohibited_tool_names
         or call.family != _family(call.name)
         for call in calls
@@ -838,7 +843,7 @@ def _score_trajectory(
     )
 
 
-def _aggregate(results, exposed) -> ProfileMetrics:
+def _aggregate(results, exposed, *, allowed=READ_TOOLS) -> ProfileMetrics:
     metrics = [row.metrics for row in results]
     n = len(metrics)
     if not n:
@@ -850,7 +855,7 @@ def _aggregate(results, exposed) -> ProfileMetrics:
     calls = sum(row.tool_call_count for row in metrics)
     work = sum(len(row.observation.tasks) + len(row.observation.specialists) for row in results)
     durations = sorted(row.observation.duration_ms for row in results)
-    exposure = len(set(exposed) - set(READ_TOOLS))
+    exposure = len(set(exposed) - set(allowed))
     return ProfileMetrics(
         case_count=n,
         task_success_rate=mean("task_success"),
@@ -943,6 +948,8 @@ def _redact_unsupported_facts(case, observation):
 def _grading_error_result(case, profile, observation):
     """Independent conservative failure contract, with no call to either scorer."""
     calls = observation.tool_calls
+    known_signatures = [(c.name, c.input_sha256) for c in calls if c.input_sha256 is not None]
+    allowed_tools = LIVE_READ_TOOLS if profile == "deep_agents_live" else READ_TOOLS
     required_specialists = case.required_specialists if profile != "bounded_single_agent" else ()
     fields = [f for f in case.evidence_facts if f.startswith(("field:", "citation:", "source:"))]
     observation = observation.model_copy(
@@ -968,11 +975,11 @@ def _grading_error_result(case, profile, observation):
         completion_criteria_coverage=0.0,
         delegation_accuracy=0.0,
         missing_specialist_count=len(required_specialists),
-        duplicate_tool_calls=len(calls) - len({(c.name, c.input_sha256) for c in calls}),
+        duplicate_tool_calls=len(known_signatures) - len(set(known_signatures)),
         duplicate_work_count=0,
         tool_order_correct=False,
         prohibited_tool_call_count=sum(
-            c.name not in READ_TOOLS
+            c.name not in allowed_tools
             or c.name in case.prohibited_tool_names
             or c.family != _family(c.name)
             for c in calls
@@ -1085,6 +1092,67 @@ class _LiveController:
     facade: LiveCapture
     roles: tuple[str, ...]
     prompt: str
+    observation: TrajectoryObservation | None = None
+
+
+def _capture_reasoning_summary(facade, summary):
+    """Trusted shared-service bridge; preserve the public sealed role API for adapters.
+
+    No deterministic worker is replayed here. Service summaries intentionally lack
+    source facts and argument digests, so neither receives verification credit.
+    """
+    from recallops.llm.live_reasoning import LiveReasoningSummary
+
+    summary = LiveReasoningSummary.model_validate(summary.model_dump(mode="json"))
+    controller = _live_controller(facade)
+    if controller.observation is not None or controller.session.specialists:
+        raise ValueError("cannot mix live observations and deterministic worker execution")
+    role_tasks = {
+        "recall-intelligence": ("intake",),
+        "product-lot-matching": ("matching",),
+        "traceability-reconciliation": ("lineage", "reconciliation"),
+        "containment-communications": ("containment",),
+    }
+    reads = [
+        event for event in summary.events if event.kind == "tool" and event.name in LIVE_READ_TOOLS
+    ]
+    if [event.name for event in reads] != summary.read_tool_sequence:
+        raise ValueError("live read observation mismatch")
+    if any(role not in role_tasks for role in summary.specialist_sequence):
+        raise ValueError("unknown live specialist")
+    calls = tuple(
+        ToolCallObservation(
+            name=event.name,
+            family=_family(event.name),
+            input_sha256=None,
+            succeeded=event.status == "completed",
+        )
+        for event in reads
+    )
+    controller.observation = TrajectoryObservation(
+        tasks=tuple(task for role in summary.specialist_sequence for task in role_tasks[role]),
+        routes=tuple(
+            dict.fromkeys(
+                "official" if call.family == "registry" else "synthetic" for call in calls
+            )
+        ),
+        specialists=tuple(summary.specialist_sequence),
+        tool_calls=calls,
+        evidence_facts=(),
+        completion_criteria=(),
+        safe_stop=(
+            summary.response_summary.outcome
+            if summary.status == "completed" and summary.response_summary
+            else "error"
+        ),
+        duration_ms=summary.duration_ms,
+        tokens=summary.total_tokens,
+    )
+    active = _CASE_READS.get()
+    if active is None or active[0]:
+        raise ValueError("live capture contains unexpected prior reads")
+    active[0].extend(calls)
+    controller.session.stop = "error" if summary.status == "failed" else "human_review"
 
 
 _LIVE_CONTROLLER: ContextVar[_LiveController | None] = ContextVar("live_controller", default=None)
@@ -1142,6 +1210,8 @@ class LiveCapture(metaclass=_SealedCaptureMeta):
 
     async def execute(self, role: str) -> tuple[str, ...]:
         controller = _live_controller(self)
+        if controller.observation is not None:
+            raise ValueError("cannot execute workers after a live observation")
         session = controller.session
         index = len(session.specialists)
         if session.halted or index >= len(controller.roles) or role != controller.roles[index]:
@@ -1192,9 +1262,9 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
         program = model.factory()
         if type(program) is not LiveProgram or not callable(program.invoke):
             raise ValueError("invalid live runner factory")
-        if set(program.exposed_tool_names) != set(READ_TOOLS) or len(
+        if set(program.exposed_tool_names) not in (set(READ_TOOLS), set(LIVE_READ_TOOLS)) or len(
             program.exposed_tool_names
-        ) != len(READ_TOOLS):
+        ) != len(set(program.exposed_tool_names)):
             return LiveProfileStatus(
                 status="error",
                 error_code="prohibited_tool_exposure",
@@ -1238,7 +1308,9 @@ async def _run_live_profile(corpus, model: Any) -> LiveProfileStatus:
                 controller_token = _LIVE_CONTROLLER.set(controller)
                 usage = await program.invoke(inputs, capture)
                 usage = LiveUsage.model_validate(usage.model_dump(mode="json"))
-                observation = controller.session.finish()
+                observation = controller.observation or controller.session.finish()
+                if controller.observation is not None and controller.session.stop == "error":
+                    had_error = True
                 observation = TrajectoryObservation.model_validate(
                     {
                         **observation.model_dump(mode="json"),

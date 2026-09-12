@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +29,53 @@ from recallops.models import ProposedAction, proposed_action_digest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCENARIO_PATH = PROJECT_ROOT / "data" / "evals" / "scenarios.json"
+
+
+def test_openai_eval_requires_credentials_before_writing(tmp_path, monkeypatch, capsys):
+    from recallops.cli import main
+    from recallops.llm import config
+
+    monkeypatch.setattr(config, "load_project_env", lambda: None)
+    monkeypatch.setenv("RECALLOPS_MODEL_MODE", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    target = tmp_path / "absent.json"
+    assert main(["eval-orchestration", "--run", "--openai", "--report", str(target)]) != 0
+    assert "OPENAI_API_KEY" in capsys.readouterr().out
+    assert not target.exists()
+
+
+async def test_live_scorecard_projects_metrics_without_changing_release_gate(tmp_path):
+    from recallops.evaluation.orchestration_benchmark import (
+        LiveProgram,
+        LiveRunnerFactory,
+        LiveUsage,
+        run_orchestration_benchmark,
+    )
+    from recallops.evaluation.scorecard import build_scorecard
+
+    async def invoke(inputs, capture):
+        return LiveUsage(tokens=5)
+
+    root = PROJECT_ROOT / "data/evals"
+    shutil.copyfile(root / "orchestration_cases.json", tmp_path / "orchestration_cases.json")
+    report = tmp_path / "orchestration.json"
+    await run_orchestration_benchmark(
+        root / "orchestration_cases.json",
+        report,
+        LiveRunnerFactory(provider="test", model="test", factory=lambda: LiveProgram(invoke)),
+    )
+    card = build_scorecard(
+        root / "report.json", root / "retrieval_report.json", report, tmp_path / "scorecard.json"
+    )
+    assert card.offline_gate_passed
+    live = card.optional_live_status
+    assert live.metrics.task_success_rate == 0.0
+    assert live.metrics.evidence_fact_coverage == 0.0
+    assert live.metrics.prohibited_tool_exposure_count == 0
+    assert live.tokens == 120
+    assert live.duration_ms >= 0
+    assert live.excluded_from_offline_gates
 
 
 class FakeExecutor:

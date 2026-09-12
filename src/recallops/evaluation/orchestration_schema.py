@@ -425,7 +425,7 @@ class OrchestrationEvalCorpus(FrozenContract):
 class ToolCallObservation(FrozenContract):
     name: Identifier
     family: Literal["registry", "traceability", "operations", "unknown"]
-    input_sha256: Digest
+    input_sha256: Digest | None
     succeeded: StrictBool
 
 

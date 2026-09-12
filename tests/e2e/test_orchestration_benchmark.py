@@ -18,6 +18,75 @@ from recallops.paths import DATA_DIR
 CASES = DATA_DIR / "evals" / "orchestration_cases.json"
 
 
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("read_name", ["get_recall", "search_recalls"])
+async def test_builtin_live_projects_shared_observations_without_replaying_workers(
+    tmp_path, monkeypatch, failed, read_name
+):
+    from recallops.evaluation import openai_live_adapter
+    from recallops.llm import LLMSettings
+    from recallops.llm.live_reasoning import LiveExecutionEvent, LiveReasoningSummary
+
+    async def observed(self, question, *, transport):
+        assert transport == "direct"
+        assert '"recall_number": "H-' in question
+        assert "expected_tasks" not in question and "evidence_facts" not in question
+        return LiveReasoningSummary(
+            model="test-model",
+            status="failed" if failed else "completed",
+            specialist_sequence=["recall-intelligence"],
+            read_tool_sequence=[read_name, read_name],
+            duration_ms=125.0,
+            input_tokens=7,
+            output_tokens=4,
+            total_tokens=11,
+            error_category="timeout" if failed else None,
+            events=[
+                LiveExecutionEvent(kind="tool", name=read_name, status="completed", duration_ms=2.0)
+            ]
+            * 2,
+        )
+
+    monkeypatch.setattr(openai_live_adapter.LiveReasoningService, "run", observed)
+    factory = openai_live_adapter.build_openai_live_factory(
+        LLMSettings(mode="openai", model="test-model")
+    )
+    target = tmp_path / "shared-live.json"
+    report = await run_orchestration_benchmark(CASES, target, live_model=factory)
+    live = report.live_status
+    assert live.status == ("error" if failed else "completed")
+    assert live.tokens == 264 and not live.cost_available
+    row = live.results[0]
+    assert row.observation.duration_ms == 125.0
+    assert row.observation.specialists == ("recall-intelligence",)
+    assert row.metrics.tool_call_count == 2
+    assert row.metrics.prohibited_tool_call_count == 0
+    assert row.metrics.duplicate_tool_calls == 0  # Arguments were not observed.
+    assert row.metrics.task_accuracy > 0
+    assert row.metrics.delegation_accuracy == 0.0
+    assert row.metrics.missing_specialist_count == 3
+    assert row.metrics.evidence_fact_coverage == 0.0
+    assert not row.metrics.task_success
+    assert all(call.input_sha256 is None for call in row.observation.tool_calls)
+    assert report.gate_passed
+    assert load_orchestration_report(target, CASES) == report
+    from recallops.evaluation.orchestration_benchmark import _grading_error_result
+
+    fallback = _grading_error_result(
+        load_orchestration_cases(CASES).cases[0], "deep_agents_live", row.observation
+    )
+    assert fallback.metrics.duplicate_tool_calls == 0
+    assert fallback.metrics.prohibited_tool_call_count == 0
+
+
+def test_builtin_live_rejects_deterministic_settings():
+    from recallops.evaluation.openai_live_adapter import build_openai_live_factory
+    from recallops.llm import LLMSettings
+
+    with pytest.raises(ValueError, match="openai"):
+        build_openai_live_factory(LLMSettings())
+
+
 @pytest.fixture
 async def report(tmp_path):
     return await run_orchestration_benchmark(CASES, tmp_path / "report.json")

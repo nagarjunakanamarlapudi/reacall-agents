@@ -30,9 +30,14 @@ from recallops.evaluation.digests import (
 )
 from recallops.evaluation.metrics import calculate_metrics, safety_gate_passes
 from recallops.evaluation.orchestration_benchmark import (
+    LIVE_READ_TOOLS,
+    _aggregate,
+    load_orchestration_report_bytes,
+)
+from recallops.evaluation.orchestration_benchmark import (
     load_orchestration_report as load_orchestration_report,
 )
-from recallops.evaluation.orchestration_benchmark import load_orchestration_report_bytes
+from recallops.evaluation.orchestration_schema import Count, Milliseconds, ProfileMetrics
 from recallops.evaluation.retrieval_benchmark import load_retrieval_report as load_retrieval_report
 from recallops.evaluation.retrieval_benchmark import load_retrieval_report_bytes
 from recallops.evaluation.runner import (
@@ -68,6 +73,19 @@ class OptionalLiveStatus(ScorecardContract):
     model_judges: Literal["not_used"] = "not_used"
 
 
+class LiveModelSummary(OptionalLiveStatus):
+    """Separate measured lane; no live value participates in the release gate."""
+
+    provider: str
+    executed_case_count: Count
+    tokens: Count | None
+    estimated_cost: Milliseconds | None
+    duration_ms: Milliseconds
+    metrics: ProfileMetrics | None
+    argument_digests_available: StrictBool
+    evidence_facts_available: StrictBool
+
+
 class EvaluationScorecard(ScorecardContract):
     schema_version: Literal["1.0"]
     execution_mode: Literal["offline_deterministic"]
@@ -75,7 +93,7 @@ class EvaluationScorecard(ScorecardContract):
     suite_summaries: tuple[SuiteSummary, SuiteSummary, SuiteSummary]
     artifact_digests: dict[str, Digest]
     offline_gate_passed: StrictBool
-    optional_live_status: OptionalLiveStatus
+    optional_live_status: LiveModelSummary | OptionalLiveStatus
     scorecard_sha256: Digest
 
 
@@ -397,6 +415,24 @@ def _verified_snapshots(snapshots: dict[str, bytes]):
         ),
     )
     live = OptionalLiveStatus(status=orchestration.live_status.status)
+    observed = orchestration.live_status
+    if observed.provider is not None:
+        calls = [call for row in observed.results for call in row.observation.tool_calls]
+        live = LiveModelSummary(
+            status=observed.status,
+            provider=observed.provider,
+            executed_case_count=observed.executed_case_count,
+            tokens=observed.tokens,
+            estimated_cost=observed.estimated_cost,
+            duration_ms=observed.duration_ms,
+            metrics=_aggregate(observed.results, LIVE_READ_TOOLS, allowed=LIVE_READ_TOOLS)
+            if observed.results
+            else None,
+            argument_digests_available=bool(calls)
+            and all(call.input_sha256 is not None for call in calls),
+            evidence_facts_available=bool(observed.results)
+            and all(bool(row.observation.evidence_facts) for row in observed.results),
+        )
     return summaries, live
 
 

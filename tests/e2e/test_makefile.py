@@ -69,6 +69,7 @@ def test_make_help_lists_the_supported_project_workflows() -> None:
         "demo",
         "ui",
         "ui-stdio",
+        "ui-openai",
         "mcp-smoke",
         "eval-fast",
         "eval-safety",
@@ -86,6 +87,38 @@ def test_make_help_lists_the_supported_project_workflows() -> None:
         "verify",
     ):
         assert target in result.stdout
+
+
+def test_make_openai_targets_load_env_and_ui_checks_mode(tmp_path):
+    (tmp_path / ".env").write_text("RECALLOPS_MODEL_MODE=openai\n")
+    result = _make("-n", "ui-openai", "PORT=8999", f"PROJECT_ROOT={tmp_path}")
+    assert result.returncode == 0
+    assert "--env-file" in result.stdout and str(tmp_path / ".env") in result.stdout
+    assert "llm-check" in result.stdout
+    assert "streamlit run" in result.stdout and "8999" in result.stdout
+    env = os.environ.copy()
+    env.update(RECALLOPS_MODEL_MODE="deterministic", OPENAI_API_KEY="", OPENAI_MODEL="")
+    rejected = _make("ui-openai", env=env)
+    assert rejected.returncode != 0
+    assert "openai" in rejected.stdout
+
+
+def test_make_builtin_eval_requires_credentials_before_changing_artifacts(tmp_path):
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    before = (eval_dir / "orchestration_report.json").read_bytes()
+    env = os.environ.copy()
+    env.update(RECALLOPS_MODEL_MODE="openai", OPENAI_API_KEY="", OPENAI_MODEL="test-model")
+    result = _make(
+        "eval-model",
+        f"EVAL_DIR={eval_dir}",
+        "LIVE_MODEL_ADAPTER=",
+        f"PROJECT_ROOT={tmp_path}",
+        f'UV_PROJECT=uv run --project "{ROOT}"',
+        env=env,
+    )
+    assert result.returncode != 0
+    assert "OPENAI_API_KEY" in result.stdout
+    assert (eval_dir / "orchestration_report.json").read_bytes() == before
 
 
 def test_make_ui_dry_run_uses_configurable_runtime_and_port() -> None:
@@ -214,8 +247,7 @@ def test_make_eval_model_is_explicit_opt_in_and_read_only() -> None:
     configured = _make("-n", "eval-model", "LIVE_MODEL_ADAPTER=recallops_live:factory")
 
     assert missing.returncode == 0
-    assert "LIVE_MODEL_ADAPTER is required" in missing.stdout
-    assert "exit 2" in missing.stdout
+    assert "--openai" in missing.stdout
     assert configured.returncode == 0
     assert "recallops_live:factory" not in configured.stdout
     assert "${LIVE_MODEL_ADAPTER}" in configured.stdout
