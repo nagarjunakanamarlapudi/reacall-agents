@@ -1,6 +1,7 @@
 {
   "schema_version": "2.0",
   "runtime_integration_status": "implemented durable runtime and five-view UI",
+  "narration_scope": "expected verified-live route; demonstrated consent and receipts are deterministic; latest live smoke failed before review",
   "duration_seconds": 295,
   "timing": {
     "evaluation_start": "04:00",
@@ -33,7 +34,7 @@
       "Simulate approved actions",
       "Request closure"
     ],
-    "field_labels": ["Recall number", "Decision", "Actor", "Justification"]
+    "field_labels": ["Recall number", "Investigation lot scope", "Decision", "Actor", "Justification"]
   },
   "inputs": {
     "recall_number": "H-1230-2026",

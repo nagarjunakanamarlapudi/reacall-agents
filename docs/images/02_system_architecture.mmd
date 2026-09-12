@@ -1,13 +1,14 @@
+%%{init: {"themeCSS": ".cluster-label div {white-space: nowrap !important; max-width: none !important; width: max-content !important;}", "flowchart": {"subGraphTitleMargin": {"top": 0, "bottom": 50}}}}%%
 flowchart TB
   classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
   classDef llm fill:#ede9fe,stroke:#7c3aed,color:#111827
   classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
   classDef human fill:#ffedd5,stroke:#c2410c,color:#111827
-  O["Official openFDA + synthetic Northstar evidence<br/>H-1230-2026 • separate provenance"]:::control
+  O["Official openFDA + synthetic Northstar evidence<br/>H-1230-2026 • separate provenance<br/>144 lots retained • active flagship scope: four"]:::control
   RAG["Agentic RAG • BM25 + LSA<br/>sparse+dense fusion / rerank<br/>bounded policy critique / rewrite"]:::control
   P["OpenAI LLM planning<br/>write_todos • fixed four-role plan"]:::llm
   DA["Deep Agents supervisor<br/>OpenAI • one delegation at a time<br/>no inner checkpointer / raw-message persistence"]:::llm
-  SP["Four sequential context-bound LLM specialists<br/>Regulatory Intake → Product / Lot Matching<br/>→ Traceability / Reconciliation → Containment<br/>validated prerequisite claims • sealed read-only MCP"]:::llm
+  SP["Four sequential context-bound LLM specialists<br/>Regulatory Intake → Product / Lot Matching<br/>→ Traceability / Reconciliation → Containment<br/>scoped reads • typed completion before next role<br/>one bounded completion correction; then stop"]:::llm
   CLAIMS["Structured synthesis → safe typed claims<br/>unverified • bound to case / context / source<br/>no raw prose or model-owned action IDs"]:::control
   VC["Independent source verifier<br/>re-read source records / recompute receipts<br/>complete claims + scope + targets + no execution"]:::safe
   HR["Human action review<br/>LangGraph HITL control plane<br/>exact action + version + digest • approve writes zero"]:::human
@@ -20,10 +21,11 @@ flowchart TB
     EV["Read-only evaluation plane"]:::control
     SUITES["Deterministic safety / retrieval / orchestration<br/>additional measured OpenAI lane"]:::control
     SCORE["digest-bound scorecard<br/>live measurements excluded from offline gates"]:::safe
-    EVALSAFE["No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
+    EVALSAFE["Report consumers: No Operations MCP credentials<br/>No active-case action authority<br/>Safety runners use isolated synthetic stores"]:::human
     EV --> SUITES --> SCORE
     EVALSAFE --- EV
   end
   G["LangGraph control / detached traces"]:::control
   G -. read-only traces .-> EV
   RAG -. read-only retrieval report .-> EV
+  SP -->|child contract failure| STOP

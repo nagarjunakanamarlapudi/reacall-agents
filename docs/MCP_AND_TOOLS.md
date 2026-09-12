@@ -1,6 +1,6 @@
 # MCP Servers and Tool Safety
 
-![MCP/tool safety boundary](images/04_mcp_tool_safety.svg)
+![MCP/tool safety boundary](images/04_mcp_tool_safety.png)
 
 MCP is RecallOps’ vertical integration boundary; it is not agent-to-agent communication. LangGraph owns coordination and state. The same typed gateway contract supports direct in-process calls for fast deterministic runs and actual stdio FastMCP subprocesses through `MultiServerMCPClient`.
 
@@ -62,6 +62,8 @@ RECALLOPS_MCP_TRANSPORT=stdio uv run recallops demo --recall-number H-1230-2026
 Read middleware applies a budget, circuit breaker, bounded transient retry, typed validation, provenance checks, masking, and structured telemetry. The graph can use the frozen recall after a simulated registry outage but labels the fallback. Missing or malformed required evidence stops fail-closed before operational writes.
 
 Hybrid search preserves source routing. Registry retrieval accepts only official origins; Traceability retrieval accepts only `SYNTHETIC_RETAILER_DIGITAL_TWIN`. Retrieved citations contain record identity, source URL, content hash, and origin.
+
+The live LLM graph receives sealed, request-scoped read capabilities rather than the unrestricted gateway. Candidate-product and lot results are filtered to the bound investigation scope; trace/inventory/reconciliation reads cannot name an out-of-scope lot. The UI/smoke flagship shares four selected lots while retaining all 144 in the dataset. Role capabilities remain separate: recall intelligence reads Registry, matching reads candidates/lots, traceability reads lineage and quantities, and containment has no MCP tools. Required read names and input digests are checked at child completion, with at most one fixed completion correction. Source/binding/unauthorized-tool/provider failures do not enter that correction loop. The final independent verifier separately re-reads pinned sources and recomputes the receipt contract; tool events alone are not accepted claims or authorization.
 
 ## Write contract
 

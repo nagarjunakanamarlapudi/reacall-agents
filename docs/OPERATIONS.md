@@ -152,20 +152,22 @@ suite summaries before reporting the combined offline verdict.
 
 ### OpenAI live setup and evaluation
 
-Follow [the exact preflight and proof checklist](DEMO_WALKTHROUGH.md#preflight). Keep `OPENAI_API_KEY` only in the ignored local `.env`, set `RECALLOPS_MODEL_MODE=openai` and a nonblank `OPENAI_MODEL`. Existing process variables take precedence over `.env`. `make ui-openai` performs configuration validation and launches the shared service; `make ui` also loads the project environment in the app.
+Follow [the exact preflight and proof checklist](DEMO_WALKTHROUGH.md#preflight). Keep `OPENAI_API_KEY` only in the ignored local `.env`, set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, and `OPENAI_REASONING_EFFORT=medium`. Allowed effort values are `none`, `low`, `medium`, `high`, `xhigh`; model compatibility is still required and is not proved by readiness. Existing process variables take precedence over `.env`. `make ui-openai` performs configuration validation and launches the shared service; `make ui` also loads the project environment in the app.
 
 ```bash
 make ui-openai
-make eval-model
+make eval-model LIVE_SMOKE=1 LIVE_SMOKE_REPORT=/tmp/recallops-live-smoke-new.json
 ```
 
-The built-in OpenAI runner is the default live evaluation adapter. It uses the same bounded RAG, context/source binding, sealed reads, safe typed claims and independent source verifier as the UI. `LIVE_MODEL_ADAPTER=module:attribute` remains an optional trusted local import override. No custom adapter is needed. Live metrics remain unavailable until an actual measured run; the committed `not_run_missing_credentials` result is historical evaluation status, not a diagnosis of the current local environment. Live metrics never determine `offline_gate_passed`.
+The built-in OpenAI runner is the default live evaluation adapter. It uses the same bounded RAG, context/source binding, sealed reads, safe typed claims and independent source verifier as the UI. The one-case smoke does not execute HITL or Operations and refuses existing report paths before spending. Plain `make eval-model` is the full 24-case live comparison; run it only when that larger spend is intended. `LIVE_MODEL_ADAPTER=module:attribute` remains an optional trusted local import override, not a prerequisite. The committed `not_run_missing_credentials` result is historical benchmark status, not a diagnosis of the current environment. Failed smoke measurements exist; successful full-E2E metrics remain unavailable. Live metrics never determine `offline_gate_passed`. See [whole-agent evaluation](EVALUATION.md#whole-agent-evidence-ladder).
+
+The UI's **Investigation lot scope** searches 144 synthetic lot IDs, defaults to the same four flagship lots as the smoke, and accepts 1–64 unique known IDs before start. It locks after run/checkpoint; open a new case to change the scope. The full dataset stays intact. Preserve both runtime databases before resetting; a new directory creates a new rehearsal rather than mutating old evidence.
 
 ### Live resilience
 
 ![Semantic stop versus provider fallback](images/11_live_resilience.png)
 
-**Semantic stop:** missing, malformed, incomplete, false, contradictory or unsupported returned artifacts fail closed. No review, no fallback, no simulated writes. The same applies to source changes or invalid binding. Inspect the fixed verification violation codes and source evidence; do not silently substitute a deterministic result.
+**Semantic stop:** each child completion requires strict typed output and its required scoped reads. It may receive one fixed correction; repeated invalid completion fails closed. Source/binding/unauthorized-tool/provider failures are not correction retries. Missing, malformed, incomplete, false, contradictory or unsupported final claims stop before review, with no semantic fallback or simulated writes. Inspect fixed violation codes and source evidence; do not silently substitute a deterministic result.
 
 **Provider fallback:** authentication, timeout, rate-limit, transport or execution-budget failures may discard partial claims and run the explicit deterministic fallback. The header must say fallback; no live success is claimed. Both HITL gates still apply. Inspect the sanitized category, repair local configuration/connectivity, then start a fresh case/runtime for a fresh live attempt. Never print the key or raw provider response. An interrupted durable `started` marker is not automatically retried; preserve the original stores for audit and use a new runtime for rehearsal.
 

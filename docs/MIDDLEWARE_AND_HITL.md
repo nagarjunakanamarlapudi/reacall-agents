@@ -10,6 +10,8 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 |---|---|---|
 | Case/agent | Case context and bounded task plan | Case ID, role, provenance, task limits, and completion criteria remain explicit |
 | Model/reasoning | OpenAI `write_todos`, fixed sequential delegation, original JSON validation, context binding | Each role requires the prior typed result; budgets and sealed reads constrain the live supervisor |
+| Child completion | Required scoped reads plus exact typed response; at most one fixed correction | No next role before accepted completion; source/binding/unauthorized-tool/provider failures do not enter this correction loop |
+| Compiled graph | Exact canonical middleware executable/hook identities and read-tool fingerprints | Same-named substituted hooks or tools cannot bypass the control boundary |
 | Claim boundary | Safe typed claims, digest projection, isolated non-checkpointing supervisor | No raw prompts, model prose, model-owned action IDs or provider exceptions reach durable state |
 | Independent source verifier | Re-read pinned sources; recompute evidence receipts and compare complete claims | False/incomplete/unsupported claims stop before action review; no semantic fallback |
 | Retrieval | Source routing, sealed capabilities, query/read budgets, progress watchdog, evidence critic | No Operations tool, no infinite query loop, unsupported concepts remain gaps |
@@ -23,6 +25,8 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 
 The live model supplies evidence through the independent source verifier; it cannot create approval or execution authority. Provider/transport/budget failure may take a visibly labelled fallback after discarding partial claims. Semantic failure cannot. See [live resilience](images/11_live_resilience.png). The R10 offline fixture is a scripted safety test and is not proof of a hosted-provider run.
 
+Child validation checks strict original structured-response shape and required read receipts before parent handoff. One application-owned correction removes the rejected completion and asks for the missing complete contract; rejected values and validator prose are never reflected as instructions. A second invalid completion stops. This is distinct from the final independent source verifier, which recomputes source facts, receipt digests, scope and quantities before releasing actionable state. Policy checks and hook-identity validation are deterministic control infrastructure; OpenAI remains the only reasoning model in the primary lane.
+
 ## Dual-consent action lifecycle
 
 ![HITL, execution confirmation, and closure](images/06_hitl_closure.png)
@@ -34,7 +38,7 @@ Each action uses two separate durable interrupts:
 
 `edit` may change rationale only and returns through verification/re-review. Scope, target IDs, evidence IDs, action type, case identity, and version are immutable. `reject` keeps the case open without execution. `escalate` ends safely. `cancel` at execution confirmation also writes nothing.
 
-After one receipt, the approval is invalidated, the Operations version increases, and the graph recomputes the next required action. That is why the flagship visibly requires a second review and confirmation for the hold after the case-creation receipt.
+After one receipt, the approval is invalidated, the Operations version increases, and the graph recomputes the next required action. That is why the deterministic flagship demonstration requires a second review and confirmation for the hold after the case-creation receipt. This is also the expected verified-live route; the latest failed live attempt never reached human review.
 
 ## Full versioned lifecycle
 
@@ -47,7 +51,7 @@ After one receipt, the approval is invalidated, the Operations version increases
 | Confirm response | repeated `record_acknowledgment`, one facility/version | A task is not proof that a facility acknowledged |
 | Close | `closure_review` → execution confirmation → `close_case` | Operations rechecks every authoritative predicate transactionally |
 
-The flagship mixed case stops after the hold because ambiguity/gaps remain. The probable-only positive control can continue through all later actions.
+The deterministic flagship mixed case stops after the hold because ambiguity/gaps remain. The probable-only positive control can continue through all later actions. Neither result is evidence that a real-provider run completed.
 
 ## Restart and checkpoint identity
 

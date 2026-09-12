@@ -4,13 +4,13 @@
 
 RecallOps is an evidence-first, human-governed food-recall response command center. It turns official notice `H-1230-2026` into a durable simulated retailer case: agentic retrieval, bounded planning, product/lot classification, forward/backward trace, quantity reconciliation, human-reviewed containment, one simulated operation per version, acknowledgements, audit, and safe closure gating.
 
-The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) explain the real operating problem. The presentation visuals below lead with the honest data boundary and then show the AI implementation.
+The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.png), and [domain evidence model](images/09_domain_evidence_model.png) explain the real operating problem. The presentation visuals below lead with the honest data boundary and then show the AI implementation.
 
 ![Official openFDA evidence and synthetic retailer data remain visibly separate](images/recallops-data-boundary.png)
 
 ![RecallOps architecture: evidence, approval, and safe closure](images/recallops-system-architecture.png)
 
-The source-controlled [provenance](images/01_data_provenance.svg), [technical architecture](images/02_system_architecture.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) diagrams are the reproducible detail views. The [five-minute demo visual](images/recallops-five-minute-demo.png) shows how those boundaries appear in the flagship product story.
+The source-controlled [provenance](images/01_data_provenance.png), [technical architecture](images/02_system_architecture.png), and [evaluation architecture](images/10_evaluation_architecture.png) diagrams are the reproducible detail views. The [five-minute demo visual](images/recallops-five-minute-demo.png) shows how those boundaries appear in the flagship product story.
 
 The differentiator is inspectable authority: RAG is advisory; structured evidence and transactions are authoritative; agents draft; the human approves one action; a second confirmation permits one approved graph-node write; Operations rechecks the request in SQLite.
 
@@ -43,7 +43,7 @@ For the live flagship, follow the private `.env` setup and `make ui-openai` proo
 
 Human Review exposes **Review required** and the exact action, digest, current version, evidence, gaps, and remaining lifecycle. The form uses **Decision**, **Actor**, and **Justification** with decisions `approve`, `edit`, `reject`, `escalate`. The visible controls are **Approve**, **Edit**, **Reject**, and **Escalate**.
 
-Approval performs zero writes. A separate execution-confirmation interrupt enables **Simulate approved actions**. The flagship records `create_case` v0→v1, then requires a fresh review/confirmation for `apply_inventory_hold` v1→v2. Each successful receipt shows **Simulated action recorded**. Later safe cases use the same loop for disposition, tasks, repeated acknowledgements, closure review, and `close_case`.
+Approval performs zero writes. A separate execution-confirmation interrupt enables **Simulate approved actions**. The deterministic flagship demonstration records `create_case` v0→v1, then requires a fresh review/confirmation for `apply_inventory_hold` v1→v2. Each successful receipt shows **Simulated action recorded**. This is the expected verified-live route, not an achieved live result. Later safe cases use the same loop for disposition, tasks, repeated acknowledgements, closure review, and `close_case`.
 
 For the recovery proof, use a separate fresh runtime: approve `create_case`, select **lost write response → same-key replay** in **Audit & Evaluation**, click **Run failure fixture**, execute with **Simulate approved actions**, then use **Recover recorded outcome (same key)**. The visible invariant is one logical receipt and one version increment.
 
@@ -57,11 +57,13 @@ Copy/paste values:
 
 ## Evaluation design
 
-The [evaluation architecture](images/10_evaluation_architecture.svg) keeps three authored, labelled, digest-bound offline corpora separate from source evidence and from Operations. R01–R21 are all safety-critical; the pinned integrated report passes 21/21 scenarios and 320 assertions, with every required rate at 1.0 and all four unsafe counters at zero.
+The [evaluation architecture](images/10_evaluation_architecture.png) keeps three authored, labelled, digest-bound offline corpora separate from source evidence and from Operations. R01–R21 are all safety-critical; the pinned integrated report passes 21/21 scenarios and 320 assertions, with every required rate at 1.0 and all four unsafe counters at zero.
 
 The 96-case retrieval suite compares six configurations: `sparse_bm25`, `dense_lsa`, `naive_hybrid`, `rrf_fusion`, `rrf_plus_rerank`, and `agentic_rag`. The measured fusion Recall@5 delta is `+0.005681818181818121`; the rerank nDCG@5 delta is `+0.005266955662502459`; rewrite records zero wins, zero losses, and eight unchanged cases. These are in-sample synthetic/offline observations, not causal or production uplift.
 
-The 24-case orchestration suite compares `bounded_single_agent` with `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero; the benchmark therefore makes no unsupported multi-agent uplift claim. The committed live benchmark remains `not_run_missing_credentials`, and model judging is `not_used`; these historical statuses are separate from the current UI run. `make eval-model` uses the shared built-in OpenAI service and independent source verifier. Live metrics remain unavailable until actually measured and are excluded from deterministic offline gates. The digest is a consistency check, not authentication or a digital signature. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
+The 24-case orchestration suite compares `bounded_single_agent` with `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero; the benchmark therefore makes no unsupported multi-agent uplift claim. The committed live benchmark remains historically `not_run_missing_credentials`, and model judging is `not_used`. `make eval-model` runs the full live comparison; `make eval-model LIVE_SMOKE=1` is a separate one-case investigation smoke and does not execute HITL or Operations. Both use the shared built-in OpenAI service and independent source verifier. Live measurements are excluded from offline gates. The digest is a consistency check, not authentication or a digital signature. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
+
+Latest real-provider result: `gpt-5-mini` / `medium`, 195.583 seconds, eight completed model calls, 83,995 tokens; exact four-role plan observed and recall intelligence completed, but matching failed after one bounded correction. `get_recall`, `find_candidate_products`, `match_lots` ran; zero claims/receipts were released, no HITL/writes occurred, and `passed=false`. Failed measurements exist; successful four-specialist/full-E2E metrics remain unavailable. Child typed-response/read validation and exact compiled hook identities do not replace the final independent source verifier. The UI now defaults to the smoke's four-lot scope, searchable among all 144 lots, allowing 1–64 unique choices before start and locking afterward.
 
 ## Vibe-coding prompts and briefs
 
@@ -102,7 +104,7 @@ uv run streamlit run src/recallops/ui/app.py
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
 
-The visual is the presentation overview. [`demo_contract.json`](demo_contract.json), the table below, the [reproducible demo diagram](images/07_demo_story.svg), and the [evaluation architecture](images/10_evaluation_architecture.svg) define the exact 4:55 sequence.
+The visual is the presentation overview. [`demo_contract.json`](demo_contract.json), the table below, the [reproducible demo diagram](images/07_demo_story.png), and the [evaluation architecture](images/10_evaluation_architecture.png) define the exact 4:55 sequence.
 
 | Time | Presenter narration | Screen/action |
 |---|---|---|

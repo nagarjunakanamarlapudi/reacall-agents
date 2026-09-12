@@ -1,10 +1,10 @@
 # RecallOps Architecture
 
-The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) define the operating problem. This document maps that problem onto the implemented control, retrieval/reasoning, tool, state, and action boundaries.
+The [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.png), and [domain evidence model](images/09_domain_evidence_model.png) define the operating problem. This document maps that problem onto the implemented control, retrieval/reasoning, tool, state, and action boundaries.
 
 ![RecallOps system architecture: evidence, approval, and safe closure](images/recallops-system-architecture.png)
 
-The presentation visual summarizes the boundaries. The [five-minute demo story](images/recallops-five-minute-demo.png) shows the operator-facing sequence. The reproducible [technical architecture](images/02_system_architecture.svg), [orchestration](images/03_orchestration.svg), [MCP safety](images/04_mcp_tool_safety.svg), [middleware lifecycle](images/05_middleware_lifecycle.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) carry the implementation detail.
+The presentation visual summarizes the boundaries. The [five-minute demo story](images/recallops-five-minute-demo.png) shows the operator-facing sequence. The reproducible [technical architecture](images/02_system_architecture.png), [orchestration](images/03_orchestration.png), [MCP safety](images/04_mcp_tool_safety.png), [middleware lifecycle](images/05_middleware_lifecycle.png), and [evaluation architecture](images/10_evaluation_architecture.png) carry the implementation detail.
 
 ## Architectural thesis
 
@@ -53,6 +53,10 @@ Bounded sparse+dense fusion, reranking, and policy-based retrieval critique/rewr
 
 The live route is required evidence-producing work when `RECALLOPS_MODEL_MODE=openai`. The OpenAI factory builds the same ChatOpenAI-backed service used by the UI and `make eval-model`. The model writes the four-role plan using `write_todos` before the first delegation. Middleware requires exactly one successful typed task result before the next role, enforces order and budgets, and replaces model-authored delegation descriptions with application-owned case, scope, bounded RAG citations, and validated prerequisite claims.
 
+The UI and one-case smoke share the four-lot flagship scope in `recallops.demo_contract`: exact, probable, ambiguous and rejected anchor lots. **Investigation lot scope** searches all 144 lots and accepts 1–64 unique known IDs before start; scope edits are disabled after the run/checkpoint. Sealed candidate-product and lot reads expose only the request-bound source rows; the independent verifier recomputes the same scope from pinned sources, not from model-selected row filters.
+
+Each child completion is checked for an exact original response shape, typed fields and required sealed read receipts before returning to its parent. One application-owned correction may request missing reads or a valid complete response; a second invalid completion stops. Rejected response content and validator prose are not reflected into the correction prompt. Source/read, binding, unauthorized-tool and provider failures do not receive this correction retry. The compiled graph is checked against exact canonical middleware hook identities, not just hook names or types. This deterministic control is not an alternative reasoning model, and child completion validation does not replace the final independent source verifier.
+
 | Order | LLM role | Sealed read capabilities |
 |---|---|---|
 | 1 | `recall-intelligence` — Regulatory Intake | `search_recalls`, `get_recall`, `get_product_metadata` |
@@ -74,12 +78,12 @@ Durable retrieval runs first. The inner supervisor runs in a fresh asynchronous 
 
 ## Read-only evaluation plane
 
-The [evaluation architecture](images/10_evaluation_architecture.svg) follows one direction: labelled corpora → suite runners → metrics/gates → digest-bound scorecard → UI/demo/CI. It consumes detached traces and reports after execution. No evaluation, judge, scorecard, or presentation component has an edge to Recall Operations MCP, the approved graph node, or either SQLite write boundary.
+The [evaluation architecture](images/10_evaluation_architecture.png) separates execution from report consumption: labelled corpora → isolated suite runners → metrics/gates → digest-bound scorecard → UI/demo/CI. Safety runners exercise disposable synthetic checkpoint/Operations stores, including simulated writes. Detached report consumers and judges have no authority over the active product case, Operations MCP or its stores; “read-only evaluation” describes this authority boundary, not a claim that no test ever writes SQLite.
 
 - **Safety:** R01–R21 deterministically probe approval, idempotency, recovery, versioning, closure, transport, and failure controls; 21/21 currently pass with all unsafe counters at zero.
 - **Retrieval:** the same 96 labelled cases run through BM25, LSA, naive hybrid, RRF, RRF plus rerank, and agentic RAG. Measured fusion Recall@5 delta is `+0.005681818181818121`; measured rerank nDCG@5 delta is `+0.005266955662502459`; rewrite is unchanged on all eight eligible cases.
 - **Orchestration:** the same 24 investigations run through `bounded_single_agent` and `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are zero, so the architecture makes no unsupported uplift claim.
-- **Additional live lane:** `make eval-model` uses the same OpenAI service and source verifier as the product. The committed report remains `not_run_missing_credentials`; no real-provider result is asserted here. Live task/tool/usage measurements and optional presentation judging are excluded from deterministic scorecard gates. This evaluation boundary does not make the product’s verified live evidence advisory.
+- **Additional live lanes:** `make eval-model LIVE_SMOKE=1` measures one bounded investigation; plain `make eval-model` runs the 24-case live comparison. Both use the shared OpenAI service and source verifier but neither establishes the durable UI/HITL lifecycle by itself. Whole-agent proof must separately cover the real plan, all four children, scoped reads, safe claims, independent verification and then both human gates/receipts. The smoke does not execute HITL or Operations. The committed comparative report remains historically `not_run_missing_credentials`; the latest measured smoke failed at matching after one correction. Live task/tool/usage measurements exist for failures but successful full-E2E metrics remain unavailable. All live measurements and presentation judging are excluded from deterministic scorecard gates; this does not make the product’s verified live evidence advisory.
 
 These evaluation records are authored, labelled, digest-bound offline audit data—not official recall evidence. Their SHA-256 digests detect inconsistency against pinned artifacts; they are not authentication or digital signatures.
 
@@ -93,7 +97,7 @@ After that, the graph repeats a versioned action loop:
 
 `action review → approval recorded (zero writes) → execution confirmation → one Operations call → receipt/version increment → recompute next action → next review`
 
-The first two flagship cycles are fixed by evidence and case state:
+After accepted verification, the first two flagship cycles are fixed by evidence and case state. These cycles are demonstrated deterministically; no successful live entry into them is claimed:
 
 - `create_case` v0→v1;
 - `apply_inventory_hold` v1→v2.

@@ -6,8 +6,8 @@ flowchart TB
   classDef safe fill:#dcfce7,stroke:#16a34a,color:#111827
   classDef block fill:#f3f4f6,stroke:#6b7280,color:#111827
 
-  A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026<br/>official + SYNTHETIC — ACADEMIC DEMO"]:::step
-  B["00:35 Investigation<br/>Run investigation<br/>OpenAI write_todos + Deep Agents supervisor<br/>four context-bound LLM specialists<br/>safe typed claims → independent source verifier"]:::agent
+  A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026<br/>official + SYNTHETIC — ACADEMIC DEMO<br/>Investigation lot scope: four of 144; locks after start"]:::step
+  B["00:35 Investigation<br/>Run investigation<br/>OpenAI write_todos + Deep Agents supervisor<br/>four LLM roles • one child correction bound<br/>safe typed claims → independent source verifier<br/>Later consent route requires all four verified"]:::agent
   C["01:20 Reconciliation<br/>received = dispositions + unaccounted<br/>gaps stay visible"]:::step
   D["02:00 Human Review<br/>Review required • create_case at v0<br/>Decision • Actor • Justification<br/>Food-safety manager<br/>Approve • Edit • Reject • Escalate"]:::human
   E["02:35 Approve writes zero<br/>execution confirm → Simulate approved actions<br/>create_case v0→v1 • Simulated action recorded"]:::action
@@ -19,4 +19,7 @@ flowchart TB
   I["04:45 Request closure<br/>finish by 04:55<br/>Open — closure blocked"]:::human
 
   A --> B --> C --> D --> E --> F --> G --> H --> J --> K --> I
+  FAIL["Latest real live attempt: FAILED<br/>gpt-5-mini / medium • 195.583s • 8 model calls<br/>83,995 tokens • recall complete; matching failed after one correction<br/>three read events; zero released claims / receipts<br/>no HITL or writes • passed=false"]:::human
+  MODE["Presenter branch: stop failed live story here<br/>Later consent / receipts: separate deterministic demonstration<br/>Never attribute its results to OpenAI"]:::block
+  B -->|latest observed result| FAIL --> MODE
   NOTE["No A2A • agents never write directly<br/>internal closure ≠ FDA termination"]:::block --- H

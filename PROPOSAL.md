@@ -4,7 +4,7 @@
 **Domain:** food-recall response and traceability
 **Product:** evidence-first, human-governed simulated operations
 
-Read the [business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg) first. They distinguish an FDA recall from a fictional retailer’s internal case and make human authority explicit.
+Read the [business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.png), and [domain evidence model](docs/images/09_domain_evidence_model.png) first. They distinguish an FDA recall from a fictional retailer’s internal case and make human authority explicit.
 
 ## Problem worth solving
 
@@ -17,13 +17,13 @@ RecallOps makes that work inspectable. It starts from official openFDA evidence,
 | Course concept | Product evidence |
 |---|---|
 | State and agent loop | Explicit LangGraph nodes, conditional routes, JSON-only state, SQLite checkpoints, `thread_id`, and durable resume. |
-| Planning and multi-agent work | Deterministic bounded plan, four specialists, optional real Deep Agents supervisor, and an independent verifier. |
+| Planning and multi-agent work | OpenAI `write_todos` planning, a Deep Agents supervisor, four sequential context-bound LLM specialists, and a separate independent source verifier. |
 | Agentic RAG | Source-aware planning, BM25 + local LSA retrieval, RRF, reranking, evidence critique, one rewrite, and hard budgets. |
 | MCP | Three real FastMCP stdio servers plus an equivalent direct gateway. |
 | Middleware | Retry, circuit breaker, budgets, structured validation, provenance, masking, approval, version, idempotency, fencing, telemetry, and watchdog. |
 | Human in the loop | Action review and separate execution confirmation for each version; closure has its own human review. |
 | Recovery | Frozen fallback, restart-safe interrupts, same-key unknown-write recovery, stale/digest rejection, and fail-closed evidence handling. |
-| Evaluation | Twenty-one fresh, deterministic, safety-critical scenarios with machine-readable hard gates. |
+| Evaluation | 21 offline safety scenarios, 96 retrieval cases, 24 orchestration comparisons, plus separate measured live smoke and whole-agent lifecycle proof requirements. |
 
 ## Data strategy
 
@@ -44,9 +44,9 @@ Given a recall number and question, RecallOps makes five answers reviewable:
 ## Differentiating safety design
 
 - RAG is advisory. Retrieved prose never overrides structured recall fields, lot classifications, reconciliation, or Operations transactions.
-- Deep Agents is a bounded reasoning option, not a write authority. Its fixed specialists have no Operations tools.
+- OpenAI is the sole reasoning model in the primary product lane. Deep Agents supervises bounded LLM specialists, not write authority; none receive Operations tools. Each child must satisfy its typed completion and evidence-read contract, with at most one fixed correction before stopping.
 - Approval is not execution. Every write requires action review and a second execution confirmation.
-- One receipt advances exactly one case version. The flagship visibly performs `create_case` v0→v1, then `apply_inventory_hold` v1→v2.
+- One receipt advances exactly one case version. The deterministic flagship demonstrates `create_case` v0→v1, then `apply_inventory_hold` v1→v2; this is the expected verified-live route, not an achieved live result.
 - Later actions—disposition, facility tasks, one acknowledgement at a time, and closure—use the same review/confirm/write loop.
 - The checkpoint database and Operations database share a persistent owner identity and compare exact checkpoint heads/request digests before a resume can mutate state.
 
@@ -61,10 +61,10 @@ Given a recall number and question, RecallOps makes five answers reviewable:
 
 ## Flagship and positive control
 
-The flagship mixed-scope case is intentionally not a happy path. `LOT-EXACT-170` retains 50 unaccounted units and `LOT-AMBIG-175` remains ambiguous, so the UI ends **Open — closure blocked** even after two approved simulated writes. The evaluator’s scoped `LOT-PROBABLE-160` positive control has zero unaccounted units and exercises the complete disposition/tasks/acknowledgements/closure-review lifecycle.
+The deterministic flagship mixed-scope case is intentionally not a happy path. `LOT-EXACT-170` retains 50 unaccounted units and `LOT-AMBIG-175` remains ambiguous, so that demonstrated lane ends **Open — closure blocked** even after two approved simulated writes. The evaluator’s scoped `LOT-PROBABLE-160` positive control has zero unaccounted units and exercises the complete disposition/tasks/acknowledgements/closure-review lifecycle. The latest real OpenAI attempt instead stopped at matching after one bounded correction: no released claims, no human review and no writes. See the [current evidence](README.md#what-is-implemented), not the expected workflow, for live status.
 
 ## Scope boundary
 
-Included: offline-first data, allowlisted openFDA lookup/fallback, hybrid and agentic RAG, LangGraph, multi-agent specialists, optional Deep Agents, MCP, middleware, durable HITL, simulated Operations writes, Streamlit, CLI, evaluator, notebooks, diagrams, and reproducible docs.
+Included: pinned local evidence, allowlisted openFDA lookup/fallback, hybrid and agentic RAG, LangGraph control, OpenAI planning and Deep Agents LLM specialists, MCP, middleware, durable HITL, simulated Operations writes, Streamlit, CLI, evaluator, notebooks, diagrams, and reproducible docs. Credential-free deterministic demonstrations and provider fallback are separate labelled lanes, never substitute live-success evidence.
 
 Excluded: real ERP/WMS/POS/supplier connections, real inventory action, notifications, real PII, production identity/authorization, deployment, 24/7 monitoring, autonomous health/compliance decisions, A2A, You.com, and general web search.

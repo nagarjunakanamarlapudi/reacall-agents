@@ -644,3 +644,27 @@ The scorecard's canonical self-digest is
 and timestamps are observations from this final run; the safety rates, unsafe counters, retrieval
 quality deltas, orchestration quality/tool-call deltas, provenance boundaries, and pass/fail gates
 remain the asserted submission claims.
+
+## 2026-09-12 final live evidence and documentation scope
+
+The coordinator reported the following final real-provider smoke evidence against the hardened live investigation path. This documentation pass did not invoke OpenAI, inspect credentials, or rerun that provider attempt. Earlier timeout, schema and read-contract failures are separate historical attempts and are not added to these totals.
+
+| Observation | Final failed attempt |
+|---|---|
+| Provider / model / reasoning effort | OpenAI / `gpt-5-mini` / `medium` |
+| Duration | 195.583 seconds |
+| Completed model calls | 8 |
+| Total reported tokens | 83,995 |
+| Plan | Exact four-role plan observed |
+| Child outcome | Recall intelligence completed; product-lot matching failed after one bounded correction; traceability and containment did not complete |
+| Read events | `get_recall`, `find_candidate_products`, `match_lots` |
+| Released evidence | Zero safe claims and zero read receipts released |
+| Human/operation outcome | No HITL or writes; zero operation receipts |
+| Verdict | `passed=false`; no successful four-specialist investigation or durable live E2E proof |
+| Cost | Unavailable |
+
+Completed source-read events are not released verifier receipts. The smoke directly exercises bounded retrieval, the live service and (only after successful claims) independent verification; it does not execute durable HITL or Operations. Whole-agent live E2E would additionally require accepted claims to reach a durable human action review, separate execution confirmation, version-bound simulated receipts and closure evaluation. That proof remains outstanding. A deterministic two-consent-cycle demonstration proves those controls separately, not live completion.
+
+The current implementation adds shared four-lot UI/smoke scope, the 144-option bounded selector, explicit reasoning effort, scoped sealed reads, one fixed child-completion correction and exact compiled middleware hook identity checks. Subsequent prompt hardening and offline tests do not constitute another live measurement. The final documentation and diagrams describe these implemented controls and the expected verified-live route without claiming that the failed smoke reached it. Historical offline benchmark status `not_run_missing_credentials` remains attached to its original scorecard rather than being rewritten as current credential status.
+
+This documentation pass executed `uv run pytest tests/docs tests/notebooks -q --tb=short`: **68 passed in 228.12 seconds**. That includes the actual `render_diagrams.sh --verify` path, two canonical fresh renders and byte-identical committed PNG/SVG parity for eleven technical diagrams and both generated presentation PNGs. The seven initial changed contract checks first failed, then passed after implementation. Ruff check/format and patch whitespace checks passed. All ten changed PNGs were visually inspected; crowded headings/connectors were corrected without weakening the existing readability bounds. No provider call, `.env` change, or push was performed by this pass.

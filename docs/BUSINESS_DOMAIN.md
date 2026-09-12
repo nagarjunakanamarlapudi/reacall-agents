@@ -6,7 +6,7 @@ This guide explains the business problem before the AI architecture. RecallOps a
 
 ![Honest boundary between official recall scope and fictional retailer evidence](images/recallops-data-boundary.png)
 
-The polished visual is the presentation-first domain orientation. The reproducible [business recall lifecycle](images/08_business_recall_lifecycle.svg) and [domain evidence model](images/09_domain_evidence_model.svg) provide the detailed process and record relationships; the lifecycle view deliberately omits software components.
+The polished visual is the presentation-first domain orientation. The reproducible [business recall lifecycle](images/08_business_recall_lifecycle.png) and [domain evidence model](images/09_domain_evidence_model.png) provide the detailed process and record relationships; the lifecycle view deliberately omits software components.
 
 ## 1. Why this is a real operational problem
 
@@ -75,6 +75,8 @@ This is a **RACI-style academic operating model**, not a universal legal allocat
 Public warnings and consumer instructions follow the real recall strategy and authorized communications process. They are outside RecallOps.
 
 ## 5. Public notice to retailer response
+
+![Business recall lifecycle, with separate confirmation and receipt for closure](images/08_business_recall_lifecycle.png)
 
 ### Step 1 — Establish the authoritative notice
 
@@ -153,7 +155,9 @@ Creating a task is not an acknowledgement. An acknowledgement proves only that t
 
 ## 9. Evidence model and audit packet
 
-![Domain evidence model](images/09_domain_evidence_model.svg)
+![Domain evidence model](images/09_domain_evidence_model.png)
+
+The candidate predicate remains a proposal during automated matching and tracing. There is no separate pre-matching human-approval screen: humans review the evidence-bound action packet after independent verification. Internal closure likewise needs its own approval, separate execution confirmation and simulated closure receipt; a checked gate is not itself an executed close.
 
 The audit packet should let a reviewer move from conclusion back to source without trusting a generated narrative. It contains:
 
@@ -204,7 +208,9 @@ All lots and retailer outcomes below are **SYNTHETIC — ACADEMIC DEMO** and do 
 
 ### Primary narrated scenario — conservative action, blocked closure
 
-Open the official `H-1230-2026` record, show the cited predicate, and investigate the fictional portfolio. `LOT-AMBIG-175` contains an uncertain plant code and pauses for review. The food-safety manager authorizes only the confirmed scope while retaining the ambiguous lot for review. A simulated receipt proves what was authorized. The subsequent closure request remains blocked while an ambiguity, facility acknowledgement, or quantity gap is unresolved. This is the strongest safety story because successful containment does not erase outstanding risk.
+Open the official `H-1230-2026` record and use **Investigation lot scope** to select the four flagship examples: `LOT-EXACT-170`, `LOT-PROBABLE-160`, `LOT-AMBIG-175`, `LOT-REJECT-190`. All 144 synthetic lots remain available; the active run permits 1–64 unique selections before start and locks afterward. The scope selection is an investigation boundary, not authorization to contain those lots.
+
+In the demonstrated deterministic control case, the uncertain plant code in `LOT-AMBIG-175` remains visible for review. The food-safety manager authorizes only confirmed scope; separate confirmation records a simulated receipt. Closure remains blocked by ambiguity, facility acknowledgement or quantity gaps. This is also the expected verified-live route, but the latest real OpenAI attempt stopped at matching after one bounded correction and reached no human review or writes. See [the demo's evidence and mode branches](DEMO_WALKTHROUGH.md#model-proof-checklist). Successful containment never erases outstanding risk.
 
 ### Alternative A — clean, human-authorized close
 

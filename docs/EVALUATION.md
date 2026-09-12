@@ -1,8 +1,8 @@
-# Deterministic Red-Team Evaluation
+# Whole-Agent Evaluation and Deterministic Safety Gates
 
 ![RecallOps evaluation plane inside the complete system boundary](images/recallops-system-architecture.png)
 
-The [five-minute evaluation reveal](images/recallops-five-minute-demo.png) is the presentation view; the reproducible [evaluation architecture](images/10_evaluation_architecture.svg) is the technical truth.
+The [five-minute evaluation reveal](images/recallops-five-minute-demo.png) is the presentation view; the reproducible [evaluation architecture](images/10_evaluation_architecture.png) is the technical truth.
 
 RecallOps evaluates observable safety contracts against fresh offline runtimes; no model provider or network result is needed. `data/evals/scenarios.json` contains exactly R01–R21, all marked safety-critical. `data/evals/report.json` is a run-specific observation with measured timing, complete assertion outcomes, normalized routes, state excerpts, tool traces, applied faults, aggregate metrics, and a corpus digest.
 
@@ -18,7 +18,22 @@ The combined offline scorecard also validates a 96-case retrieval ablation and a
 
 All evaluation corpora are authored, labelled, digest-bound offline audit data and are not official recall evidence. The combined scorecard verifies exact artifact digests before projecting results into the UI. A digest is an integrity consistency check—not authentication or a digital signature.
 
-Optional live Deep Agents is separate and currently `not_run_missing_credentials`; optional model judging is `not_used`. Both are excluded from the offline gate. The absence of a live run is displayed as unavailable status, never converted to a zero score or a pass.
+The committed comparative live benchmark is historically `not_run_missing_credentials`; optional model judging is `not_used`. These statuses describe that artifact, not current credentials or the absence of subsequent smoke attempts. Live measurements are excluded from the offline gate. Missing successful results are unavailable, never converted to a zero score or a pass.
+
+## Whole-agent evidence ladder
+
+| Lane | What actually runs | What it can establish |
+|---|---|---|
+| `make eval` | 21 safety scenarios in fresh isolated synthetic runtime/Operations stores, 96 retrieval cases, 24 deterministic orchestration comparisons | Reproducible offline gates; isolated tests may record simulated SQLite writes, but report consumers/judges cannot authorize the active product case |
+| `make eval-model LIVE_SMOKE=1 LIVE_SMOKE_REPORT=/tmp/recallops-live-smoke-new.json` | One four-lot retrieval → OpenAI planning/supervisor/children → independent source verifier attempt | Observed plan, ordered child completion, scoped MCP reads, released claims/receipts, verification, duration and available tokens; **does not execute HITL or Operations** |
+| `make eval-model` | Full 24-case live comparison through the shared provider/verifier | Measured task/evidence/tool/usage outcomes, separate from offline gates; not a durable human-lifecycle proof |
+| Durable UI/runtime live E2E | A successfully verified real-provider investigation, then action review → execution confirmation → simulated receipts → closure check | Whole-agent product proof, including human authority and restart/version bindings; still outstanding |
+
+Judge the complete trajectory, not merely a fluent answer or a plan: all four role completions, child validation/correction bounds, required read coverage, exact safe claims, independent source verification and final task outcome. Provider call completion is not specialist/task success. A completion correction is bounded control, not a new planner or an independent source check. The separate human-lifecycle proof must show zero writes after approval alone and one receipt/version per confirmed operation.
+
+Latest real smoke evidence (September 12, 2026): OpenAI `gpt-5-mini` / `medium`, 195.583 seconds, eight completed model calls, 83,995 tokens. The exact four-role plan was observed; recall intelligence completed; matching failed after one bounded correction. Reads were `get_recall`, `find_candidate_products`, `match_lots`; zero claims or read receipts were released, no HITL/writes occurred, and `passed=false`. Failed-attempt measurements exist; successful four-specialist/full-E2E metrics remain unavailable. Cost is unavailable. The deterministic dual-consent demonstration cannot fill that live-evidence gap. See [Verification](VERIFICATION.md).
+
+Both live commands incur provider usage and need explicit intent; plain `make eval-model` is the larger 24-case spend. Smoke reports are separate new files and never overwrite the offline scorecard. A passing smoke would establish investigation only, not consent/Operations execution or comparative uplift.
 
 ## Scenario matrix
 

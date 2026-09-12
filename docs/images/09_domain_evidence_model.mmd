@@ -10,13 +10,13 @@ flowchart TB
 
   DEMO_NOTE["SYNTHETIC — ACADEMIC DEMO<br/>Boundary: fictional retailer evidence and simulated operations below"]:::synthetic
 
-    subgraph SCOPE["1 — Derive, review, and match scope"]
+    subgraph SCOPE["1 — Propose and match scope; human action review comes later"]
       direction LR
       DRAFT["RecallOps derives candidate predicate<br/>from official scope fields"]:::review
-      PRED["RecallOps proposed predicate — human verified<br/>product • codes • plant • date<br/>geography • hazard"]:::review
+      PRED["RecallOps proposed predicate — unverified draft<br/>product • codes • plant • date<br/>geography • hazard"]:::review
       PRODUCT["Product match<br/>exact • probable • rejected"]:::synthetic
       LOT["Lot match<br/>exact • probable • ambiguous • rejected"]:::synthetic
-      DRAFT -->|human review and verification| PRED
+      DRAFT -->|structured proposal; not human approval| PRED
       PRED -->|scores| PRODUCT
       PRODUCT -->|contains| LOT
     end
@@ -53,12 +53,16 @@ flowchart TB
 
     OPEN["Keep case open<br/>resolve or escalate gap"]:::blocked
     CLOSED["Fictional retailer case closed<br/>FDA termination remains separate"]:::approved
+    CLOSE_CONFIRM["Separate closure execution confirmation<br/>after evidence-bound human approval"]:::review
+    CLOSE_RECEIPT["Simulated closure receipt<br/>exact action + case version"]:::approved
 
     LOT -->|queries| SHIP
     LOT -->|justifies| ACTION
     REC -->|constrains| ACTION
     REC -->|quantity + facility gates| CLOSURE
     CLOSURE -->|no| OPEN
-    CLOSURE -->|yes + human authorization| CLOSED
+    CLOSURE -->|yes + human authorization| CLOSE_CONFIRM
+    CLOSE_CONFIRM -->|confirm| CLOSE_RECEIPT --> CLOSED
+    CLOSE_CONFIRM -->|cancel| OPEN
   PUBLIC -->|scope evidence for derivation| DEMO_NOTE
   DEMO_NOTE --> DRAFT

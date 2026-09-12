@@ -18,6 +18,8 @@ flowchart TB
   RCPT["Receipt + version increment<br/>create_case v0→v1<br/>apply_inventory_hold v1→v2"]:::safe
   NEXT["Fresh action review or closure gate<br/>Open — closure blocked for flagship"]:::control
   RAG --> P --> DA --> RI --> PM --> TR --> CO --> CLAIMS --> VC --> AR --> EC --> W --> RCPT --> NEXT
+  CHILD["Between LLM roles: typed completion + required scoped reads<br/>one application-owned correction; repeated failure stops<br/>no correction on source / binding / unauthorized-tool / provider failure<br/>exact compiled hook identities • not a reasoning model"]:::control
+  DA -. child control contract .-> CHILD
   NEXT -->|next eligible action| AR
   VC -->|unsupported / incomplete| STOP["Semantic stop • zero writes"]:::human
   TC["Typed trajectory capture<br/>detached safe events • no raw prompts"]:::control

@@ -1,4 +1,4 @@
-%%{init: {"themeVariables": {"fontSize": "14px"}, "themeCSS": ".cluster-label div {white-space: nowrap !important; max-width: none !important; width: max-content !important;}", "flowchart": {"rankSpacing": 40, "nodeSpacing": 30, "subGraphTitleMargin": {"top": 0, "bottom": 24}}}}%%
+%%{init: {"themeVariables": {"fontSize": "14px"}, "themeCSS": ".cluster-label div {white-space: nowrap !important; max-width: none !important; width: max-content !important;}", "flowchart": {"rankSpacing": 36, "nodeSpacing": 30, "subGraphTitleMargin": {"top": 0, "bottom": 24}}}}%%
 flowchart TB
   classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
   classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
@@ -6,17 +6,17 @@ flowchart TB
   classDef approved fill:#dcfce7,stroke:#16a34a,color:#111827
   classDef blocked fill:#fee2e2,stroke:#dc2626,color:#111827
 
-  NOTICE["FDA / regulator<br/>Official public notice / enforcement record<br/><br/>Consumers<br/>Official recall information may come from<br/>FDA or the recalling firm, when applicable"]:::official
-  DEMO_NOTE["SYNTHETIC — ACADEMIC DEMO<br/>Boundary: fictional retailer evidence and simulated operations below<br/>RecallOps contacts neither regulators nor consumers"]:::synthetic
+  NOTICE["FDA / regulator<br/>Official public recall record<br/>Consumers: official communications<br/>from FDA / recalling firm, when applicable"]:::official
+  DEMO_NOTE["SYNTHETIC — ACADEMIC DEMO<br/>Fictional retailer evidence + simulated operations<br/>No regulator / consumer contact"]:::synthetic
 
   subgraph STAGE1["STAGE 1 — CONTAINMENT ACTION"]
     direction TB
     TRACE["Recall coordinator<br/>Verify official scope; request evidence from<br/>Supplier + DC / store"]:::synthetic
-    ACTION_REVIEW["Food-safety manager<br/>First human action review<br/>Exact proposed action + case version<br/>predicate • targets • evidence • one version truth"]:::review
+    ACTION_REVIEW["Food-safety manager<br/>First human action review<br/>Exact proposed action + case version"]:::review
     ACTION_GATE{"Approve the exact proposed action<br/>at this case version?<br/>Approval records no operation"}:::review
     EXEC_CONFIRM["Food-safety manager<br/>Separate execution confirmation<br/>exact action + execution key"]:::review
     RECORD["DC / store<br/>Record authorized simulated action"]:::synthetic
-    EVIDENCE["Operation receipt • disposition evidence<br/>Create facility tasks • repeated acknowledgements<br/>Unit reconciliation • Every facility acknowledgement<br/>Each action separately authorized at one version"]:::synthetic
+    EVIDENCE["Operation receipt • disposition evidence<br/>Unit reconciliation<br/>Every facility acknowledgement<br/>Each action separately authorized"]:::synthetic
     ACTION_HOLD["Keep open / edit / reject / escalate<br/>No simulated write"]:::blocked
 
     TRACE --> ACTION_REVIEW --> ACTION_GATE
@@ -33,13 +33,17 @@ flowchart TB
     GATE_EVAL{"Deterministic closure gate evaluation<br/>receipt present? • unaccounted = 0?<br/>every affected facility acknowledged?"}:::review
     CLOSURE_REVIEW["Food-safety manager<br/>Second human closure review"]:::review
     CLOSURE_GATE{"Authorize internal retailer closure?"}:::review
+    CLOSE_CONFIRM["Separate closure execution confirmation<br/>exact version + key; cancel writes zero"]:::review
+    CLOSE_RECEIPT["Simulated closure receipt<br/>one authorized close • version increment"]:::approved
     CLOSED["Close fictional retailer case<br/>auditable closure evidence retained<br/>FDA termination is separate from retailer internal closure"]:::approved
     OPEN["Keep open / escalate<br/>Internal closure blocked<br/>resolve gap or revise request"]:::blocked
 
     CLOSURE_REQUEST --> GATE_EVAL
     GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW
     CLOSURE_REVIEW --> CLOSURE_GATE
-    CLOSURE_GATE -->|close| CLOSED
+    CLOSURE_GATE -->|approve close| CLOSE_CONFIRM
+    CLOSE_CONFIRM -->|confirm execution| CLOSE_RECEIPT
+    CLOSE_RECEIPT --> CLOSED
     CLOSURE_GATE -->|keep open / escalate| OPEN
     GATE_EVAL -->|gap or missing acknowledgement| OPEN
   end

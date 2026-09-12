@@ -1,6 +1,6 @@
 # Submission Checklist
 
-Use this as the final reviewer/recording gate. A checked box means the referenced artifact or executed evidence is present in the integrated branch; command outcomes belong in [Verification](VERIFICATION.md).
+Use this as the final reviewer/recording gate. A checked box means the referenced artifact or explicitly historical executed evidence is present; it does not assert a new live run. Command outcomes belong in [Verification](VERIFICATION.md). The current provider smoke failed at matching; successful four-specialist/HITL E2E remains unchecked below.
 
 ## Business and provenance
 
@@ -14,12 +14,15 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 
 - [x] LangGraph node order, JSON state, SQLite checkpoint, persistent checkpoint ID, `thread_id`, interrupt, and resume are visible.
 - [x] Agentic RAG visibly includes BM25 sparse, local LSA dense, RRF, reranking, critic/rewrite, citations/gaps, and 2-hop/4-query/8-read limits.
-- [x] The deterministic task-driven sequential dispatcher, four specialists, optional Deep Agents factory, and independent verifier are accurately distinguished.
+- [x] The primary lane uses OpenAI planning, Deep Agents supervision and four sequential LLM specialists; deterministic retrieval policies, bounded child checks and independent verification are controls, not alternate reasoning models.
+- [x] Child completion allows one fixed correction; exact compiled hook identities and sealed scoped reads are enforced before progression.
 - [x] Recall Registry, Traceability, and Recall Operations FastMCP servers plus direct/stdio transports are demonstrated.
 - [x] Middleware covers reads, model fallback, retrieval, masking, tracing, approvals, versions, idempotency, watchdog, and cross-store fencing.
 - [x] “No A2A” and “agents never write directly” appear in architecture/narration.
 
 ## Human authority and lifecycle
+
+The checked execution items below refer to the deterministic control demonstration, not the failed live attempt.
 
 - [x] **Approve** records zero writes and exposes a separate **Simulate approved actions** confirmation.
 - [x] First receipt is `create_case` v0→v1; the next fresh review is `apply_inventory_hold` v1→v2.
@@ -41,10 +44,12 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 
 ## Documentation and recording
 
-- [x] The presentation uses [data boundary](images/recallops-data-boundary.png), [system architecture](images/recallops-system-architecture.png), and [five-minute demo](images/recallops-five-minute-demo.png) visuals; [Diagram 10](images/10_evaluation_architecture.svg) preserves the read-only evaluation truth.
+- [x] The presentation uses [data boundary](images/recallops-data-boundary.png), [system architecture](images/recallops-system-architecture.png), and [five-minute demo](images/recallops-five-minute-demo.png) visuals; [Diagram 10](images/10_evaluation_architecture.png) separates offline gates, live investigation smoke and the remaining durable E2E proof.
 - [x] README, proposal, business guide, architecture, source register, MCP/HITL/operations/evaluation docs, submission document, backlog, demo, and verification are synchronized.
-- [x] All ten Mermaid sources render through the pinned local CLI; two fresh renders match each other and committed SVGs.
-- [x] The 4:55 walkthrough is rehearsed with the exact copy/paste card, exact 45-second evaluation narration, and a fresh explicit runtime directory.
+- [x] Eleven Mermaid sources have PNG/SVG artifacts and a digest-pinned canonical container renderer; two fresh renders are byte-compared with committed artifacts.
+- [x] The 4:55 walkthrough supplies a scope card, explicit failed-live branch, historical offline evaluation narration, and fresh-runtime reset instructions.
+- [ ] A real four-specialist run completes independent verification and then both durable HITL gates, simulated receipts and closure checks. Latest smoke: `passed=false`, no released claims or writes.
+- [ ] A successful current live presentation is rehearsed. A deterministic consent rehearsal must be labelled separately and cannot check this box.
 - [x] No secret, real PII, unlabelled synthetic claim, production action claim, unsupported test count, or stale integration-status wording remains.
 
 ## Historical Task 11 integration evidence — 7 September 2026
@@ -56,4 +61,4 @@ Use this as the final reviewer/recording gate. A checked box means the reference
 - [x] Relevance, completeness, digest, prohibited-tool, aggregate-gate, and optional-live mutations each produce a nonzero validator plus a non-passing UI projection.
 - [x] Production security audits the fully hashed `uv.lock` production export with no advisory ignores and exits 0; the separate full audit records 43 low Bandit findings and five development-only Mermaid/Puppeteer advisories without a forced npm upgrade.
 - [x] Exact artifact hashes, all ten diagram hashes, measured retrieval/orchestration deltas, optional-live status, and command outcomes are recorded in [Verification](VERIFICATION.md#evaluation-expansion-final-integration--7-september-2026).
-- [x] The current post-remediation complete tree finishes `1347 passed`; the FastMCP/MCP-focused selection finishes `37 passed`; and the final Make/CI/dependency/documentation contracts finish `63 passed`.
+- [x] The historical September 7 publication tree finished `1347 passed`; the FastMCP/MCP-focused selection finished `37 passed`; and that Make/CI/dependency/documentation selection finished `63 passed`.

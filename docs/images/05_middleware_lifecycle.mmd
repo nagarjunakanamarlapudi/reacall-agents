@@ -6,9 +6,19 @@ flowchart TB
   classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
   CTX["Case context • case / thread / source / scope binding<br/>Durable retrieval: sparse+dense fusion / rerank<br/>Policy critique / rewrite • query/read budgets"]:::hook
   MODEL["OpenAI write_todos → sequential Deep Agents delegation<br/>One successful typed role result before the next role<br/>Sealed reads • schema/provenance checks • call budgets"]:::llm
+  CHECK{"Child completion control<br/>strict typed response + required scoped reads?<br/>exact compiled middleware hook identities"}:::hook
+  CORRECT["One fixed application-owned correction → child LLM<br/>discard rejected completion; never reflect validator prose"]:::llm
+  RECHECK{"Recheck corrected completion<br/>same bound context / source / reads"}:::hook
+  STOP["Stop before next role / review • zero writes<br/>No correction retry for source / binding / unauthorized-tool / provider failures<br/>Provider failures use separate resilience policy"]:::safety
   CLAIMS["Safe typed claims • discard prose / digest unknown identifiers<br/>Isolated supervisor • no callbacks / cache / checkpointer<br/>Strict original JSON boundary before SDK coercion"]:::hook
   VERIFY["Independent source verifier • re-read pinned source evidence<br/>Recompute receipts / scope / reconciliation / targets<br/>Unsupported or incomplete claims stop before review"]:::safe
   REVIEW["Approval guard • exact action / case version / digest<br/>Action review records approval with zero writes<br/>Separate execution confirmation binds one-use grant"]:::safety
   WRITE["Approved graph node • one simulated Operations call<br/>Checkpoint / Operations owner, head and request fence<br/>Receipt validation • version increment • fresh approval"]:::hook
   TRACE["Trace recorder • safe status / duration / tool events<br/>No credentials, raw prompts or chain-of-thought<br/>Next review, durable recovery or blocked closure"]:::hook
-  CTX --> MODEL --> CLAIMS --> VERIFY --> REVIEW --> WRITE --> TRACE
+  CTX --> MODEL --> CHECK
+  CHECK -->|valid completion; all roles complete| CLAIMS
+  CHECK -->|incomplete completion only| CORRECT --> RECHECK
+  RECHECK -->|valid completion; all roles complete| CLAIMS
+  RECHECK -->|still invalid| STOP
+  CHECK -->|non-correctable failure| STOP
+  CLAIMS --> VERIFY --> REVIEW --> WRITE --> TRACE

@@ -1,8 +1,8 @@
 # Data Sources, Provenance, and Retrieval Corpus
 
-Read the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) first. The central rule is simple: official evidence defines public recall scope; synthetic evidence demonstrates how a fictional retailer could investigate that scope. Neither source is allowed to impersonate the other.
+Read the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.png), and [domain evidence model](images/09_domain_evidence_model.png) first. The central rule is simple: official evidence defines public recall scope; synthetic evidence demonstrates how a fictional retailer could investigate that scope. Neither source is allowed to impersonate the other.
 
-![Data provenance boundary](images/01_data_provenance.svg)
+![Data provenance boundary](images/01_data_provenance.png)
 
 ## Source register
 

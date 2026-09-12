@@ -112,7 +112,7 @@ def arrow(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int
 def architecture(output: Path) -> None:
     image, draw = canvas(
         "OpenAI reasons. Evidence earns authority.",
-        "Official openFDA H-1230-2026 + separate Northstar synthetic data • sealed read-only MCP",
+        "H-1230-2026 • separate official / synthetic evidence • 144 lots retained; flagship scope: four",
     )
     top = (
         (
@@ -140,8 +140,8 @@ def architecture(output: Path) -> None:
             "Deep Agents supervisor",
             (
                 "One delegation at a time",
-                "Validated prerequisite claims",
-                "No inner checkpoint persistence",
+                "Typed child + required read checks",
+                "One fixed correction; then stop",
             ),
             PURPLE,
         ),
@@ -172,7 +172,7 @@ def architecture(output: Path) -> None:
             arrow(draw, (492 + index * 456, 605), (512 + index * 456, 605))
     draw.text(
         (64, 721),
-        "05  STRUCTURED SYNTHESIS → SAFE TYPED CLAIMS  /  UNVERIFIED UNTIL SOURCE CHECK",
+        "05  ALL FOUR COMPLETE → SAFE TYPED CLAIMS  /  STILL REQUIRE INDEPENDENT SOURCE CHECK",
         font=font(22, True),
         fill=BLUE,
     )
@@ -208,7 +208,7 @@ def architecture(output: Path) -> None:
     )
     draw.text(
         (64, 1030),
-        "Read-only evaluation is separate: deterministic gates + additional measured live lane. Live metrics unavailable until measured.",
+        "Expected verified route. Latest live: matching failed after one correction; zero released claims, review or writes.",
         font=font(21),
         fill=MUTED,
     )
@@ -218,19 +218,19 @@ def architecture(output: Path) -> None:
 def demo(output: Path) -> None:
     image, draw = canvas(
         "A recall investigation you can inspect.",
-        "H-1230-2026 • SYNTHETIC — ACADEMIC DEMO • timed presentation 4:55; live latency varies",
+        "Expected verified route / separate deterministic control demo • 4:55 narration; live latency varies",
     )
     items = (
         (
             "00:00  READY",
             "Open the case",
-            ("Reasoning mode: OpenAI · model", "Check ready; separate data origins"),
+            ("OpenAI · model / medium; ready", "Choose four of 144 lots; scope locks"),
             BLUE,
         ),
         (
             "00:35  INVESTIGATE",
             "Show actual model work",
-            ("RAG → write_todos → supervisor", "Four sequential LLM specialists"),
+            ("RAG → write_todos → supervisor", "Children: one correction; then stop"),
             PURPLE,
         ),
         (
@@ -259,8 +259,8 @@ def demo(output: Path) -> None:
         ),
         (
             "04:00  MEASURE",
-            "Show both eval lanes",
-            ("Safety / retrieval / orchestration", "Live metrics only when measured"),
+            "Show whole-agent proof",
+            ("Offline gates / live smoke separate", "Smoke does not execute HITL"),
             BLUE,
         ),
         (
@@ -276,19 +276,19 @@ def demo(output: Path) -> None:
     draw.rounded_rectangle((64, 862, 1856, 1029), radius=18, fill="#e8e2f4")
     draw.text(
         (91, 885),
-        "Presenter proof: plan • read-only MCP trail • safe claims • verifier • two HITL gates • receipts",
+        "Latest live: FAILED at matching after one correction. No released claims, HITL or writes.",
         font=font(26, True),
         fill=INK,
     )
     draw.text(
         (91, 935),
-        "Ready validates configuration. A completed plan, read trail and accepted verifier demonstrate a live investigation.",
+        "gpt-5-mini / medium • 195.583s • 8 completed model calls • 83,995 tokens • passed=false",
         font=font(24),
         fill=MUTED,
     )
     draw.text(
         (91, 976),
-        "make ui-openai  /  make eval-model     No raw prompts, credentials or chain-of-thought in recordings.",
+        "After failure, disclose the separate deterministic case for consent / receipts. Never present it as live success.",
         font=font(24),
         fill=MUTED,
     )

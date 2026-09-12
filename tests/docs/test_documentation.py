@@ -136,7 +136,7 @@ DIAGRAM_LABELS = {
     "09_domain_evidence_model": (
         "SYNTHETIC — ACADEMIC DEMO",
         "Official public recall record",
-        "RecallOps proposed predicate — human verified",
+        "RecallOps proposed predicate — unverified draft",
         "Product match",
         "Lot match",
         "Lineage event",
@@ -164,7 +164,7 @@ DIAGRAM_LABELS = {
         "Optional human / model judge",
         "excluded from deterministic authority",
         "No Operations MCP credentials",
-        "No SQLite writes",
+        "No active-case writes",
     ),
     "11_live_resilience": (
         "Semantic stop",
@@ -545,8 +545,10 @@ class DocumentationContractTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         checklist = (DOCS / "SUBMISSION_CHECKLIST.md").read_text(encoding="utf-8")
 
-        self.assertIn("The Streamlit walkthrough then shows two complete consent cycles", readme)
-        self.assertIn("current post-remediation complete tree finishes `1347 passed`", checklist)
+        self.assertIn(
+            "deterministic Streamlit walkthrough then shows two complete consent cycles", readme
+        )
+        self.assertIn("historical September 7 publication tree finished `1347 passed`", checklist)
 
     def test_evaluation_demo_contract_is_bounded_and_matches_committed_reports(self) -> None:
         contract = json.loads((DOCS / "demo_contract.json").read_text(encoding="utf-8"))
@@ -684,7 +686,7 @@ class DocumentationContractTests(unittest.TestCase):
             for target in (
                 "images/recallops-system-architecture.png",
                 "images/recallops-five-minute-demo.png",
-                "images/10_evaluation_architecture.svg",
+                "images/10_evaluation_architecture.png",
             ):
                 self.assertIn(f"]({target})", content, f"{path.name} must link {target}")
 
@@ -792,8 +794,35 @@ class DocumentationContractTests(unittest.TestCase):
     def test_primary_docs_embed_png_technical_diagrams(self) -> None:
         for relative in ("README.md", "docs/ARCHITECTURE.md", "docs/DEMO_WALKTHROUGH.md"):
             content = (ROOT / relative).read_text(encoding="utf-8")
-            self.assertNotRegex(content, r"!\[[^\]]*\]\([^)]*\.svg\)")
+            self.assertNotRegex(content, r"\[[^\]]*\]\([^)]*\.svg\)")
             self.assertIn("02_system_architecture.png", content)
+
+    def test_child_completion_graph_cannot_skip_validation_or_repeat_correction(self) -> None:
+        diagram = (IMAGES / "05_middleware_lifecycle.mmd").read_text(encoding="utf-8")
+        edges = mermaid_directed_edges(diagram)
+        for edge in (("MODEL", "CHECK"), ("CHECK", "CORRECT"), ("CORRECT", "RECHECK")):
+            self.assertIn(edge, edges)
+        self.assertIn(("RECHECK", "STOP"), edges)
+        self.assertNotIn(("RECHECK", "CORRECT"), edges)
+        for origin in ("CHECK", "RECHECK"):
+            self.assertIsNotNone(mermaid_directed_path(edges, origin, "VERIFY"))
+
+    def test_evaluation_smoke_cannot_imply_a_human_action_execution_path(self) -> None:
+        diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
+        edges = mermaid_directed_edges(diagram)
+        self.assertIn(("SMOKE", "SMOKE_RESULT"), edges)
+        self.assertIsNone(mermaid_directed_path(edges, "SMOKE", "SCORECARD"))
+        self.assertIsNone(mermaid_directed_path(edges, "SMOKE", "HITL_PROOF"))
+
+    def test_documented_reasoning_effort_is_accepted_by_real_configuration(self) -> None:
+        from recallops.llm import get_llm_settings
+
+        walkthrough = (DOCS / "DEMO_WALKTHROUGH.md").read_text(encoding="utf-8")
+        block = re.search(r"```dotenv\n(.*?)```", walkthrough, re.DOTALL).group(1)
+        values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        self.assertIn("OPENAI_REASONING_EFFORT", values)
+        with patch.dict(os.environ, values, clear=True):
+            self.assertEqual(get_llm_settings().reasoning_effort, "medium")
 
     def test_evaluation_architecture_separates_deterministic_authority_from_advice(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
@@ -1095,33 +1124,33 @@ flowchart LR
         expected_targets = {
             ROOT / "README.md": (
                 "docs/BUSINESS_DOMAIN.md",
-                "docs/images/08_business_recall_lifecycle.svg",
-                "docs/images/09_domain_evidence_model.svg",
+                "docs/images/08_business_recall_lifecycle.png",
+                "docs/images/09_domain_evidence_model.png",
             ),
             ROOT / "PROPOSAL.md": (
                 "docs/BUSINESS_DOMAIN.md",
-                "docs/images/08_business_recall_lifecycle.svg",
-                "docs/images/09_domain_evidence_model.svg",
+                "docs/images/08_business_recall_lifecycle.png",
+                "docs/images/09_domain_evidence_model.png",
             ),
             DOCS / "ARCHITECTURE.md": (
                 "BUSINESS_DOMAIN.md",
-                "images/08_business_recall_lifecycle.svg",
-                "images/09_domain_evidence_model.svg",
+                "images/08_business_recall_lifecycle.png",
+                "images/09_domain_evidence_model.png",
             ),
             DOCS / "DATA_SOURCES.md": (
                 "BUSINESS_DOMAIN.md",
-                "images/08_business_recall_lifecycle.svg",
-                "images/09_domain_evidence_model.svg",
+                "images/08_business_recall_lifecycle.png",
+                "images/09_domain_evidence_model.png",
             ),
             DOCS / "SUBMISSION_DOCUMENT.md": (
                 "BUSINESS_DOMAIN.md",
-                "images/08_business_recall_lifecycle.svg",
-                "images/09_domain_evidence_model.svg",
+                "images/08_business_recall_lifecycle.png",
+                "images/09_domain_evidence_model.png",
             ),
             DOCS / "DEMO_WALKTHROUGH.md": (
                 "BUSINESS_DOMAIN.md",
-                "images/08_business_recall_lifecycle.svg",
-                "images/09_domain_evidence_model.svg",
+                "images/08_business_recall_lifecycle.png",
+                "images/09_domain_evidence_model.png",
             ),
         }
         for source, targets in expected_targets.items():
@@ -1159,7 +1188,9 @@ flowchart LR
             "CLOSURE_REQUEST --> GATE_EVAL",
             "GATE_EVAL -->|all deterministic gates pass| CLOSURE_REVIEW",
             "CLOSURE_REVIEW --> CLOSURE_GATE",
-            "CLOSURE_GATE -->|close| CLOSED",
+            "CLOSURE_GATE -->|approve close| CLOSE_CONFIRM",
+            "CLOSE_CONFIRM -->|confirm execution| CLOSE_RECEIPT",
+            "CLOSE_RECEIPT --> CLOSED",
             "CLOSURE_GATE -->|keep open / escalate| OPEN",
         ):
             self.assertIn(edge, diagram)
@@ -1182,12 +1213,12 @@ flowchart LR
         predicate_line = next(
             line.strip() for line in evidence_model.splitlines() if line.strip().startswith("PRED[")
         )
-        self.assertIn("RecallOps proposed predicate — human verified", predicate_line)
+        self.assertIn("RecallOps proposed predicate — unverified draft", predicate_line)
         self.assertTrue(predicate_line.endswith(":::review"))
         self.assertNotIn(":::official", predicate_line)
         self.assertIn("PUBLIC -->|scope evidence for derivation| DEMO_NOTE", evidence_model)
         self.assertIn("DEMO_NOTE --> DRAFT", evidence_model)
-        self.assertIn("DRAFT -->|human review and verification| PRED", evidence_model)
+        self.assertIn("DRAFT -->|structured proposal; not human approval| PRED", evidence_model)
 
     def test_business_lifecycle_is_readable_in_a_markdown_column(self) -> None:
         root = ElementTree.parse(IMAGES / "08_business_recall_lifecycle.svg").getroot()

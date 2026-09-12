@@ -4,13 +4,13 @@ RecallOps is an evidence-first food-recall response command center built for the
 
 The point is not “a chatbot answered a recall question.” The point is that an explicit agentic workflow can show what it knows, what it does not know, who authorized each action, and why a case must stay open.
 
-Start with the [business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.svg), and [domain evidence model](docs/images/09_domain_evidence_model.svg). They explain the operating problem before the software.
+Start with the [business-domain guide](docs/BUSINESS_DOMAIN.md), [business recall lifecycle](docs/images/08_business_recall_lifecycle.png), and [domain evidence model](docs/images/09_domain_evidence_model.png). They explain the operating problem before the software.
 
 ![Official openFDA evidence and synthetic retailer data remain visibly separate](docs/images/recallops-data-boundary.png)
 
 ![RecallOps system architecture: evidence, approval, and safe closure](docs/images/recallops-system-architecture.png)
 
-The presentation visuals above are backed by the reproducible [data-provenance Mermaid diagram](docs/images/01_data_provenance.svg), [technical system diagram](docs/images/02_system_architecture.svg), and [evaluation architecture](docs/images/10_evaluation_architecture.svg).
+The presentation visuals above are backed by the reproducible [data-provenance Mermaid diagram](docs/images/01_data_provenance.png), [technical system diagram](docs/images/02_system_architecture.png), and [evaluation architecture](docs/images/10_evaluation_architecture.png).
 
 ## What is implemented
 
@@ -22,7 +22,7 @@ The presentation visuals above are backed by the reproducible [data-provenance M
 - Dual consent for every write: human action review records approval but writes nothing; a separate execution confirmation powers **Simulate approved actions**. A runtime-only, checkpoint-bound broker issues the one-use execution grant; normal service and MCP consumers cannot mint authority. Exactly one operation can advance one case version.
 - A five-view Streamlit command center, CLI, 21-scenario deterministic red-team evaluator, 96-case six-configuration retrieval ablation, 24-case two-profile orchestration comparison, seven self-contained teaching notebooks, and eleven reproducibly rendered technical diagrams. The pinned integrated report records 21/21 safety scenarios passing, fusion Recall@5 delta `+0.005681818181818121`, rerank nDCG@5 delta `+0.005266955662502459`, and zero deterministic orchestration quality/tool-call uplift. The committed live evaluation status is `not_run_missing_credentials` and contains no successful live metrics; current smoke status appears below, and historical hashes and scope are in [Verification](docs/VERIFICATION.md).
 
-Live validation on September 12, 2026 did not establish a successful investigation. After timeout, response-schema and explicit read-contract corrections, one fresh bounded OpenAI `gpt-5-mini` attempt observed the four-role plan, completed recall intelligence, and performed three sealed MCP reads. The matching task then failed with `semantic_failure` / `invalid_response`; there was no human review and zero write receipts. This latest failed attempt took 314.421 seconds, nine model calls and 140,356 tokens. Earlier attempts timed out or stopped before reads. A completed, independently verified live run remains outstanding; the historical offline scorecard is separate from these failed live attempts.
+Latest real-provider evidence, September 12, 2026: OpenAI `gpt-5-mini` with reasoning effort `medium` took **195.583 seconds**, eight completed model calls and **83,995 tokens**. The exact four-role plan was observed; recall intelligence completed; product-lot matching failed after one bounded correction. Sealed `get_recall`, `find_candidate_products` and `match_lots` reads occurred, but zero claims or read receipts were released, no HITL or writes occurred, and `passed=false`. These are failed-attempt measurements, not successful live performance. A completed four-specialist, independently verified live investigation and durable HITL E2E proof remain outstanding. Earlier failures and the historical offline scorecard are separate evidence; see [Verification](docs/VERIFICATION.md).
 
 ## Honest data boundary
 
@@ -41,7 +41,9 @@ make demo
 make ui-openai
 ```
 
-For live setup, create a repository-local ignored `.env` using [the exact demo preflight](docs/DEMO_WALKTHROUGH.md#preflight): set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, and your private `OPENAI_API_KEY`. Do not overwrite an existing `.env`. The header must show `Reasoning mode: OpenAI · <model>` and `ready`; readiness validates configuration, not provider access.
+For live setup, create a repository-local ignored `.env` using [the exact demo preflight](docs/DEMO_WALKTHROUGH.md#preflight): set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT=medium`, and your private `OPENAI_API_KEY`. Do not overwrite an existing `.env`. The header must show `Reasoning mode: OpenAI · <model>` and `ready`; readiness validates configuration, not provider access or model/effort compatibility.
+
+In **Investigation**, the searchable **Investigation lot scope** offers all 144 synthetic lots. The flagship defaults to `LOT-EXACT-170`, `LOT-PROBABLE-160`, `LOT-AMBIG-175`, and `LOT-REJECT-190`, shared with the official smoke. Choose 1–64 unique known lots before the first run; the selection locks after start/checkpoint. The full dataset remains 144 lots; selecting a bounded active scope does not delete or investigate the remaining lots.
 
 Bounded sparse+dense fusion, reranking, and policy-based retrieval critique/rewrite provide context → OpenAI LLM `write_todos` planning → Deep Agents supervisor → four sequential context-bound LLM specialists → safe typed claims → independent source verifier → HITL control plane.
 
@@ -81,11 +83,11 @@ Mermaid/Puppeteer advisories are reported separately.
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](docs/images/recallops-five-minute-demo.png)
 
-The flagship mixed-lot case reaches human review with official citations, synthetic trace evidence, classifications, and the reconciliation equation:
+The demonstrated **deterministic** flagship mixed-lot case reaches human review with official citations, synthetic trace evidence, classifications, and the reconciliation equation. This is also the expected live route **only after** all four LLM specialists and independent verification succeed; the latest live attempt stopped earlier:
 
 `received = on_hand + quarantined + sold + returned + disposed + unaccounted`
 
-The Streamlit walkthrough then shows two complete consent cycles:
+The deterministic Streamlit walkthrough then shows two complete consent cycles (not evidence of live completion):
 
 1. approve `create_case`, separately confirm execution, and record the v0→v1 receipt;
 2. review the newly planned `apply_inventory_hold`, approve it, separately confirm execution, and record the v1→v2 receipt.

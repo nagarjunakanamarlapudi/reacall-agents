@@ -1,4 +1,4 @@
-%%{init: {"themeCSS": ".cluster-label div {white-space: nowrap !important; max-width: none !important; width: max-content !important;}", "flowchart": {"rankSpacing": 52, "nodeSpacing": 28, "subGraphTitleMargin": {"top": 0, "bottom": 58}}}}%%
+%%{init: {"themeCSS": ".cluster-label div {white-space: nowrap !important; max-width: none !important; width: max-content !important;}", "flowchart": {"rankSpacing": 52, "nodeSpacing": 52, "subGraphTitleMargin": {"top": 0, "bottom": 58}}}}%%
 flowchart TB
   classDef evaldata fill:#e2e8f0,stroke:#475569,color:#111827
   classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
@@ -15,7 +15,7 @@ flowchart TB
 
   subgraph RUNNERS["2 • SUITE RUNNERS"]
     direction LR
-    SAFETY_RUN["Deterministic safety suite<br/>hard-gated offline"]:::reason
+    SAFETY_RUN["Deterministic safety suite<br/>hard-gated offline<br/>isolated synthetic runtime / Operations stores"]:::reason
     RETRIEVAL_RUN["Six retrieval ablations<br/>BM25 • LSA • hybrid • RRF<br/>rerank • AgenticRetriever"]:::reason
     ORCHESTRATION_RUN["Two orchestration profiles<br/>bounded single agent • fixed specialists"]:::reason
   end
@@ -30,13 +30,16 @@ flowchart TB
   subgraph AUTHORITY["4 • DETERMINISTIC AUTHORITY"]
     direction TB
     SCORECARD["digest-bound scorecard<br/>verified inputs + aggregate gates"]:::state
-    EVAL_BOUNDARY["READ-ONLY EVALUATION PLANE<br/>No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
+    EVAL_BOUNDARY["READ-ONLY REPORT CONSUMERS / JUDGES<br/>No Operations MCP credentials<br/>No active-case writes • no action authority<br/>Test runners may write isolated synthetic stores"]:::human
     SCORECARD --- EVAL_BOUNDARY
   end
 
   subgraph OPTIONAL["OPTIONAL ADVISORY LANE<br/>EXCLUDED FROM DETERMINISTIC AUTHORITY"]
     direction TB
-    LIVE["Optional live Deep Agents run<br/>make eval-model • shared OpenAI service<br/>safe claims + independent source verifier"]:::reason
+    LIVE["Optional live Deep Agents run<br/>make eval-model • full 24-case comparison<br/>shared OpenAI service + independent source verifier"]:::reason
+    SMOKE["One-case live smoke • four lots<br/>make eval-model LIVE_SMOKE=1<br/>OpenAI roles + source verifier<br/>No HITL or Operations execution"]:::reason
+    SMOKE_RESULT["Measured investigation result<br/>plan / child checks / scoped reads<br/>claims / verifier / calls / tokens / latency<br/>Latest failed; no released claims or receipts"]:::human
+    HITL_PROOF["Separate durable live E2E proof<br/>verified case → review → confirm<br/>receipts / versions → closure check<br/>Outstanding; smoke is not this proof"]:::state
     JUDGE["Optional human / model judge<br/>blinded presentation review"]:::reason
     ADVISORY["Advisory appendix<br/>excluded from deterministic authority"]:::human
   end
@@ -59,8 +62,11 @@ flowchart TB
   SCORECARD --> CI
 
   EVAL_BOUNDARY ~~~ UI
-  CI ~~~ LIVE
+  CI ~~~ SMOKE
   ORCHESTRATION -.-> LIVE
   DEMO -.-> JUDGE
   LIVE -. advisory observation .-> ADVISORY
+  SMOKE --> SMOKE_RESULT
+  ADVISORY ~~~ HITL_PROOF
+  SMOKE_RESULT -. separate failed-attempt evidence .-> ADVISORY
   JUDGE -. presentation feedback .-> ADVISORY

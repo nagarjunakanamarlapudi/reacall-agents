@@ -2,6 +2,8 @@
 
 Three presentation PNGs are the primary presentation visuals:
 
+Audience-facing README, proposal, business-domain, architecture and runbook links open PNGs first. Mermaid `.mmd` and generated `.svg` files in this directory remain secondary reproducible source/parity artifacts, not the default presentation link targets. The architecture shows OpenAI as the sole reasoning model; deterministic RAG policies, child gates, source verification and HITL are controls. The demo visual explicitly distinguishes the expected verified route from the latest failed live attempt and the separate deterministic consent demonstration.
+
 | File | Presentation purpose |
 |---|---|
 | `recallops-data-boundary.png` | Opens with the non-negotiable official/synthetic provenance boundary. |
