@@ -14,9 +14,9 @@ Startup configuration is validated before the first model call. Secrets must not
 
 ## Architecture and authority boundary
 
-The live reasoning lane uses `ChatOpenAI` and the existing `build_deep_supervisor` factory. The supervisor has four declarative roles: regulatory intake, product/lot matching, traceability and reconciliation, and containment drafting. Delegation middleware enforces role order and call budgets. Each role receives only its allowlisted, reconstructed, sealed read capabilities from Recall Registry MCP or Traceability MCP.
+The live reasoning lane uses `ChatOpenAI` and the existing `build_deep_supervisor` factory. The supervisor has four declarative roles: regulatory intake, product/lot matching, traceability and reconciliation, and containment drafting. Delegation middleware enforces sequential role order, prerequisite completion, and call budgets. Each role receives bounded agentic-RAG context plus only its allowlisted, reconstructed, sealed read capabilities from Recall Registry MCP or Traceability MCP.
 
-The live lane produces typed agent artifacts and an observable execution summary. It cannot see an Operations MCP tool. Its result is advisory until the deterministic verifier validates evidence coverage, contradictions, affected scope, completion criteria, and the absence of executed actions.
+The live lane produces typed agent artifacts and an observable execution summary. It cannot see an Operations MCP tool. Safe claim projections are checkpointed as unverified; arbitrary model prose, raw messages, prompts, tool payloads, and provider exceptions are never checkpointed. Its result cannot populate actionable scope until the independent verifier resolves source records and validates evidence coverage, contradictions, affected scope, completion criteria, proposed targets, and the absence of executed actions.
 
 The outer durable LangGraph remains authoritative for checkpoint state, case versions, interrupts, approval binding, idempotency keys, execution confirmation, receipts, monitoring, closure, and escalation. Only the graph's approved execution node can invoke simulated Operations MCP writes.
 
@@ -24,12 +24,14 @@ The outer durable LangGraph remains authoritative for checkpoint state, case ver
 
 1. The user opens an official recall notice.
 2. The UI reports the configured provider, model, and readiness without exposing credentials.
-3. Running an investigation invokes the OpenAI Deep Agents supervisor with the case question and read-only MCP gateway.
-4. The supervisor creates its plan and delegates once to each required specialist.
-5. Specialists retrieve official and synthetic evidence through their sealed MCP tools and return structured artifacts.
-6. The independent verifier validates the structured result against returned evidence.
-7. Verified evidence and a sanitized model execution summary are attached to the durable case projection.
-8. The existing action-review interrupt, execution-confirmation interrupt, and Operations MCP receipt path proceed unchanged.
+3. Running an investigation enters the durable LangGraph and completes bounded sparse+dense fusion, reranking, and policy-based retrieval critique/rewrite.
+4. An isolated, non-checkpointing OpenAI Deep Agents supervisor receives the case-bound retrieval context and read-only MCP gateway.
+5. The supervisor creates its plan and delegates sequentially, once to each required specialist; every downstream role receives validated prerequisite claims.
+6. Specialists retrieve official and synthetic evidence through their sealed MCP tools and return structured artifacts.
+7. The application converts those artifacts to bounded safe claims and checkpoints them as unverified.
+8. The independent verifier resolves the authoritative source records again and validates the claims. A schema-valid but unsupported model result stops without an action review.
+9. Only verified evidence and a sanitized model execution summary populate the durable case projection consumed by action generation.
+10. The existing action-review interrupt, execution-confirmation interrupt, and Operations MCP receipt path proceed unchanged.
 
 ## Product presentation
 
@@ -39,9 +41,15 @@ If a model call fails, the UI records a sanitized error category and visibly lab
 
 ## Diagram narrative
 
-The primary product and architecture diagrams present OpenAI as the only reasoning engine. They show LLM planning, Deep Agents delegation, agentic RAG, the four LLM specialist roles, critic/rewrite, and structured synthesis. They must not depict a deterministic planner or deterministic specialist lane as an alternative agent architecture.
+The primary product and architecture diagrams present OpenAI as the only reasoning model. They show bounded agentic RAG feeding LLM planning, Deep Agents delegation, the four LLM specialist roles, safe claim projection, structured synthesis, and independent verification. They must not depict a deterministic planner or deterministic specialist lane as an alternative agent architecture.
 
-Deterministic elements may appear only as non-reasoning control infrastructure: LangGraph state and routing, schema validation, independent policy/evidence verification, HITL interrupts, version and digest binding, idempotency, and the Operations MCP write guard. Model outage and deterministic fallback behavior belongs in a separate operations/resilience view and supporting text, not in the primary architecture narrative.
+Deterministic elements may appear only as non-model control infrastructure: sparse+dense fusion/reranking and bounded policy critique/rewrite, LangGraph state and routing, schema validation, independent policy/evidence verification, HITL interrupts, version and digest binding, idempotency, and the Operations MCP write guard. The project must not call the retrieval critic/rewrite LLM-based unless a model actually performs those decisions. Model outage and deterministic fallback behavior belongs in a separate operations/resilience view and supporting text, not in the primary architecture narrative.
+
+## Live authority and privacy
+
+The live Deep Agents invocation runs after durable retrieval inside a fresh asynchronous context with no inherited callbacks, cache, store, or checkpointer. The inner supervisor is compiled without checkpoint persistence. Tests inspect SQLite checkpoint blobs, pending writes, console output, telemetry, and returned state for canary model content.
+
+The live route is a required evidence-producing path, not a UI narration overlay. A successful live investigation does not run deterministic specialists as substitutes. Provider or transport failure may branch to a fully labelled deterministic fallback after discarding partial model claims. Schema-valid but false, incomplete, contradictory, or unsupported model claims fail verification and cannot silently fall back, reach review, or generate an action.
 
 ## Evaluation
 

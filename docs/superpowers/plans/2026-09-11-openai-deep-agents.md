@@ -113,7 +113,45 @@
 - [ ] Implement `make ui-openai` and update `make eval-model` while leaving `make verify` credential-free.
 - [ ] Run focused evaluation and Makefile contract tests and commit.
 
-### Task 5: LLM-first diagrams, documentation, notebooks, and demo runbook
+### Task 5: Make live Deep Agents evidence authoritative through independent verification
+
+**Files:**
+- Create: `src/recallops/llm/artifacts.py`
+- Create: `src/recallops/agents/verification.py`
+- Modify: `src/recallops/llm/live_reasoning.py`
+- Modify: `src/recallops/agents/deep_supervisor.py`
+- Modify: `src/recallops/agents/state.py`
+- Modify: `src/recallops/agents/workflow.py`
+- Modify: `src/recallops/agents/runtime.py`
+- Modify: `src/recallops/ui/adapter.py`
+- Modify: `src/recallops/ui/reasoning_store.py`
+- Modify: `src/recallops/evaluation/openai_live_adapter.py`
+- Test: `tests/unit/test_live_artifacts.py`
+- Test: `tests/unit/test_verification.py`
+- Test: `tests/unit/test_live_reasoning.py`
+- Test: `tests/unit/test_specialists.py`
+- Test: `tests/integration/test_workflow.py`
+- Test: `tests/ui/test_runtime_adapter.py`
+- Test: `tests/e2e/test_orchestration_benchmark.py`
+
+**Interfaces:**
+- Produces: strict `RetrievalContext`, `LiveInvestigationRequest`, `SpecialistClaims`, `LiveInvestigationResult`, and `VerificationResult` contracts with fixed vocabularies, bounded collections/text, source/context/claim digests, and no arbitrary durable model prose.
+- Changes: `LiveReasoningService.run(request: LiveInvestigationRequest, *, transport) -> LiveInvestigationResult`.
+- Produces: `verify_live_investigation(request, claims, trusted_evidence) -> VerifiedInvestigation`.
+- Changes: `RecallOpsRuntime.open(..., llm_settings: LLMSettings | None = None)` and internal workflow composition inject a trusted live service without widening browser or model authority.
+
+- [ ] Write failing authority tests: valid nonempty live claims reach action review; poisoned classification, missing role/candidate/event/facility, unsupported citation/target, or empty containment fails verification with zero review/write; successful live route invokes no deterministic specialist-generation node.
+- [ ] Write failing claim-contract tests rejecting unknown/coerced/nonfinite/duplicate/oversized values, wrong bindings, arbitrary rationale/body/todo/gap text, and credential-shaped canaries while preserving factual classifications/quantities/IDs exactly.
+- [ ] Write failing delegation tests proving one task per model turn, successful typed ToolMessage pairing before the next role, actual child inputs contain case/scope/RAG citations and validated prerequisites, and instruction-like retrieved text cannot alter tools or roles.
+- [ ] Build bounded retrieval context from the existing sparse+dense fusion/rerank pipeline, bind it to case/thread/version/source revision, and pass relevant data into every specialist task through an application-owned delegation binding.
+- [ ] Extract the four actual structured specialist results, convert them to safe claim projections, retain sealed read receipts/digests, and never persist raw supervisor/subagent messages or arbitrary model prose.
+- [ ] Add meaningful independent source verification for recall predicate, every candidate classification, trace lineage/facilities, reconciliation components, containment targets, citations, and `executed=False`; only verified source records populate the flattened state used by action generation.
+- [ ] Route the live node after durable retrieval, skip deterministic planning/specialist generation on live success, label provider failure fallback as `deterministic_fallback`, and make semantic verification failure stop closed with no fallback or review.
+- [ ] Run the complete inner graph in a fresh async/contextvars context, compile it with checkpointer disabled, and test actual SQLite checkpoint/pending-write blobs plus console/telemetry/state for canary absence under tracing/debug/cache and cancellation.
+- [ ] Preserve reload/replay, both HITL gates, version/digest/idempotency/write recovery, direct/stdio sealed tool identity, corrupted advisory-store isolation, and source revision binding; update UI/evaluation projections to consume verified live evidence rather than count-only success.
+- [ ] Run focused unit/integration/UI/evaluation suites, full tests, Ruff, lock/dependency checks, and commit.
+
+### Task 6: LLM-first diagrams, documentation, notebooks, and demo runbook
 
 **Files:**
 - Modify: `README.md`
@@ -140,7 +178,7 @@
 - [ ] Update README, architecture, operations, middleware/HITL, and notebook teaching material to match the implemented product contract.
 - [ ] Regenerate notebooks and PNG/SVG artifacts, run documentation/notebook/diagram tests, visually inspect every changed PNG, and commit.
 
-### Task 6: Live smoke, E2E proof, security, and publication
+### Task 7: Live smoke, E2E proof, security, and publication
 
 **Files:**
 - Modify: `docs/DEMO_WALKTHROUGH.md` only if the observed live workflow differs from documented copy.
