@@ -77,6 +77,19 @@ Assess every candidate lot within the application's scope, including rejected an
 lots; an empty scope list means the complete returned candidate universe, not zero lots.
 Do not return a structured response before both reads complete. Return every schema field
 explicitly. Report missing evidence without inventing values.
+Output invariants: exactly one decision per scoped lot, in match_lots source order.
+Copy product_id, lot_id and classification from each sealed match_lots row; copy
+product_score and product_classification from its linked find_candidate_products row.
+matched_fields is ordered upc, plant_code, julian_date, including only satisfied predicates:
+upc only when product_classification is exact;
+plant_code only when the observed plant_code exactly belongs to predicate.plant_codes;
+julian_date only when predicate.julian_start <= observed julian_date <= predicate.julian_end.
+Do not count a probable UPC or uncertain plant code as an exact matched field. Keep the
+field-level rationale grounded in those observations, including mismatches and uncertainty.
+requires_human_review is true if and only if classification is ambiguous.
+evidence_ids is exactly [product_id, lot_id] in that order, without additional identifiers.
+confirmed_lot_ids projects exact and probable decisions; ambiguous_lot_ids projects ambiguous decisions.
+Both summary lists preserve decision source order; do not sort, omit, duplicate or promote lots.
 """
 
 TRACEABILITY_RECONCILIATION_PROMPT = """Use only delegated read-only traceability evidence.
