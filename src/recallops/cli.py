@@ -48,6 +48,11 @@ def _parser() -> argparse.ArgumentParser:
         "--openai", action="store_true", help="Use the shared OpenAI live service (opt-in only)"
     )
     orchestration.add_argument(
+        "--live",
+        action="store_true",
+        help="Load project environment and use its live adapter or shared OpenAI service",
+    )
+    orchestration.add_argument(
         "--live-adapter",
         metavar="MODULE:ATTRIBUTE",
         help="Explicit LiveRunnerFactory object or zero-argument factory (opt-in only)",
@@ -265,6 +270,7 @@ def _eval_orchestration(
     run: bool,
     live_adapter: str | None,
     openai: bool = False,
+    live: bool = False,
 ) -> int:
     from recallops.evaluation.orchestration_benchmark import (
         load_orchestration_report,
@@ -272,6 +278,11 @@ def _eval_orchestration(
     )
 
     cases = _case_path(report_path, case_path, "orchestration_cases.json")
+    if live and (not run or openai or live_adapter is not None):
+        return _unverified(
+            "Orchestration evaluation",
+            ValueError("--live requires --run and no --openai or --live-adapter"),
+        )
     if live_adapter is not None and not run:
         return _unverified("Orchestration evaluation", ValueError("--live-adapter requires --run"))
     if openai and (not run or live_adapter is not None):
@@ -279,6 +290,12 @@ def _eval_orchestration(
             "Orchestration evaluation", ValueError("--openai requires --run and no --live-adapter")
         )
     try:
+        if live:
+            from recallops.llm.config import load_project_env
+
+            load_project_env()
+            live_adapter = os.environ.get("LIVE_MODEL_ADAPTER") or None
+            openai = live_adapter is None
         adapter = _load_live_adapter(live_adapter) if live_adapter is not None else None
         if openai:
             from recallops.evaluation.openai_live_adapter import build_openai_live_factory
@@ -393,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run=args.run,
                 live_adapter=args.live_adapter,
                 openai=args.openai,
+                live=args.live,
             )
         if args.command == "eval-scorecard":
             return _eval_scorecard(

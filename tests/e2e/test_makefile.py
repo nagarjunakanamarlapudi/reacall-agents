@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -119,6 +121,59 @@ def test_make_builtin_eval_requires_credentials_before_changing_artifacts(tmp_pa
     assert result.returncode != 0
     assert "OPENAI_API_KEY" in result.stdout
     assert (eval_dir / "orchestration_report.json").read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_provider"),
+    [
+        ("dotenv", "dotenv"),
+        ("shell", "shell"),
+        ("make", "make"),
+        ("make_over_shell", "make"),
+        ("empty_shell", None),
+        ("empty_make", None),
+    ],
+)
+def test_make_live_adapter_environment_precedence(tmp_path, source, expected_provider):
+    eval_dir = _copy_eval_dir(tmp_path / "evals")
+    env, _ = _live_error_environment(tmp_path)
+    env.pop("LIVE_MODEL_ADAPTER", None)
+    env.update(RECALLOPS_MODEL_MODE="openai", OPENAI_API_KEY="", OPENAI_MODEL="test-model")
+    (tmp_path / "configured_live.py").write_text(
+        "from make_live_adapter import unavailable\n"
+        "from recallops.evaluation.orchestration_benchmark import LiveRunnerFactory\n"
+        "dotenv = LiveRunnerFactory(provider='dotenv', model='test', factory=unavailable)\n"
+        "shell = LiveRunnerFactory(provider='shell', model='test', factory=unavailable)\n"
+        "make = LiveRunnerFactory(provider='make', model='test', factory=unavailable)\n"
+    )
+    (tmp_path / ".env").write_text("LIVE_MODEL_ADAPTER=configured_live:dotenv\n")
+    arguments = [
+        "eval-model",
+        f"PROJECT_ROOT={tmp_path}",
+        f"EVAL_DIR={eval_dir}",
+        f'UV_PROJECT=uv run --project "{ROOT}"',
+    ]
+    if source in {"shell", "make_over_shell", "empty_make"}:
+        env["LIVE_MODEL_ADAPTER"] = "configured_live:shell"
+    if source in {"make", "make_over_shell"}:
+        arguments.append("LIVE_MODEL_ADAPTER=configured_live:make")
+    if source == "empty_shell":
+        env["LIVE_MODEL_ADAPTER"] = ""
+    if source == "empty_make":
+        arguments.append("LIVE_MODEL_ADAPTER=")
+    before = (eval_dir / "orchestration_report.json").read_bytes()
+
+    result = _make(*arguments, env=env)
+
+    if expected_provider is None:
+        assert result.returncode != 0
+        assert "OPENAI_API_KEY" in result.stdout
+        assert (eval_dir / "orchestration_report.json").read_bytes() == before
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        report = json.loads((eval_dir / "orchestration_report.json").read_bytes())
+        assert report["live_status"]["provider"] == expected_provider
+        assert "Offline evaluation gate: PASSED" in result.stdout
 
 
 def test_make_ui_dry_run_uses_configurable_runtime_and_port() -> None:
@@ -247,10 +302,9 @@ def test_make_eval_model_is_explicit_opt_in_and_read_only() -> None:
     configured = _make("-n", "eval-model", "LIVE_MODEL_ADAPTER=recallops_live:factory")
 
     assert missing.returncode == 0
-    assert "--openai" in missing.stdout
+    assert "--run --live --cases" in missing.stdout
     assert configured.returncode == 0
     assert "recallops_live:factory" not in configured.stdout
-    assert "${LIVE_MODEL_ADAPTER}" in configured.stdout
     assert "eval-orchestration --run" in configured.stdout
     for operation in (
         "create_case",
