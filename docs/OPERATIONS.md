@@ -56,7 +56,9 @@ uv sync --locked --all-groups
 npm ci
 ```
 
-The Python range is `>=3.12,<3.13`. Diagram rendering is pinned to Node `24.15.0`, npm `11.12.1`, and Mermaid CLI `11.12.0`.
+The Python range is `>=3.12,<3.13`. The authored Node toolchain is pinned to Node `24.15.0`, npm `11.12.1`, and Mermaid CLI `11.12.0`. Canonical technical rendering uses the same CLI version inside a digest-pinned `linux/amd64` container so browser/font metrics do not vary with the host. Docker Desktop or Docker Engine must be running for `make setup`, `make diagrams`, `make ci`, and `make verify`; the application itself does not need Docker. `make setup` checks runtime/emulation support and fetches the image once. See [the rendering dependency contract](images/README.md) for the exact digest and offline rendering boundary.
+
+Presentation PNGs use the locked Pillow dependency and repository-bundled DejaVu Sans 2.37 fonts on both macOS and Ubuntu. The [font manifest and redistribution license](../scripts/fonts/dejavu-2.37/README.md) travel with the repository; no system-font install is needed. Missing or changed font bytes fail rendering. `make diagrams` retains exact double-render and committed PNG/SVG byte comparisons.
 
 ## Validate data and run the flagship CLI
 

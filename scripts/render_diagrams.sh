@@ -1,13 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Renderer contract: exact local Node/npm and Mermaid CLI/config below.
+# Browser, OS fonts and architecture are part of the technical artifact contract.
+MERMAID_IMAGE="ghcr.io/mermaid-js/mermaid-cli/mermaid-cli@sha256:bad64c9d9ad917c8dfbe9d9e9c162b96f6615ff019b37058638d16eb27ce7783"
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Install Docker Desktop or Docker Engine (linux/amd64 support), start it, then run make setup. See docs/images/README.md." >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Start Docker and ensure your user can access its daemon, then run make setup." >&2
+  exit 1
+fi
+if ! docker image inspect "${MERMAID_IMAGE}" >/dev/null 2>&1; then
+  echo "Fetching the digest-pinned Mermaid renderer (one-time network access)."
+  docker pull --platform linux/amd64 "${MERMAID_IMAGE}" || {
+    echo "Cannot fetch canonical renderer. Check GHCR access and retry make setup." >&2
+    exit 1
+  }
+fi
+if [[ "${1:-}" == "--check-runtime" ]]; then
+  docker run --rm --platform linux/amd64 --network none "${MERMAID_IMAGE}" --version || {
+    echo "Docker must support linux/amd64 containers; enable emulation on ARM and retry make setup." >&2
+    exit 1
+  }
+  echo "Canonical Mermaid runtime ready."
+  exit 0
+fi
+
+# Keep the authored package toolchain locked as well as the canonical renderer.
 NODE_EXPECTED_VERSION="v24.15.0"
 NPM_EXPECTED_VERSION="11.12.1"
 MERMAID_CLI_VERSION="11.12.0"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIAGRAM_DIR="${ROOT_DIR}/docs/images"
-CONFIG_FILE="${ROOT_DIR}/scripts/mermaid-config.json"
 MMDC="${ROOT_DIR}/node_modules/.bin/mmdc"
 
 node_version="$(node --version)"
@@ -36,10 +61,15 @@ render_into() {
   local source output
   for source in "${DIAGRAM_DIR}"/*.mmd; do
     for extension in svg png; do
-      output="${output_dir}/$(basename "${source%.mmd}").${extension}"
-      "${MMDC}" \
-      --configFile "${CONFIG_FILE}" \
-      --input "${source}" \
+      output="/output/$(basename "${source%.mmd}").${extension}"
+      docker run --rm --platform linux/amd64 --network none \
+      --user "$(id -u):$(id -g)" \
+      -v "${DIAGRAM_DIR}:/data:ro" \
+      -v "${ROOT_DIR}/scripts/mermaid-config.json:/config.json:ro" \
+      -v "${output_dir}:/output" \
+      "${MERMAID_IMAGE}" \
+      --configFile /config.json \
+      --input "/data/$(basename "${source}")" \
       --output "${output}" \
       --width 1600 --scale 2 \
       --backgroundColor white

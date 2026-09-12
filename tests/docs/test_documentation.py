@@ -5,14 +5,20 @@ Run with: python3 -m unittest discover -s tests/docs -p 'test_*.py'
 
 import hashlib
 import json
+import os
 import re
+import runpy
+import struct
 import subprocess
+import tempfile
 import unittest
+import zlib
 from pathlib import Path
+from unittest.mock import patch
 from xml.etree import ElementTree
 
 import yaml
-from PIL import Image, ImageStat
+from PIL import Image, ImageFont, ImageStat
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
@@ -303,6 +309,73 @@ def mermaid_directed_path(
 
 
 class DocumentationContractTests(unittest.TestCase):
+    def test_presentation_png_encoding_is_canonical_uncompressed_deflate(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts/render_presentation.py"))
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            namespace["architecture"](output)
+            data = (output / "recallops-system-architecture.png").read_bytes()
+            chunks = []
+            offset = 8
+            while offset < len(data):
+                length = struct.unpack(">I", data[offset : offset + 4])[0]
+                kind = data[offset + 4 : offset + 8]
+                payload = data[offset + 8 : offset + 8 + length]
+                chunks.append((kind, payload))
+                offset += length + 12
+            self.assertEqual([kind for kind, _ in chunks], [b"IHDR", b"IDAT", b"IEND"])
+            deflate = chunks[1][1]
+            self.assertEqual(deflate[:2], b"\x78\x01")
+            self.assertEqual(
+                deflate[2] & 6, 0, "use canonical stored blocks, not host zlib compression"
+            )
+            self.assertEqual(len(zlib.decompress(deflate)), 1080 * (1920 * 3 + 1))
+
+    def test_presentation_fonts_are_bundled_pinned_and_licensed(self) -> None:
+        directory = ROOT / "scripts/fonts/dejavu-2.37"
+        manifest = json.loads((directory / "manifest.json").read_text())
+        self.assertEqual(manifest["version"], "2.37")
+        self.assertEqual(
+            manifest["files"],
+            {
+                "DejaVuSans.ttf": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+                "DejaVuSans-Bold.ttf": "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724",
+            },
+        )
+        for name, digest in manifest["files"].items():
+            self.assertEqual(hashlib.sha256((directory / name).read_bytes()).hexdigest(), digest)
+        license_text = (directory / manifest["license_file"]).read_text()
+        self.assertEqual(
+            manifest["license_sha256"],
+            "f88d5294af5a772f9114eb385009e3478d62b21f3e5bbc34d159d328047c8867",
+        )
+        self.assertEqual(
+            hashlib.sha256(license_text.encode()).hexdigest(), manifest["license_sha256"]
+        )
+        self.assertIn("Copyright (c) 2003 by Bitstream", license_text)
+        self.assertIn("Copyright (c) 2006 by Tavmjong Bah", license_text)
+        self.assertIn("The above copyright and trademark notices", license_text)
+        self.assertIn("version_2_37", manifest["source"])
+
+    def test_presentation_font_selection_is_host_independent(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts/render_presentation.py"))
+        for bold, style in ((False, "Book"), (True, "Bold")):
+            actual = namespace["font"](22, bold)
+            self.assertEqual(actual.getname(), ("DejaVu Sans", style))
+            self.assertEqual(actual.layout_engine, ImageFont.Layout.BASIC)
+
+    def test_presentation_renderer_rejects_missing_or_modified_bundled_fonts(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts/render_presentation.py"))
+        font_function = namespace["font"]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with patch.dict(font_function.__globals__, {"FONT_DIR": directory}):
+                with self.assertRaisesRegex(RuntimeError, "bundled font"):
+                    font_function(22)
+                (directory / "DejaVuSans.ttf").write_bytes(b"invalid replacement")
+                with self.assertRaisesRegex(RuntimeError, "bundled font"):
+                    font_function(22)
+
     def assert_no_mermaid_path(
         self,
         diagram: str,
@@ -1139,7 +1212,11 @@ flowchart LR
             ("my-svg-STAGE1", "TRACE"),
             ("my-svg-STAGE2", "CLOSURE_REQUEST"),
         ):
-            cluster = next(element for element in root.iter() if element.get("id") == cluster_id)
+            cluster = next(
+                element
+                for element in root.iter()
+                if element.get("id") in {cluster_id, cluster_id.removeprefix("my-svg-")}
+            )
             label = next(element for element in cluster if element.get("class") == "cluster-label")
             label_box = next(element for element in label if element.tag.endswith("foreignObject"))
             label_bottom = translated_y(label) + float(label_box.attrib["height"])
@@ -1147,7 +1224,9 @@ flowchart LR
             first_node = next(
                 element
                 for element in root.iter()
-                if element.get("id", "").startswith(f"my-svg-flowchart-{first_node_name}-")
+                if element.get("id", "")
+                .removeprefix("my-svg-")
+                .startswith(f"flowchart-{first_node_name}-")
             )
             node_box = next(
                 element
@@ -1261,6 +1340,41 @@ flowchart LR
         fixture = path.read_text(encoding="utf-8").replace(omitted_timestamp, "", 1)
         with self.assertRaises(AssertionError):
             self.assert_demo_artifact_contract(path, contract, fixture)
+
+    def test_canonical_renderer_requires_pinned_offline_linux_runtime(self) -> None:
+        renderer = (ROOT / "scripts/render_diagrams.sh").read_text()
+        self.assertIn(
+            "sha256:bad64c9d9ad917c8dfbe9d9e9c162b96f6615ff019b37058638d16eb27ce7783", renderer
+        )
+        self.assertIn("--platform linux/amd64", renderer)
+        self.assertIn("--network none", renderer)
+        self.assertIn("--check-runtime", (ROOT / "Makefile").read_text())
+        self.assertIn("--check-runtime", (ROOT / ".github/workflows/ci.yml").read_text())
+
+    def test_canonical_renderer_missing_runtime_has_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["/bin/bash", str(ROOT / "scripts/render_diagrams.sh"), "--check-runtime"],
+                env={**os.environ, "PATH": directory},
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Install Docker Desktop or Docker Engine", result.stderr)
+
+    def test_canonical_renderer_stopped_daemon_has_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            docker = Path(directory) / "docker"
+            docker.write_text("#!/bin/sh\nexit 1\n")
+            docker.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/bash", str(ROOT / "scripts/render_diagrams.sh"), "--check-runtime"],
+                env={**os.environ, "PATH": directory},
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Start Docker", result.stderr)
 
     def test_renderer_is_pinned_and_double_render_is_stable(self) -> None:
         renderer = (ROOT / "scripts/render_diagrams.sh").read_text(encoding="utf-8")

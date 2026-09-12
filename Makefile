@@ -31,7 +31,7 @@ help:
 		'RecallOps project commands' \
 		'' \
 		'Setup and application:' \
-		'  make setup             Install locked Python and Node dependencies' \
+		'  make setup             Install locked dependencies and check Docker renderer' \
 		'  make data-validate      Validate official and synthetic data artifacts' \
 		'  make demo               Run the credential-free flagship CLI demo' \
 		'  make ui                 Start the durable Streamlit command center' \
@@ -50,7 +50,7 @@ help:
 		'  make eval-model         Run shared OpenAI evaluation (or an explicit custom adapter)' \
 		'  make demo-data          Regenerate the deterministic synthetic dataset' \
 		'  make notebooks          Rebuild and execute all seven teaching notebooks' \
-		'  make diagrams           Verify Mermaid double-render and SVG parity' \
+		'  make diagrams           Verify canonical double-render and SVG/PNG parity' \
 		'' \
 		'Quality gates:' \
 		'  make test               Run the complete test suite' \
@@ -74,6 +74,7 @@ help:
 setup:
 	uv sync --locked --all-groups
 	npm ci
+	./scripts/render_diagrams.sh --check-runtime
 
 data-validate:
 	uv run recallops data-validate

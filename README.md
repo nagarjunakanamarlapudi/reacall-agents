@@ -30,7 +30,7 @@ Every operational record is labelled **SYNTHETIC — ACADEMIC DEMO**. The public
 
 ## Quick start
 
-Prerequisites: Python 3.12, `uv`, Node 24.15.0, and npm 11.12.1.
+Prerequisites: Python 3.12, `uv`, Node 24.15.0, npm 11.12.1, and a running Docker Desktop or Docker Engine with `linux/amd64` support for diagram verification. `make setup` checks Docker and fetches the digest-pinned renderer once; subsequent renders run without container network access. See [artifact dependencies and regeneration](docs/images/README.md). Docker is not needed to run the application itself.
 
 ```bash
 make setup

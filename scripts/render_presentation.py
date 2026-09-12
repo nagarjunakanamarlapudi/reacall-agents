@@ -1,8 +1,12 @@
-"""Render presentation diagrams with fixed geometry and local Arial/DejaVu fonts."""
+"""Render presentation diagrams with verified bundled DejaVu 2.37 fonts."""
 
 from __future__ import annotations
 
+import hashlib
+import io
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -14,21 +18,51 @@ PURPLE = "#7047c6"
 BLUE = "#2563a6"
 GREEN = "#187457"
 ORANGE = "#b35c20"
+FONT_DIR = Path(__file__).resolve().parent / "fonts/dejavu-2.37"
+FONT_DIGESTS = {
+    "DejaVuSans.ttf": "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954",
+    "DejaVuSans-Bold.ttf": "e6476c1b80502924294eed40894c5b18e06c181444ca953e5334262df9c27724",
+}
+
+
+def save_png(image: Image.Image, path: Path) -> None:
+    """Write RGB PNG with explicit stored DEFLATE blocks, independent of host zlib."""
+    rgb = image.convert("RGB")
+    stride = rgb.width * 3
+    pixels = rgb.tobytes()
+    scanlines = b"".join(
+        b"\x00" + pixels[start : start + stride] for start in range(0, len(pixels), stride)
+    )
+    blocks = []
+    for start in range(0, len(scanlines), 65535):
+        block = scanlines[start : start + 65535]
+        final = int(start + len(block) == len(scanlines))
+        blocks.append(bytes([final]) + struct.pack("<HH", len(block), 65535 - len(block)) + block)
+    compressed = b"\x78\x01" + b"".join(blocks) + struct.pack(">I", zlib.adler32(scanlines))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    header = struct.pack(">IIBBBBB", rgb.width, rgb.height, 8, 2, 0, 0, 0)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", header)
+        + chunk(b"IDAT", compressed)
+        + chunk(b"IEND", b"")
+    )
 
 
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
-    names = (
-        "/System/Library/Fonts/Supplemental/Arial Bold.ttf"
-        if bold
-        else "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold
-        else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    )
-    for name in names:
-        if Path(name).is_file():
-            return ImageFont.truetype(name, size)
-    raise RuntimeError("Install Arial or DejaVu Sans to render presentation diagrams")
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    try:
+        data = (FONT_DIR / name).read_bytes()
+    except OSError as error:
+        raise RuntimeError(f"Missing bundled font: {name}") from error
+    if hashlib.sha256(data).hexdigest() != FONT_DIGESTS[name]:
+        raise RuntimeError(f"Modified bundled font: {name}")
+    return ImageFont.truetype(io.BytesIO(data), size, layout_engine=ImageFont.Layout.BASIC)
 
 
 def canvas(title: str, subtitle: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
@@ -57,11 +91,13 @@ def card(
     )
     draw.rounded_rectangle((x, y, x + 8, y + h), radius=4, fill=color)
     draw.text((x + 25, y + 18), label, font=font(20, True), fill=color)
-    draw.text((x + 25, y + 52), title, font=font(27, True), fill=INK)
+    if draw.textlength(title, font=font(25, True)) > w - 50:
+        raise ValueError(f"Presentation title exceeds card: {title}")
+    draw.text((x + 25, y + 52), title, font=font(25, True), fill=INK)
     for index, line in enumerate(lines):
-        if draw.textlength(line, font=font(22)) > w - 50:
+        if draw.textlength(line, font=font(20)) > w - 50:
             raise ValueError(f"Presentation line exceeds card: {line}")
-        draw.text((x + 25, y + 99 + index * 31), line, font=font(22), fill=MUTED)
+        draw.text((x + 25, y + 99 + index * 31), line, font=font(20), fill=MUTED)
 
 
 def arrow(draw: ImageDraw.ImageDraw, start: tuple[int, int], end: tuple[int, int]) -> None:
@@ -176,7 +212,7 @@ def architecture(output: Path) -> None:
         font=font(21),
         fill=MUTED,
     )
-    image.save(output / "recallops-system-architecture.png")
+    save_png(image, output / "recallops-system-architecture.png")
 
 
 def demo(output: Path) -> None:
@@ -256,7 +292,7 @@ def demo(output: Path) -> None:
         font=font(24),
         fill=MUTED,
     )
-    image.save(output / "recallops-five-minute-demo.png")
+    save_png(image, output / "recallops-five-minute-demo.png")
 
 
 def main() -> None:
