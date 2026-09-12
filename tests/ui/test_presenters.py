@@ -37,6 +37,46 @@ from recallops.ui.presenters import (
 )
 
 
+def test_live_reasoning_presentation_separates_advisory_claims_and_fallback():
+    """Catch hidden fallback, invented specialist completions, and unavailable usage shown as zero."""
+    raw = _raw_case()
+    raw.update(
+        reasoning_mode="openai",
+        llm_model="test-model",
+        llm_status="failed",
+        llm_run={
+            "model": "test-model",
+            "status": "failed",
+            "fallback_used": True,
+            "error_category": "timeout",
+            "plan": ["recall-intelligence"],
+            "specialist_sequence": ["recall-intelligence"],
+            "duration_ms": 12,
+            "total_tokens": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "events": [
+                {"kind": "tool", "name": "get_recall", "status": "completed", "duration_ms": 2}
+            ],
+        },
+    )
+    case = reduce_case_snapshot(raw)
+    assert build_case_header(case).model_mode == "OpenAI · test-model"
+    view = presenters.build_reasoning_presentation(case)
+    assert view["status"] == "failed"
+    assert "deterministic fallback" in view["warning"].lower()
+    assert "not verified" in view["handoff"].lower()
+    assert len(view["specialists"]) == 4
+    assert [item["status"] for item in view["specialists"]] == [
+        "completed",
+        "not completed",
+        "not completed",
+        "not completed",
+    ]
+    assert view["usage"]["Total tokens"] == "Unavailable"
+    assert view["events"][0]["name"] == "get_recall"
+
+
 def _raw_case() -> dict:
     return {
         "recall_number": PINNED_RECALL,
@@ -305,7 +345,7 @@ def test_case_header_and_predicate_show_only_supplied_truth() -> None:
         "case_version": "0",
         "status": "review_required",
         "source_mode": "OFFICIAL — openFDA snapshot",
-        "model_mode": "Deterministic offline planner",
+        "model_mode": "Deterministic",
         "current_node": "action_review",
     }
     rows = {row.label: row.value for row in build_predicate_rows(case)}

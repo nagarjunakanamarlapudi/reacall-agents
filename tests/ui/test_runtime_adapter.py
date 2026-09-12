@@ -10,6 +10,8 @@ import pytest
 
 from recallops import paths as repository_paths_module
 from recallops.agents.runtime import RecallOpsRuntime
+from recallops.llm import LLMSettings
+from recallops.llm.live_reasoning import LiveReasoningSummary
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import (
     DeterministicDemoAdapter,
@@ -23,6 +25,85 @@ from recallops.ui.presenters import (
     can_simulate,
     reduce_case_snapshot,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["completed", "failed", "exception"])
+async def test_live_reasoning_runs_once_and_survives_reload_without_authority_changes(
+    tmp_path: Path, outcome: str
+) -> None:
+    """Catch duplicate provider runs, lost summaries, hidden fallback, and checkpoint pollution."""
+    checkpoint = tmp_path / "checkpoints.sqlite3"
+    operations = tmp_path / "operations.sqlite3"
+    calls = []
+
+    class LiveService:
+        async def run(self, question, *, transport):
+            calls.append((question, transport))
+            async with RecallOpsRuntime.open(
+                checkpoint_path=checkpoint, operations_path=operations
+            ) as runtime:
+                assert await runtime.get_case(thread_id=opened["thread_id"]) is None
+            if outcome == "exception":
+                raise RuntimeError("sk-secret-do-not-persist provider payload")
+            return LiveReasoningSummary(
+                model="test-model",
+                status=outcome,
+                duration_ms=12,
+                fallback_used=outcome == "failed",
+                error_category="timeout" if outcome == "failed" else None,
+                plan=["recall-intelligence"],
+                total_tokens=40,
+            )
+
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=checkpoint,
+        operations_path=operations,
+        llm_settings=LLMSettings(mode="openai", model="test-model"),
+        live_reasoning=LiveService(),
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    assert opened["reasoning_mode"] == "openai"
+    assert opened["llm_status"] == "ready"
+    assert opened["llm_run"] is None
+    reviewed = await adapter.run_investigation(opened)
+    assert calls == [(opened["question"], "direct")]
+    assert reviewed["llm_status"] == ("completed" if outcome == "completed" else "failed")
+    assert reviewed["llm_run"]["fallback_used"] is (outcome != "completed")
+    if outcome != "completed":
+        assert any("deterministic fallback" in item.lower() for item in reviewed["warnings"])
+    assert "sk-secret" not in json.dumps(reviewed)
+    assert reviewed["pending_interrupt"]["kind"] == "action_review"
+    assert _receipt_count(operations) == 0
+
+    # A stale intake snapshot cannot invoke the model or restart the durable graph.
+    replayed = await adapter.run_investigation(opened)
+    assert replayed["checkpoint_id"] == reviewed["checkpoint_id"]
+    restarted = DurableRuntimeAdapter(checkpoint_path=checkpoint, operations_path=operations)
+    restored = await restarted.load_case(reviewed["thread_id"])
+    assert restored["llm_run"] == reviewed["llm_run"]
+    assert restored["reasoning_mode"] == "openai"
+    approved = await restarted.resume_review(
+        restored,
+        decision="approve",
+        actor="Food-safety manager",
+        justification=APPROVAL_JUSTIFICATION,
+        edited_action="",
+    )
+    assert approved["llm_run"] == reviewed["llm_run"]
+    assert approved["pending_interrupt"]["kind"] == "execution_confirmation"
+    assert len(calls) == 1
+    async with RecallOpsRuntime.open(
+        checkpoint_path=checkpoint, operations_path=operations
+    ) as runtime:
+        raw = await runtime.get_case(thread_id=reviewed["thread_id"])
+    assert "llm_run" not in raw.case
+    assert "reasoning_mode" not in raw.case
+    for key in ("case_version", "verification"):
+        assert approved[key] == json.loads(raw.model_dump_json())["case"][key]
+    assert approved["receipts"] == list(raw.case["write_receipts"]) == []
+    for key, value in json.loads(raw.model_dump_json())["pending_interrupt"].items():
+        assert approved["pending_interrupt"][key] == value
 
 
 def _receipt_count(path: Path) -> int:

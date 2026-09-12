@@ -33,5 +33,7 @@ CSS = """
     border-left: 4px solid var(--recallops-blue);
     border-radius: .25rem;
   }
+  [data-testid="stVerticalBlockBorderWrapper"] {border-radius: .65rem;}
+  [data-testid="stAlert"] {border-left: 4px solid var(--recallops-orange);}
 </style>
 """

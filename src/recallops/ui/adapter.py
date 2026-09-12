@@ -13,6 +13,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -20,11 +21,14 @@ from recallops.agents.planner import plan_investigation
 from recallops.agents.runtime import RecallOpsRuntime
 from recallops.agents.specialists import investigate_recall
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+from recallops.llm import LLMSettings, sanitize_llm_error
+from recallops.llm.live_reasoning import LiveReasoningService, LiveReasoningSummary
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 from recallops.ui.evaluation_reports import load_safety_projection
 from recallops.ui.presenters import PINNED_RECALL
+from recallops.ui.reasoning_store import ReasoningStore
 
 SYNTHETIC = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
 SNAPSHOT = "OFFICIAL_OPENFDA_SNAPSHOT"
@@ -157,12 +161,17 @@ class DurableRuntimeAdapter:
         operations_path: Path | str,
         transport: Literal["direct", "stdio"] = "direct",
         repository_paths: RepositoryPaths | None = None,
+        live_reasoning: LiveReasoningService | None = None,
+        llm_settings: LLMSettings | None = None,
     ) -> None:
         if transport not in {"direct", "stdio"}:
             raise ValueError("transport must be 'direct' or 'stdio'")
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         self.operations_path = Path(operations_path).expanduser().resolve()
         self.repository_paths = repository_paths or RepositoryPaths(PROJECT_ROOT)
+        self.llm_settings = llm_settings or LLMSettings()
+        self.live_reasoning = live_reasoning
+        self.reasoning_store = ReasoningStore(self.checkpoint_path.parent / "reasoning.sqlite3")
         self.transport = transport
         self.transport_label = (
             "direct MCP gateway" if transport == "direct" else "stdio MCP subprocesses"
@@ -193,7 +202,11 @@ class DurableRuntimeAdapter:
             "source_detail": "Live openFDA lookup"
             if source_mode == "live"
             else "Cached/frozen fallback",
-            "model_mode": "deterministic",
+            "model_mode": self.llm_settings.mode,
+            "reasoning_mode": self.llm_settings.mode,
+            "llm_status": "ready" if self.llm_settings.mode == "openai" else "disabled",
+            "llm_model": self.llm_settings.model,
+            "llm_run": None,
             "runtime_mode": self.runtime_label,
             "transport_mode": self.transport_label,
             "question": (
@@ -265,6 +278,12 @@ class DurableRuntimeAdapter:
             operations_path=self.operations_path,
             transport=self.transport,
         ) as runtime:
+            # The browser may still hold the intake snapshot after a completed run.
+            existing = await runtime.get_case(thread_id=current["thread_id"])
+            if existing is not None:
+                history = await runtime.get_case_history(thread_id=current["thread_id"])
+                return self._normalize_result(existing, history=history)
+            await self._run_live_reasoning(current)
             applied = self._arm_failure(runtime, current, stage="run")
             result = await runtime.start_case(
                 recall_number=current["recall_number"],
@@ -495,7 +514,44 @@ class DurableRuntimeAdapter:
         projected["checkpoint_history"] = normalize_runtime_history(history)
         projected["transport_mode"] = self.transport_label
         projected["evaluation_report"] = self._evaluation_report()
+        summary = self.reasoning_store.get(projected["thread_id"])
+        projected["reasoning_mode"] = "openai" if summary else "deterministic"
+        projected["model_mode"] = projected["reasoning_mode"]
+        projected["llm_status"] = summary.status if summary else "not_run"
+        projected["llm_model"] = summary.model if summary else ""
+        projected["llm_run"] = summary.model_dump(mode="json") if summary else None
+        if summary and summary.fallback_used:
+            projected.setdefault("warnings", []).append(
+                "OpenAI reasoning failed; deterministic fallback used. "
+                "No live success is claimed. Human review is still required."
+            )
         return projected
+
+    async def _run_live_reasoning(self, current: Mapping[str, Any]) -> None:
+        if self.llm_settings.mode != "openai":
+            return
+        thread_id = current["thread_id"]
+        if not self.reasoning_store.claim(thread_id):
+            self.reasoning_store.get(thread_id)
+            return
+        started_at = perf_counter()
+        try:
+            if self.live_reasoning is None:
+                raise RuntimeError("Live reasoning service unavailable")
+            summary = await self.live_reasoning.run(current["question"], transport=self.transport)
+            summary = LiveReasoningSummary.model_validate(summary.model_dump(mode="json"))
+        except Exception as error:
+            category, _ = sanitize_llm_error(error)
+            summary = LiveReasoningSummary(
+                model=self.llm_settings.model,
+                status="failed",
+                fallback_used=True,
+                error_category=category,
+                duration_ms=(perf_counter() - started_at) * 1000,
+            )
+        if summary.status == "failed":
+            summary = summary.model_copy(update={"fallback_used": True})
+        self.reasoning_store.finish(thread_id, summary)
 
     def _evaluation_report(self) -> dict[str, Any]:
         return _load_committed_evaluation_report(self.repository_paths)

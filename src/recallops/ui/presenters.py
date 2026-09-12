@@ -443,14 +443,10 @@ def source_badge(source: Mapping[str, Any] | str | None) -> SourceBadge:
 def build_case_header(case: CasePresentation | None) -> HeaderPresentation:
     if case is None:
         return HeaderPresentation(
-            PINNED_RECALL, "—", "—", "—", "not_started", "—", "Deterministic offline planner", "—"
+            PINNED_RECALL, "—", "—", "—", "not_started", "—", "Deterministic", "—"
         )
     source = source_badge(case.source_mode)
-    model = (
-        "Deterministic offline planner"
-        if case.model_mode.casefold() == "deterministic"
-        else mask_display_value(case.model_mode)
-    )
+    model = build_reasoning_presentation(case)["label"]
     return HeaderPresentation(
         recall_number=mask_display_value(case.recall_number),
         case_id=mask_display_value(case.case_id or "—"),
@@ -461,6 +457,72 @@ def build_case_header(case: CasePresentation | None) -> HeaderPresentation:
         model_mode=model,
         current_node=mask_display_value(case.current_node or "—"),
     )
+
+
+def build_reasoning_presentation(
+    case: CasePresentation | None,
+    *,
+    configured_mode: str = "deterministic",
+    configured_model: str = "",
+) -> dict[str, Any]:
+    """Show model observations independently of verification and operation authority."""
+    raw = case.raw if case else {}
+    run = _mapping(raw.get("llm_run"))
+    mode = raw.get("reasoning_mode", raw.get("model_mode", configured_mode))
+    model = run.get("model", raw.get("llm_model", configured_model))
+    live = mode == "openai"
+    status = str(raw.get("llm_status") or ("ready" if live else "disabled"))
+    fallback = run.get("fallback_used") is True or status == "failed"
+    roles = (
+        "recall-intelligence",
+        "product-lot-matching",
+        "traceability-reconciliation",
+        "containment-communications",
+    )
+    return {
+        "label": f"OpenAI · {mask_display_value(model or 'model unavailable')}"
+        if live
+        else "Deterministic",
+        "status": mask_display_value(status),
+        "warning": (
+            "OpenAI reasoning failed; deterministic fallback used. No live success is claimed. "
+            f"Failure category: {mask_display_value(run.get('error_category') or 'unavailable')}."
+        )
+        if fallback
+        else "",
+        "plan": [mask_display_value(item) for item in run.get("plan", [])],
+        "specialists": [
+            {
+                "name": role,
+                "status": "completed"
+                if role in run.get("specialist_sequence", [])
+                else "not completed",
+            }
+            for role in roles
+        ]
+        if live
+        else [],
+        "usage": {
+            label: str(run[key]) if run.get(key) is not None else "Unavailable"
+            for label, key in (
+                ("Input tokens", "input_tokens"),
+                ("Output tokens", "output_tokens"),
+                ("Total tokens", "total_tokens"),
+                ("Latency (ms)", "duration_ms"),
+            )
+        },
+        "events": [
+            {
+                key: mask_display_value(event.get(key))
+                for key in ("kind", "name", "status", "duration_ms")
+            }
+            for event in run.get("events", [])
+        ],
+        "handoff": (
+            "Model observations are advisory and not verified evidence. The durable graph's "
+            "independent verifier checks operational facts; human approval gates every simulated write."
+        ),
+    }
 
 
 def build_predicate_rows(case: CasePresentation) -> list[LabelValueRow]:

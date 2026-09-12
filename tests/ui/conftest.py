@@ -6,6 +6,7 @@ import shutil
 
 import pytest
 
+import recallops.llm
 from recallops.evaluation.digests import canonical_json_bytes, canonical_sha256
 from recallops.evaluation.orchestration_benchmark import score_trajectory
 from recallops.evaluation.orchestration_schema import (
@@ -14,6 +15,13 @@ from recallops.evaluation.orchestration_schema import (
 )
 from recallops.evaluation.scorecard import build_scorecard
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
+
+
+@pytest.fixture(autouse=True)
+def isolated_ui_model_configuration(monkeypatch):
+    """UI regression tests never consume the developer's local provider configuration."""
+    monkeypatch.setenv("RECALLOPS_MODEL_MODE", "deterministic")
+    monkeypatch.setattr(recallops.llm, "load_project_env", lambda: None)
 
 
 @pytest.fixture

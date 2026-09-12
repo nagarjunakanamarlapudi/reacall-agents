@@ -11,6 +11,8 @@ from typing import Any
 
 import streamlit as st
 
+from recallops.llm import get_llm_settings, load_project_env
+from recallops.llm.live_reasoning import LiveReasoningService
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
 from recallops.ui.evaluation_reports import EvaluationProjection, load_evaluation_scorecard
@@ -30,6 +32,7 @@ from recallops.ui.presenters import (
     build_match_rows,
     build_orchestration_delta_rows,
     build_predicate_rows,
+    build_reasoning_presentation,
     build_receipt_rows,
     build_reconciliation_presentation,
     build_retrieval_ablation_rows,
@@ -49,6 +52,7 @@ from recallops.ui.theme import CSS
 
 
 def _build_adapter():
+    load_project_env()
     mode = os.environ.get("RECALLOPS_UI_MODE", "durable").strip().casefold()
     if mode == "demo":
         return DeterministicDemoAdapter()
@@ -57,11 +61,14 @@ def _build_adapter():
     runtime_dir = Path(os.environ.get("RECALLOPS_RUNTIME_DIR", PROJECT_ROOT / ".recallops-runtime"))
     repository_root = Path(os.environ.get("RECALLOPS_REPOSITORY_ROOT", PROJECT_ROOT))
     transport = os.environ.get("RECALLOPS_MCP_TRANSPORT", "direct").strip().casefold()
+    settings = get_llm_settings()
     return DurableRuntimeAdapter(
         checkpoint_path=runtime_dir / "checkpoints.sqlite3",
         operations_path=runtime_dir / "operations.sqlite3",
         transport=transport,
         repository_paths=RepositoryPaths(repository_root),
+        llm_settings=settings,
+        live_reasoning=LiveReasoningService(settings) if settings.mode == "openai" else None,
     )
 
 
@@ -202,11 +209,11 @@ def _render_sidebar() -> None:
             st.write(st.session_state.ui_recall_number)
             st.caption(
                 f"Source mode: {st.session_state.ui_source_mode or 'not opened'} · "
-                f"Model mode: {st.session_state.ui_model_mode}"
+                f"Reasoning mode: {_reasoning_view()['label']}"
             )
             st.caption(f"Execution mode: {_ADAPTER.runtime_label}")
             st.caption(f"Transport: {_ADAPTER.transport_label}")
-            st.caption("Offline-first academic demonstration; no production system writes.")
+            st.caption("Academic demonstration; no production system writes.")
         st.markdown(
             '<span class="source-official">OFFICIAL — openFDA snapshot</span>',
             unsafe_allow_html=True,
@@ -220,6 +227,15 @@ def _render_sidebar() -> None:
         )
         st.radio("Workspace", VIEWS, key="ui_active_view", label_visibility="collapsed")
         st.caption("Agents draft; only an approved graph node can make a simulated write.")
+
+
+def _reasoning_view() -> dict[str, Any]:
+    settings = getattr(_ADAPTER, "llm_settings", None)
+    return build_reasoning_presentation(
+        _case(),
+        configured_mode=settings.mode if settings else "deterministic",
+        configured_model=settings.model if settings else "",
+    )
 
 
 def _render_header() -> None:
@@ -237,7 +253,11 @@ def _render_header() -> None:
     columns[1].metric("Case / thread", f"{header.case_id} / {header.thread_id}")
     columns[2].metric("Version", header.case_version)
     columns[3].metric("Source mode", header.source_mode)
-    columns[4].metric("Model mode", header.model_mode)
+    reasoning = _reasoning_view()
+    columns[4].metric("Reasoning mode", reasoning["label"])
+    st.caption(f"Reasoning status: {reasoning['status']}")
+    if reasoning["warning"]:
+        st.warning(reasoning["warning"])
     st.caption(f"Phase: {header.status} · Current node: {header.current_node}")
     if st.session_state.ui_last_error:
         st.error(st.session_state.ui_last_error)
@@ -307,6 +327,23 @@ def _render_investigation() -> None:
             "Open a case first. Investigation is bounded, read-only work and will not write records."
         )
         return
+    reasoning = _reasoning_view()
+    st.markdown("### Reasoning run")
+    st.caption(reasoning["handoff"])
+    if reasoning["plan"]:
+        st.markdown("**Live plan**")
+        for index, step in enumerate(reasoning["plan"], start=1):
+            st.write(f"{index}. {step}")
+    if reasoning["specialists"]:
+        for column, specialist in zip(st.columns(4), reasoning["specialists"], strict=True):
+            with column.container(border=True):
+                st.markdown(f"**{specialist['name']}**")
+                st.caption(specialist["status"])
+        for column, (label, value) in zip(st.columns(4), reasoning["usage"].items(), strict=True):
+            column.metric(label, value)
+    if reasoning["events"]:
+        st.markdown("**Live model and tool-call trail**")
+        st.dataframe(reasoning["events"], width="stretch", hide_index=True)
     if case.status == "escalated":
         st.error("Fail-closed investigation outcome")
         warnings = case.raw.get("warnings", [])
@@ -711,7 +748,7 @@ def main() -> None:
     renderers[st.session_state.ui_active_view]()
     st.divider()
     st.caption(
-        "Academic simulation only · Offline by default · No customer PII · No production writes"
+        "Academic simulation only · Official recall sources + synthetic operations · No customer PII · No production writes"
     )
 
 
