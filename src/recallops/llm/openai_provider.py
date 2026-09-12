@@ -73,7 +73,7 @@ def sanitize_llm_error(error: BaseException) -> tuple[str, str]:
         category = "authentication"
     elif error_name == "RateLimitError":
         category = "rate_limit"
-    elif error_name == "APITimeoutError":
+    elif error_name in {"APITimeoutError", "OpenAITimeoutError"}:
         category = "timeout"
     elif error_name == "APIResponseValidationError":
         category = "invalid_response"

@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -11,8 +12,8 @@ from dotenv import load_dotenv
 from recallops.paths import PROJECT_ROOT
 
 _DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-_DEFAULT_TIMEOUT_SECONDS = 30.0
-_DEFAULT_MAX_RETRIES = 2
+_DEFAULT_TIMEOUT_SECONDS = 120.0
+_DEFAULT_MAX_RETRIES = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +64,25 @@ def get_llm_settings() -> LLMSettings:
         mode=mode,
         model=model,
         embedding_model=embedding_model,
+        timeout_seconds=_timeout_environment(),
+        max_retries=_retry_environment(),
     )
+
+
+def _timeout_environment() -> float:
+    raw = os.environ.get("OPENAI_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)).strip()
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", raw):
+        value = float(raw)
+        if math.isfinite(value) and 0 < value <= 600:
+            return value
+    raise ValueError("OPENAI_TIMEOUT_SECONDS must be a finite decimal within (0, 600]")
+
+
+def _retry_environment() -> int:
+    raw = os.environ.get("OPENAI_MAX_RETRIES", str(_DEFAULT_MAX_RETRIES)).strip()
+    if re.fullmatch(r"[0-3]", raw):
+        return int(raw)
+    raise ValueError("OPENAI_MAX_RETRIES must be an integer from 0 through 3")
 
 
 def _require_nonblank_environment(name: str) -> str:

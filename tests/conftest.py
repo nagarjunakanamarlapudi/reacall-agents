@@ -35,7 +35,7 @@ async def raw_openai_script(monkeypatch, live_case):
 
     clients = []
 
-    def install(*, duplicate=None, raw=None):
+    def install(*, duplicate=None, raw=None, response_schemas=None):
         messages = iter(live_case.script(raw).messages)
         responses = []
 
@@ -55,7 +55,19 @@ async def raw_openai_script(monkeypatch, live_case):
 
         def respond(request):
             assert request.url.path == "/v1/chat/completions"
-            assert not json.loads(request.content).get("stream")
+            body = json.loads(request.content)
+            assert not body.get("stream")
+            if response_schemas is not None:
+                for tool in body.get("tools", []):
+                    function = tool.get("function", {})
+                    if function.get("name") in {
+                        "RecallIntelligence",
+                        "ProductLotAssessment",
+                        "TraceabilityAssessment",
+                        "ContainmentProposal",
+                        "SupervisorResponse",
+                    }:
+                        response_schemas[function["name"]] = function["parameters"]
             message = next(messages)
             calls = []
             for call in message.tool_calls:

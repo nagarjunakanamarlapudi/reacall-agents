@@ -57,6 +57,10 @@ def _parser() -> argparse.ArgumentParser:
         metavar="MODULE:ATTRIBUTE",
         help="Explicit LiveRunnerFactory object or zero-argument factory (opt-in only)",
     )
+    smoke = subcommands.add_parser(
+        "eval-model-smoke", help="Run exactly one OpenAI case into a separate new smoke report"
+    )
+    smoke.add_argument("--report", type=Path, required=True)
     scorecard = subcommands.add_parser(
         "eval-scorecard", help="Verify and summarize the combined offline scorecard"
     )
@@ -412,6 +416,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 openai=args.openai,
                 live=args.live,
             )
+        if args.command == "eval-model-smoke":
+            from recallops.evaluation.live_smoke import run_live_smoke
+
+            report = asyncio.run(run_live_smoke(_openai_settings(), args.report))
+            print(json.dumps(report, sort_keys=True))
+            return 0 if report["passed"] else 1
         if args.command == "eval-scorecard":
             return _eval_scorecard(
                 args.scorecard,

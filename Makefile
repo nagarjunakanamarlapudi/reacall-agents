@@ -3,6 +3,8 @@
 RECALL_NUMBER ?= H-1230-2026
 PORT ?= 8501
 RUNTIME_DIR ?= .recallops-runtime-demo
+LIVE_SMOKE ?= 0
+LIVE_SMOKE_REPORT ?= $(PROJECT_ROOT)/live-smoke.json
 ifneq ($(origin LIVE_MODEL_ADAPTER),undefined)
 override LIVE_MODEL_ADAPTER := $(value LIVE_MODEL_ADAPTER)
 export LIVE_MODEL_ADAPTER
@@ -47,7 +49,7 @@ help:
 		'  make eval-orchestration Run and verify the 24-case offline comparison' \
 		'  make eval               Run all deterministic suites and build the scorecard' \
 		'  make eval-summary       Validate and summarize the combined scorecard' \
-		'  make eval-model         Run shared OpenAI evaluation (or an explicit custom adapter)' \
+		'  make eval-model         Run full OpenAI evaluation; LIVE_SMOKE=1 runs one separate case' \
 		'  make demo-data          Regenerate the deterministic synthetic dataset' \
 		'  make notebooks          Rebuild and execute all seven teaching notebooks' \
 		'  make diagrams           Verify canonical double-render and SVG/PNG parity' \
@@ -69,6 +71,7 @@ help:
 		'  RECALL_NUMBER=$(RECALL_NUMBER)' \
 		'  PORT=$(PORT)' \
 		'  RUNTIME_DIR=$(RUNTIME_DIR)' \
+		'  LIVE_SMOKE=1 LIVE_SMOKE_REPORT=/path/to/new-smoke.json (one case, separate report)' \
 		'  LIVE_MODEL_ADAPTER=module:attribute (explicit live opt-in only)'
 
 setup:
@@ -142,10 +145,14 @@ eval-summary: $(SCORECARD)
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
 
 eval-model:
+ifeq ($(LIVE_SMOKE),1)
+	@$(UV_LIVE) recallops eval-model-smoke --report "$(LIVE_SMOKE_REPORT)"
+else
 	@set -eu; \
 	$(UV_LIVE) recallops eval-orchestration --run --live --cases "$(EVAL_DIR)/orchestration_cases.json" --report "$(EVAL_DIR)/orchestration_report.json"; \
 	$(UV_PROJECT) python -c 'import sys; from pathlib import Path; from recallops.evaluation.scorecard import build_scorecard; root = Path(sys.argv[1]); build_scorecard(root / "report.json", root / "retrieval_report.json", root / "orchestration_report.json", root / "scorecard.json")' "$(EVAL_DIR)"; \
 	$(UV_PROJECT) recallops eval-scorecard --scorecard "$(EVAL_DIR)/scorecard.json"
+endif
 
 demo-data:
 	uv run python scripts/generate_demo_data.py

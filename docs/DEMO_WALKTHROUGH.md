@@ -14,12 +14,16 @@ If `.env` does not exist, copy `.env.example` to `.env` using your editor. If it
 RECALLOPS_MODEL_MODE=openai
 OPENAI_API_KEY=<enter-your-key-privately>
 OPENAI_MODEL=<your-tool-calling-model-id>
+OPENAI_TIMEOUT_SECONDS=120
+OPENAI_MAX_RETRIES=0
 RECALLOPS_SOURCE_MODE=snapshot
 RECALLOPS_UI_MODE=durable
 LIVE_MODEL_ADAPTER=
 ```
 
 `.env` is Git-ignored. Never paste its contents into a report, screenshot or terminal recording. Process environment values take precedence, so clear any stale overrides before launch. `OPENAI_EMBEDDING_MODEL` is not needed for the local LSA retrieval lane.
+
+The default request timeout is 120 seconds with no automatic retries. `OPENAI_TIMEOUT_SECONDS` accepts a positive decimal up to 600; `OPENAI_MAX_RETRIES` accepts 0–3. These are per-request controls; the live service also limits model and read calls. A timed-out request can still incur provider usage. Preserve a cancelled run and use a fresh runtime for an explicitly authorized attempt.
 
 Run:
 
@@ -59,7 +63,9 @@ Before opening the case, confirm **Reasoning mode: OpenAI · <model>** and statu
 5. Explain safe typed claims: exact source identifiers/quantities, bounded digests, read receipts and no-execution declarations. The independent source verifier re-reads source records and compares complete evidence before the durable case can gain actionable scope. Display wording/action IDs are application-owned. Private raw prompts, raw model messages and chain-of-thought are never persisted or shown.
 6. Only accepted verification reaches **Human Review**. Then demonstrate both HITL gates, simulated receipts and blocked closure below.
 
-Live metrics remain unavailable until the real-provider smoke and measured evaluation are recorded. This runbook describes expected observations; it is not a claim that such a run already passed.
+Live metrics remain unavailable for a successfully completed four-specialist investigation. The September 12, 2026 real-provider smoke did not pass: `gpt-5-mini` first hit the former 30-second timeout; a fresh 120-second/no-retry attempt observed the plan and only `recall-intelligence`, then stopped with `semantic_failure` / `invalid_response`. It had four model calls, zero MCP reads, no human review and zero receipts. The longer attempt reported 106.263 seconds and 36,081 total tokens; cost is unavailable. These are failed-attempt measurements, not successful live performance. Do not record this script as a successful live demo until a fresh authorized run completes all four roles and independent verification. The remaining steps describe expected behavior.
+
+After these attempts, the response schemas were corrected to advertise every field the strict validator requires, including explicit empty evidence gaps and `executed=false`. Offline tests inspect the actual outgoing schemas for all four specialists and the supervisor. No additional provider call was made after that correction; it does not establish a successful live result.
 
 ## Failure-recovery rehearsal
 
@@ -133,10 +139,12 @@ make eval-summary
 Run the additional measured live lane separately, with the same local OpenAI setup:
 
 ```bash
-make eval-model
+make eval-model LIVE_SMOKE=1 LIVE_SMOKE_REPORT=/tmp/recallops-live-smoke-new.json
 ```
 
-This uses the built-in shared provider and source verifier; no custom adapter is required. Show provider, model/prompt digests, duration, task/delegation/tool metrics, verifier outcome and tokens only when present in the verified report. Never narrate deterministic fixture results as model success or invent cost/latency. The UI’s current investigation trace and the benchmark report are separate artifacts. The live benchmark is excluded from deterministic pass/fail gates; inspect its own status even if the offline gate passes. The command regenerates the orchestration report and combined scorecard, so retain their exact resulting digests when reporting a measured run.
+This executes exactly one four-lot `H-1230-2026` smoke investigation through the shared provider and source verifier. It writes only sanitized measured status, plan/order checks, call counts, digests, duration and available tokens to a new separate report. Existing output files are refused before provider use; choose a new path for each authorized run. It returns nonzero on provider or verification failure. Cost is unavailable. This smoke is not the 24-case comparative benchmark and supplies no benchmark uplift claims; it does not change the deterministic corpus, reports or scorecard. No custom adapter is required.
+
+Only when the full 24-case provider spend is explicitly intended, run `make eval-model` without `LIVE_SMOKE=1`. That command regenerates the orchestration report and combined scorecard; retain their resulting digests. Both live lanes are excluded from deterministic pass/fail gates. Inspect live status even if the offline gate passes, and never narrate fixture results as model success or invent unavailable metrics.
 
 ## Semantic stop and Provider fallback
 

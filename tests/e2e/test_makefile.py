@@ -123,6 +123,16 @@ def test_make_builtin_eval_requires_credentials_before_changing_artifacts(tmp_pa
     assert (eval_dir / "orchestration_report.json").read_bytes() == before
 
 
+def test_make_live_smoke_uses_separate_command_without_full_corpus_or_scorecard(tmp_path):
+    output = tmp_path / "new-smoke.json"
+    result = _make("-n", "eval-model", "LIVE_SMOKE=1", f"LIVE_SMOKE_REPORT={output}")
+    assert result.returncode == 0
+    assert "eval-model-smoke --report" in result.stdout
+    assert str(output) in result.stdout
+    assert "eval-orchestration" not in result.stdout
+    assert "scorecard" not in result.stdout
+
+
 @pytest.mark.parametrize(
     ("source", "expected_provider"),
     [

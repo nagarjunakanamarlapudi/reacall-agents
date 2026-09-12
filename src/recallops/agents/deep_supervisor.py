@@ -148,6 +148,34 @@ class SupervisorResponse(BaseModel):
         return value
 
 
+def _explicit_response_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Advertise explicit original fields and the raw shape guard's size bounds."""
+    schema = model.model_json_schema()
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for child in node:
+                visit(child)
+            return
+        if not isinstance(node, dict):
+            return
+        kind = node.get("type")
+        if kind == "object":
+            node["maxProperties"] = min(node.get("maxProperties", 512), 512)
+            if "properties" in node:
+                node["required"] = list(node["properties"])
+                node["additionalProperties"] = False
+        elif kind == "array":
+            node["maxItems"] = min(node.get("maxItems", 512), 512)
+        elif kind == "string":
+            node["maxLength"] = min(node.get("maxLength", 8192), 8192)
+        for child in node.values():
+            visit(child)
+
+    visit(schema)
+    return schema
+
+
 @dataclass(frozen=True)
 class ReadToolObservation:
     """Only inert scalars cross the sealed read capability's telemetry boundary."""
@@ -1750,7 +1778,8 @@ def build_deep_supervisor(
                 # strict validation. SDK Pydantic parsing would otherwise coerce
                 # values, fill omitted defaults, and discard unknown fields.
                 "response_format": ToolStrategy(
-                    _RESPONSE_MODELS[definition.name].model_json_schema(), handle_errors=False
+                    _explicit_response_schema(_RESPONSE_MODELS[definition.name]),
+                    handle_errors=False,
                 ),
             }
         )
@@ -1772,7 +1801,9 @@ def build_deep_supervisor(
             + ". Delegate to each once in order. Finish with SupervisorResponse, reporting only "
             "advisory counts, the review outcome, and executed=false."
         ),
-        response_format=ToolStrategy(SupervisorResponse, handle_errors=False),
+        response_format=ToolStrategy(
+            _explicit_response_schema(SupervisorResponse), handle_errors=False
+        ),
         middleware=[
             delegation_guard,
             task_limiter,
