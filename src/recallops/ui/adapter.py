@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 from time import perf_counter
@@ -27,8 +28,12 @@ from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.services.recall_registry import RecallRegistryService
 from recallops.services.traceability import TraceabilityService
 from recallops.ui.evaluation_reports import load_safety_projection
-from recallops.ui.presenters import PINNED_RECALL
-from recallops.ui.reasoning_store import ReasoningStore
+from recallops.ui.presenters import PINNED_RECALL, REASONING_UNAVAILABLE_WARNING
+from recallops.ui.reasoning_store import (
+    ReasoningInProgress,
+    ReasoningStore,
+    ReasoningTelemetryUnavailable,
+)
 
 SYNTHETIC = "SYNTHETIC_RETAILER_DIGITAL_TWIN"
 SNAPSHOT = "OFFICIAL_OPENFDA_SNAPSHOT"
@@ -514,7 +519,25 @@ class DurableRuntimeAdapter:
         projected["checkpoint_history"] = normalize_runtime_history(history)
         projected["transport_mode"] = self.transport_label
         projected["evaluation_report"] = self._evaluation_report()
-        summary = self.reasoning_store.get(projected["thread_id"])
+        try:
+            summary = self.reasoning_store.get(projected["thread_id"])
+        except (
+            ReasoningTelemetryUnavailable,
+            ReasoningInProgress,
+            ValueError,
+            OSError,
+            sqlite3.Error,
+        ):
+            # Advisory persistence must never hide an authoritative checkpoint or committed receipt.
+            projected.update(
+                reasoning_mode="unavailable",
+                model_mode="unavailable",
+                llm_status="unavailable",
+                llm_model="",
+                llm_run=None,
+            )
+            projected.setdefault("warnings", []).append(REASONING_UNAVAILABLE_WARNING)
+            return projected
         projected["reasoning_mode"] = "openai" if summary else "deterministic"
         projected["model_mode"] = projected["reasoning_mode"]
         projected["llm_status"] = summary.status if summary else "not_run"

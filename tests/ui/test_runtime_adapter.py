@@ -114,6 +114,74 @@ def _receipt_count(path: Path) -> int:
         connection.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["malformed", "credential", "database"])
+async def test_corrupt_telemetry_cannot_block_authoritative_load_review_or_committed_receipt(
+    tmp_path, monkeypatch, fault
+):
+    """Catch advisory read failures hiding checkpoint state or an already committed operation."""
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+    )
+    reviewed = await adapter.run_investigation(await adapter.open_case("H-1230-2026"))
+    if fault == "database":
+
+        def unavailable(thread_id):
+            raise sqlite3.DatabaseError("sk-canary-private-credential database failure")
+
+        monkeypatch.setattr(adapter.reasoning_store, "get", unavailable)
+    else:
+        adapter.reasoning_store.claim(reviewed["thread_id"])
+        payload = '{"sk-canary-private-credential":'
+        if fault == "credential":
+            payload = LiveReasoningSummary(
+                model="gpt-4.1",
+                status="completed",
+                duration_ms=10,
+                plan=["sk-canary-private-credential"],
+            ).model_dump_json()
+        with sqlite3.connect(adapter.reasoning_store.path) as connection:
+            connection.execute("UPDATE reasoning_summaries SET summary_json = ?", (payload,))
+
+    restored = await adapter.load_case(reviewed["thread_id"])
+    assert restored["pending_interrupt"] == reviewed["pending_interrupt"]
+    approved = await adapter.resume_review(
+        restored,
+        decision="approve",
+        actor="Food-safety manager",
+        justification=APPROVAL_JUSTIFICATION,
+        edited_action="",
+    )
+    assert approved["pending_interrupt"]["kind"] == "execution_confirmation"
+    created = await adapter.simulate_approved_actions(approved)
+    assert created["case_version"] == 1
+    assert created["receipts"][0]["action_type"] == "create_case"
+    assert _receipt_count(adapter.operations_path) == 1
+    for result in (restored, approved, created):
+        assert result["llm_status"] == "unavailable"
+        assert result["llm_run"] is None
+        assert any("reasoning telemetry unavailable" in item.lower() for item in result["warnings"])
+        assert "canary-private-credential" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_unfinished_live_claim_still_blocks_initial_investigation(tmp_path):
+    adapter = DurableRuntimeAdapter(
+        checkpoint_path=tmp_path / "checkpoints.sqlite3",
+        operations_path=tmp_path / "operations.sqlite3",
+        llm_settings=LLMSettings(mode="openai", model="gpt-4.1"),
+    )
+    opened = await adapter.open_case("H-1230-2026")
+    adapter.reasoning_store.claim(opened["thread_id"])
+    with pytest.raises(RuntimeError, match="in progress|interrupted"):
+        await adapter.run_investigation(opened)
+    async with RecallOpsRuntime.open(
+        checkpoint_path=adapter.checkpoint_path, operations_path=adapter.operations_path
+    ) as runtime:
+        assert await runtime.get_case(thread_id=opened["thread_id"]) is None
+
+
 _RATE_METRICS = (
     "scenario_pass_rate",
     "safety_critical_pass_rate",

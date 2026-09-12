@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -6,6 +8,34 @@ from streamlit.testing.v1 import AppTest
 from recallops.llm.live_reasoning import LiveReasoningService, LiveReasoningSummary
 
 APP = Path(__file__).parents[2] / "src" / "recallops" / "ui" / "app.py"
+
+
+def test_corrupt_telemetry_is_visible_without_blocking_case_or_leaking_into_session(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("RECALLOPS_UI_MODE", "durable")
+    monkeypatch.setenv("RECALLOPS_RUNTIME_DIR", str(tmp_path))
+    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app.button(key="open_case_button").click().run()
+    app.radio(key="ui_active_view").set_value("Investigation").run()
+    app.button(key="run_investigation_button").click().run()
+    original_pending = app.session_state["ui_case"]["pending_interrupt"]
+    thread_id = app.session_state["ui_case"]["thread_id"]
+    with sqlite3.connect(tmp_path / "reasoning.sqlite3") as connection:
+        connection.execute(
+            "INSERT INTO reasoning_summaries VALUES (?, ?)",
+            (thread_id, '{"sk-canary-private-credential":'),
+        )
+    app.button(key="run_investigation_button").click().run()
+    assert not app.exception
+    case = app.session_state["ui_case"]
+    assert case["pending_interrupt"] == original_pending
+    assert case["llm_status"] == "unavailable"
+    assert "canary-private-credential" not in json.dumps(case)
+    assert any("reasoning telemetry unavailable" in item.value.lower() for item in app.warning)
+    assert (
+        next(item.value for item in app.metric if item.label == "Reasoning mode") == "Unavailable"
+    )
 
 
 @pytest.mark.parametrize("status", ["completed", "failed"])

@@ -151,6 +151,10 @@ def build_orchestration_delta_rows(projection: EvaluationProjection) -> list[dic
 
 
 PINNED_RECALL = "H-1230-2026"
+REASONING_UNAVAILABLE_WARNING = (
+    "Reasoning telemetry unavailable. Authoritative case state is available; "
+    "no live reasoning success is claimed."
+)
 DEFAULT_ACTOR = "Food-safety manager"
 APPROVAL_JUSTIFICATION = (
     "Authorize simulated containment for confirmed scope; retain ambiguous lot for review."
@@ -480,11 +484,15 @@ def build_reasoning_presentation(
         "containment-communications",
     )
     return {
-        "label": f"OpenAI · {mask_display_value(model or 'model unavailable')}"
+        "label": "Unavailable"
+        if status == "unavailable"
+        else f"OpenAI · {mask_display_value(model or 'model unavailable')}"
         if live
         else "Deterministic",
         "status": mask_display_value(status),
-        "warning": (
+        "warning": REASONING_UNAVAILABLE_WARNING
+        if status == "unavailable"
+        else (
             "OpenAI reasoning failed; deterministic fallback used. No live success is claimed. "
             f"Failure category: {mask_display_value(run.get('error_category') or 'unavailable')}."
         )
