@@ -35,13 +35,17 @@ render_into() {
   mkdir -p "${output_dir}"
   local source output
   for source in "${DIAGRAM_DIR}"/*.mmd; do
-    output="${output_dir}/$(basename "${source%.mmd}").svg"
-    "${MMDC}" \
+    for extension in svg png; do
+      output="${output_dir}/$(basename "${source%.mmd}").${extension}"
+      "${MMDC}" \
       --configFile "${CONFIG_FILE}" \
       --input "${source}" \
       --output "${output}" \
+      --width 1600 --scale 2 \
       --backgroundColor white
+    done
   done
+  uv run --project "${ROOT_DIR}" python "${ROOT_DIR}/scripts/render_presentation.py" "${output_dir}"
 }
 
 if [[ "${1:-}" == "--verify" ]]; then
@@ -50,7 +54,7 @@ if [[ "${1:-}" == "--verify" ]]; then
   trap 'rm -rf "${first_dir}" "${second_dir}"' EXIT
   render_into "${first_dir}"
   render_into "${second_dir}"
-  for first_svg in "${first_dir}"/*.svg; do
+  for first_svg in "${first_dir}"/*.svg "${first_dir}"/*.png; do
     basename_svg="$(basename "${first_svg}")"
     cmp -s "${first_svg}" "${second_dir}/${basename_svg}"
     cmp -s "${first_svg}" "${DIAGRAM_DIR}/${basename_svg}"

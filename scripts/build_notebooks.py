@@ -31,6 +31,12 @@ def make_notebook(title: str, cells: list[dict]) -> dict:
     notebook = nbf.v4.new_notebook(
         cells=[
             md(f"# {title}"),
+            md("""## How this lesson maps to the live product
+
+The flagship uses bounded sparse+dense fusion/reranking and policy-based retrieval critique/rewrite to feed OpenAI LLM `write_todos` planning. The Deep Agents supervisor delegates sequentially to recall-intelligence, product-lot-matching, traceability-reconciliation, then containment-communications. Each receives case-bound context and validated prerequisite claims; containment has no MCP tools. Safe projection yields safe typed claims, then the independent source verifier re-reads evidence before the HITL control plane can propose an action. LangGraph owns persistence, approval, execution confirmation and simulated receipts.
+
+These embedded exercises teach individual mechanisms with deterministic local data. No live model was called. Their plans and metrics are teaching fixtures, not observed LLM output. Use `make ui-openai` with a private ignored .env for the live product and `make eval-model` for the additional measured lane. Live metrics remain unavailable until actually measured; offline tests/notebooks never spend API tokens. Semantic failures stop before review without fallback; provider/transport/budget failures may discard partial claims and take an explicitly labelled deterministic fallback. Raw prompts, model prose and chain-of-thought never belong in reports or checkpoints.
+"""),
             code('print("Embedded dataset and deterministic offline lesson are ready.")'),
             *cells,
         ],

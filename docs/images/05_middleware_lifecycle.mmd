@@ -1,21 +1,14 @@
+%%{init: {"flowchart": {"wrappingWidth": 500}}}%%
 flowchart TB
-  classDef hook fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef safety fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef trace fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
-
-  START["Case starts"] --> CTX["Case context<br/>case ID • role • source labels"]:::hook
-  CTX --> PLAN["Task-plan policy<br/>bounded plan + completion criteria"]:::hook
-  PLAN --> RET["Retrieval middleware<br/>source route • read/query budgets<br/>critic • progress watchdog"]:::hook
-  RET --> MODEL["Model boundary<br/>fixed schema • call budget<br/>deterministic fallback"]:::hook
-  MODEL --> TOOLS["Read tool boundary<br/>permission • schema • provenance<br/>retry • circuit breaker • budget"]:::hook
-  TOOLS --> MASK["PII masking<br/>citation-preserving context"]:::hook
-  MASK --> STATE["JSON state update"]:::state
-  STATE --> VERIFY["Independent verification<br/>reconciliation • ambiguity • coverage"]:::safety
-  VERIFY --> REVIEW["Pending interrupt binding<br/>case • thread • version • digest"]:::safety
-  REVIEW --> APPROVAL["Approval guard<br/>actor • justification • exact action"]:::safety
-  APPROVAL --> CONFIRM["Execution confirmation<br/>execution ID • idempotency key"]:::safety
-  CONFIRM --> WRITE["One write attempt<br/>receipt validation • version increment"]:::hook
-  WRITE --> FENCE["Checkpoint / Operations fence<br/>owner UUID • head • request digest"]:::state
-  FENCE --> TRACE["Trace recorder<br/>route • node • tool • duration<br/>status • warning • receipt"]:::trace
-  TRACE --> NEXT["Next review, durable recovery,<br/>blocked closure, or safe stop"]
+  classDef hook fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef safety fill:#ffedd5,stroke:#c2410c,color:#111827
+  classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
+  CTX["Case context • case / thread / source / scope binding<br/>Durable retrieval: sparse+dense fusion / rerank<br/>Policy critique / rewrite • query/read budgets"]:::hook
+  MODEL["OpenAI write_todos → sequential Deep Agents delegation<br/>One successful typed role result before the next role<br/>Sealed reads • schema/provenance checks • call budgets"]:::llm
+  CLAIMS["Safe typed claims • discard prose / digest unknown identifiers<br/>Isolated supervisor • no callbacks / cache / checkpointer<br/>Strict original JSON boundary before SDK coercion"]:::hook
+  VERIFY["Independent source verifier • re-read pinned source evidence<br/>Recompute receipts / scope / reconciliation / targets<br/>Unsupported or incomplete claims stop before review"]:::safe
+  REVIEW["Approval guard • exact action / case version / digest<br/>Action review records approval with zero writes<br/>Separate execution confirmation binds one-use grant"]:::safety
+  WRITE["Approved graph node • one simulated Operations call<br/>Checkpoint / Operations owner, head and request fence<br/>Receipt validation • version increment • fresh approval"]:::hook
+  TRACE["Trace recorder • safe status / duration / tool events<br/>No credentials, raw prompts or chain-of-thought<br/>Next review, durable recovery or blocked closure"]:::hook
+  CTX --> MODEL --> CLAIMS --> VERIFY --> REVIEW --> WRITE --> TRACE

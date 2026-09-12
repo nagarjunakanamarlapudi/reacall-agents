@@ -1,6 +1,6 @@
 # Local Operations and Reproducibility Runbook
 
-All default product paths are credential-free and offline. Evaluation commands resolve their
+The flagship product uses OpenAI live reasoning with a local ignored `.env`. Deterministic tests, notebooks, `make demo`, and `make verify` are credential-free; they spend no API tokens. Evaluation commands resolve their
 project and artifact paths from the Makefile/package, so they also work when invoked through an
 absolute Makefile path from another directory.
 
@@ -13,6 +13,7 @@ make setup
 make data-validate
 make demo
 make ui
+make ui-openai
 make ui-stdio
 make mcp-smoke
 make eval-fast
@@ -147,27 +148,24 @@ The first command intentionally retains the original safety-only summary semanti
 `eval-scorecard` command validates all six bound report/corpus digests and recomputes all three
 suite summaries before reporting the combined offline verdict.
 
-### Explicit live-model opt-in
+### OpenAI live setup and evaluation
 
-Live orchestration is unavailable until an application-specific provider adapter and its provider
-credentials are configured. Supply a Python `MODULE:ATTRIBUTE` that resolves to a
-`LiveRunnerFactory` instance (or a zero-argument function returning one):
+Follow [the exact preflight and proof checklist](DEMO_WALKTHROUGH.md#preflight). Keep `OPENAI_API_KEY` only in the ignored local `.env`, set `RECALLOPS_MODEL_MODE=openai` and a nonblank `OPENAI_MODEL`. Existing process variables take precedence over `.env`. `make ui-openai` performs configuration validation and launches the shared service; `make ui` also loads the project environment in the app.
 
 ```bash
-make eval-model LIVE_MODEL_ADAPTER=my_recallops_provider:live_factory
+make ui-openai
+make eval-model
 ```
 
-This is a trusted local Python import boundary, not a sandbox. Do not point it at an unreviewed
-module. `OPENAI_API_KEY` alone does not enable live planning; both a reviewed adapter and that
-adapter's provider-specific credentials are required.
+The built-in OpenAI runner is the default live evaluation adapter. It uses the same bounded RAG, context/source binding, sealed reads, safe typed claims and independent source verifier as the UI. `LIVE_MODEL_ADAPTER=module:attribute` remains an optional trusted local import override. No custom adapter is needed. Live metrics remain unavailable until an actual measured run; the committed `not_run_missing_credentials` result is historical evaluation status, not a diagnosis of the current local environment. Live metrics never determine `offline_gate_passed`.
 
-With no `LIVE_MODEL_ADAPTER`, `make eval-model` exits nonzero with an explicit configuration and
-credentials message; it never selects a provider implicitly. The adapter retains credentials and
-raw provider messages outside persisted artifacts, and its evaluated capability surface is the
-sealed read-only orchestration capture—never Operations tools. A completed or errored optional-live
-status is reported separately and is always excluded from `offline_gate_passed` and the command's
-offline exit decision. Factory/provider errors remain visible rather than being presented as a
-successful live run.
+### Live resilience
+
+![Semantic stop versus provider fallback](images/11_live_resilience.png)
+
+**Semantic stop:** missing, malformed, incomplete, false, contradictory or unsupported returned artifacts fail closed. No review, no fallback, no simulated writes. The same applies to source changes or invalid binding. Inspect the fixed verification violation codes and source evidence; do not silently substitute a deterministic result.
+
+**Provider fallback:** authentication, timeout, rate-limit, transport or execution-budget failures may discard partial claims and run the explicit deterministic fallback. The header must say fallback; no live success is claimed. Both HITL gates still apply. Inspect the sanitized category, repair local configuration/connectivity, then start a fresh case/runtime for a fresh live attempt. Never print the key or raw provider response. An interrupted durable `started` marker is not automatically retried; preserve the original stores for audit and use a new runtime for rehearsal.
 
 ## Test and static checks
 

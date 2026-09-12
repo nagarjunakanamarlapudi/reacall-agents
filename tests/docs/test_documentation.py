@@ -65,7 +65,7 @@ DIAGRAM_LABELS = {
     ),
     "03_orchestration": (
         "Deep Agent supervisor",
-        "Deterministic default planner",
+        "OpenAI LLM planning",
         "Verification / Critic",
         "StateGraph",
         "create_case v0→v1",
@@ -159,6 +159,12 @@ DIAGRAM_LABELS = {
         "excluded from deterministic authority",
         "No Operations MCP credentials",
         "No SQLite writes",
+    ),
+    "11_live_resilience": (
+        "Semantic stop",
+        "Provider fallback",
+        "discard partial claims",
+        "zero writes",
     ),
 }
 
@@ -416,7 +422,7 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("OPENAI_API_KEY alone does not enable live planning", environment)
         self.assertIn("LIVE_MODEL_ADAPTER=module:attribute", environment)
 
-    def test_supporting_diagram_inventory_is_exactly_ten_source_svg_pairs(self) -> None:
+    def test_supporting_diagram_inventory_matches_source_svg_pairs(self) -> None:
         expected = set(DIAGRAM_LABELS)
         sources = {path.stem for path in IMAGES.glob("*.mmd")}
         rendered = {path.stem for path in IMAGES.glob("*.svg")}
@@ -662,17 +668,59 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("Same idempotency key replay", diagram)
         self.assertIn("Conflicting duplicate", diagram)
 
-    def test_orchestration_shows_deterministic_and_live_branches(self) -> None:
+    def test_orchestration_shows_authoritative_live_reasoning_and_verification(self) -> None:
         diagram = (IMAGES / "03_orchestration.mmd").read_text(encoding="utf-8")
-        self.assertIn("Deterministic default planner", diagram)
-        self.assertIn("Optional live Deep Agent supervisor", diagram)
-        self.assertIn("DS --> CURSOR", diagram)
-        self.assertIn("CURSOR --> RI", diagram)
-        self.assertIn("ADV --> CURSOR", diagram)
-        self.assertNotIn("DS --> RI", diagram)
-        self.assertIn("DA -. separate optional live path .-> RI", diagram)
+        edges = mermaid_directed_edges(diagram)
+        for start, end in (
+            ("RAG", "P"),
+            ("P", "DA"),
+            ("DA", "RI"),
+            ("RI", "PM"),
+            ("PM", "TR"),
+            ("TR", "CO"),
+            ("CO", "CLAIMS"),
+            ("CLAIMS", "VC"),
+            ("VC", "AR"),
+        ):
+            self.assertIsNotNone(mermaid_directed_path(edges, start, end))
+        self.assertNotIn("Deterministic default planner", diagram)
+        self.assertNotIn("optional live path", diagram)
         self.assertIn("Independent Verification / Critic", diagram)
         self.assertIn("all four complete", diagram)
+
+    def test_live_demo_setup_and_proof_points_are_present(self) -> None:
+        walkthrough = (DOCS / "DEMO_WALKTHROUGH.md").read_text(encoding="utf-8")
+        for term in (
+            "make ui-openai",
+            "make eval-model",
+            "OPENAI_MODEL=",
+            "RECALLOPS_MODEL_MODE=openai",
+            "Reasoning mode",
+            "Live plan",
+            "write_todos",
+            "safe typed claims",
+            "independent source verifier",
+            "Semantic stop",
+            "Provider fallback",
+            "raw prompts",
+            "Live metrics remain unavailable",
+            "Reset",
+            "Troubleshooting",
+        ):
+            self.assertIn(term, walkthrough)
+
+    def test_every_technical_diagram_has_a_usable_png(self) -> None:
+        for name in DIAGRAM_LABELS:
+            with Image.open(IMAGES / f"{name}.png") as visual:
+                self.assertEqual(visual.format, "PNG")
+                self.assertGreaterEqual(visual.width, 1000)
+                self.assertGreater(ImageStat.Stat(visual.convert("L")).stddev[0], 5)
+
+    def test_primary_docs_embed_png_technical_diagrams(self) -> None:
+        for relative in ("README.md", "docs/ARCHITECTURE.md", "docs/DEMO_WALKTHROUGH.md"):
+            content = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertNotRegex(content, r"!\[[^\]]*\]\([^)]*\.svg\)")
+            self.assertIn("02_system_architecture.png", content)
 
     def test_evaluation_architecture_separates_deterministic_authority_from_advice(self) -> None:
         diagram = (IMAGES / "10_evaluation_architecture.mmd").read_text(encoding="utf-8")
@@ -1230,7 +1278,7 @@ flowchart LR
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("Stable double-render verified for 10 diagrams", result.stdout)
+        self.assertIn("Stable double-render verified for 11 diagrams", result.stdout)
         self.assertIn("Committed SVGs match fresh render", result.stdout)
 
     def test_toolchain_files_are_exactly_locked(self) -> None:

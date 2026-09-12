@@ -1,6 +1,6 @@
 # Middleware, Human Review, and Durable Recovery
 
-![Middleware lifecycle](images/05_middleware_lifecycle.svg)
+![Middleware lifecycle](images/05_middleware_lifecycle.png)
 
 Middleware is executable policy around agent, model, tool, graph, and side-effect boundaries. It is not a list of intended controls: the utilities are called by the runtime/services and exercised independently by tests and the red-team evaluator.
 
@@ -9,7 +9,9 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 | Boundary | Implemented policy | Observable safe behavior |
 |---|---|---|
 | Case/agent | Case context and bounded task plan | Case ID, role, provenance, task limits, and completion criteria remain explicit |
-| Model/reasoning | Fixed planner, structured Pydantic outputs, optional Deep Agents, deterministic model-failure injection | R10 exercises a scripted failure/budget branch and deterministic fallback; it does not claim an exercised provider retry |
+| Model/reasoning | OpenAI `write_todos`, fixed sequential delegation, original JSON validation, context binding | Each role requires the prior typed result; budgets and sealed reads constrain the live supervisor |
+| Claim boundary | Safe typed claims, digest projection, isolated non-checkpointing supervisor | No raw prompts, model prose, model-owned action IDs or provider exceptions reach durable state |
+| Independent source verifier | Re-read pinned sources; recompute evidence receipts and compare complete claims | False/incomplete/unsupported claims stop before action review; no semantic fallback |
 | Retrieval | Source routing, sealed capabilities, query/read budgets, progress watchdog, evidence critic | No Operations tool, no infinite query loop, unsupported concepts remain gaps |
 | Read tool | `CallBudget`, `CircuitBreaker`, `with_retry`, typed/provenance validation | Reads retry only within bounds; malformed/unlabelled evidence fails closed |
 | Context/display | `mask_sensitive`, citation-preserving summaries | Customer-like values do not leak to model/trace/UI while evidence IDs remain |
@@ -19,9 +21,11 @@ Middleware is executable policy around agent, model, tool, graph, and side-effec
 | Progress/observability | `ProgressWatchdog` and `TraceRecorder` | Repeated signatures escalate; tool/node status/duration/warnings remain inspectable |
 | Closure | Independent verifier plus transactional Operations checks | Failed verification, missing hold/disposition/acknowledgement, stale authority, gap, ambiguity, or contradiction blocks close |
 
+The live model supplies evidence through the independent source verifier; it cannot create approval or execution authority. Provider/transport/budget failure may take a visibly labelled fallback after discarding partial claims. Semantic failure cannot. See [live resilience](images/11_live_resilience.png). The R10 offline fixture is a scripted safety test and is not proof of a hosted-provider run.
+
 ## Dual-consent action lifecycle
 
-![HITL, execution confirmation, and closure](images/06_hitl_closure.svg)
+![HITL, execution confirmation, and closure](images/06_hitl_closure.png)
 
 Each action uses two separate durable interrupts:
 

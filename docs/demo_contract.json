@@ -134,7 +134,7 @@
         "uv run recallops data-validate",
         "uv run recallops demo --recall-number H-1230-2026",
         "uv run recallops eval-scorecard --scorecard data/evals/scorecard.json",
-        "uv run streamlit run src/recallops/ui/app.py"
+        "make ui-openai"
       ],
       "required_terms": [
         "Command Center",

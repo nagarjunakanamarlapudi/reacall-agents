@@ -15,12 +15,12 @@ The presentation visuals above are backed by the reproducible [data-provenance M
 ## What is implemented
 
 - A durable LangGraph `StateGraph` with JSON-only state, SQLite checkpoints, exact interrupt binding, restart-safe resume, and request/head fencing across the checkpoint and Operations stores.
-- A deterministic planner whose validated task order drives a bounded LangGraph dispatcher: one of four specialists—Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, or Containment—runs at a time, records completion, and returns to the dispatcher. Missing, duplicate, unknown, cyclic, dependency-invalid, or over-budget plans stop closed; the independent verifier runs only after all four outputs exist. A separate optional Deep Agents factory demonstrates bounded live-model delegation without giving agents Operations tools.
+- The live OpenAI reasoning lane is part of the durable workflow: bounded retrieval feeds an LLM `write_todos` plan and the Deep Agents supervisor delegates once to each of four sequential context-bound LLM specialists. Safe typed claims are independently checked against source records before action generation. The supervisor cannot access Operations MCP.
 - Agentic RAG over 1,175 citable records: BM25 sparse retrieval plus local TF-IDF/SVD LSA dense retrieval, reciprocal-rank fusion, deterministic reranking, an evidence critic, query rewriting, provenance checks, and hard limits of two hops, four queries, and eight reads.
 - Three FastMCP servers with equivalent direct and stdio gateway surfaces: Recall Registry, Traceability, and approval-gated simulated Recall Operations.
 - Middleware for context, structured validation, provenance, masking, retry, circuit breaking, budgets, approval, idempotency, versioning, progress detection, and structured traces.
 - Dual consent for every write: human action review records approval but writes nothing; a separate execution confirmation powers **Simulate approved actions**. A runtime-only, checkpoint-bound broker issues the one-use execution grant; normal service and MCP consumers cannot mint authority. Exactly one operation can advance one case version.
-- A five-view Streamlit command center, CLI, 21-scenario deterministic red-team evaluator, 96-case six-configuration retrieval ablation, 24-case two-profile orchestration comparison, seven self-contained teaching notebooks, and ten reproducibly rendered diagrams. The pinned integrated report records 21/21 safety scenarios passing, fusion Recall@5 delta `+0.005681818181818121`, rerank nDCG@5 delta `+0.005266955662502459`, and zero deterministic orchestration quality/tool-call uplift. Optional live Deep Agents is `not_run_missing_credentials` and excluded from offline gates; hashes and scope are in [Verification](docs/VERIFICATION.md).
+- A five-view Streamlit command center, CLI, 21-scenario deterministic red-team evaluator, 96-case six-configuration retrieval ablation, 24-case two-profile orchestration comparison, seven self-contained teaching notebooks, and eleven reproducibly rendered technical diagrams. The pinned integrated report records 21/21 safety scenarios passing, fusion Recall@5 delta `+0.005681818181818121`, rerank nDCG@5 delta `+0.005266955662502459`, and zero deterministic orchestration quality/tool-call uplift. The committed live evaluation status is `not_run_missing_credentials`; live metrics remain unavailable until a real-provider smoke and measured run; hashes and scope are in [Verification](docs/VERIFICATION.md).
 
 ## Honest data boundary
 
@@ -36,8 +36,14 @@ Prerequisites: Python 3.12, `uv`, Node 24.15.0, and npm 11.12.1.
 make setup
 make data-validate
 make demo
-make ui
+make ui-openai
 ```
+
+For live setup, create a repository-local ignored `.env` using [the exact demo preflight](docs/DEMO_WALKTHROUGH.md#preflight): set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, and your private `OPENAI_API_KEY`. Do not overwrite an existing `.env`. The header must show `Reasoning mode: OpenAI · <model>` and `ready`; readiness validates configuration, not provider access.
+
+Bounded sparse+dense fusion, reranking, and policy-based retrieval critique/rewrite provide context → OpenAI LLM `write_todos` planning → Deep Agents supervisor → four sequential context-bound LLM specialists → safe typed claims → independent source verifier → HITL control plane.
+
+![Live reasoning and independent authority](docs/images/02_system_architecture.png)
 
 Run `make help` to list the complete project interface. The Streamlit app defaults to the durable SQLite-backed runtime and direct MCP gateway. `RECALL_NUMBER`, `PORT`, and `RUNTIME_DIR` are configurable, for example `make ui PORT=8765 RUNTIME_DIR=.recording-runtime`.
 
@@ -46,10 +52,7 @@ suite, 96-case retrieval ablation, and 24-case orchestration comparison, then at
 validates their digest-bound combined scorecard. Use `make eval-fast` for artifact validation plus
 stable metric smoke tests, or `make eval-summary` to validate the existing scorecard without
 regeneration. The legacy `uv run recallops eval --report data/evals/report.json` command remains the
-safety-only summary; `uv run recallops eval-scorecard` is the distinct combined summary. Optional
-live orchestration requires the explicit `make eval-model LIVE_MODEL_ADAPTER=module:attribute`
-opt-in and never contributes to the offline pass/fail verdict. `eval-model` imports a trusted local
-Python adapter; it is not a sandbox for untrusted modules, and an API key by itself enables nothing.
+safety-only summary; `uv run recallops eval-scorecard` is the distinct combined summary. The additional live lane uses `make eval-model` with the same built-in OpenAI provider, context binding, sealed reads, and independent verifier as the UI. It records provider/model and prompt digests, duration, delegation/tool metrics, and usage where available; it never changes the deterministic pass/fail verdict. `LIVE_MODEL_ADAPTER=module:attribute` is an optional trusted local override, not a prerequisite.
 
 To demonstrate actual stdio MCP subprocesses:
 
@@ -63,7 +66,7 @@ Optional live public lookup is deliberately narrow:
 RECALLOPS_SOURCE_MODE=live uv run streamlit run src/recallops/ui/app.py
 ```
 
-The durable graph itself uses the pinned snapshot for repeatable reasoning and evaluation. No API key is required. See [Operations](docs/OPERATIONS.md) for validation, evaluator, MCP, notebook, and security commands.
+The durable graph uses the pinned snapshot for repeatable evidence. Live reasoning requires OpenAI credentials; `RECALLOPS_MODEL_MODE=deterministic make ui` and `make demo` provide the explicitly labelled credential-free lane. See [Operations](docs/OPERATIONS.md) for validation, evaluator, MCP, notebook, and security commands.
 
 GitHub Actions uses immutable action SHAs, disables persisted checkout credentials, and runs the
 same credential-free core contract through `make ci`: locked installation, data and artifact

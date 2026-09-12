@@ -2,34 +2,64 @@
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)
 
-This script is derived from [`demo_contract.json`](demo_contract.json) and the implemented durable runtime/five-view UI. The [five-minute story](images/recallops-five-minute-demo.png) is the presentation overview; the [system architecture](images/recallops-system-architecture.png), reproducible [demo-story diagram](images/07_demo_story.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) provide progressively deeper proof. The timed table below is the exact 4:55 click sequence. Use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) for a one-slide orientation before the timed product walkthrough.
+This script is derived from [`demo_contract.json`](demo_contract.json) and the implemented durable runtime/five-view UI. The [five-minute story](images/recallops-five-minute-demo.png) is the presentation overview; the [system architecture](images/recallops-system-architecture.png), reproducible [demo-story diagram](images/07_demo_story.svg), and [evaluation architecture](images/10_evaluation_architecture.svg) provide progressively deeper proof. The timed table below is a 4:55 presentation sequence after rehearsal. Live latency is variable: pause the presentation clock while **running**, or pre-run the investigation in the same durable case and disclose that the recorded trace is a replay. Never promise completion within a fixed provider latency. Use the [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.svg), and [domain evidence model](images/09_domain_evidence_model.svg) for a one-slide orientation before the timed product walkthrough.
 
 ## Preflight
 
-Start from a clean shell in the repository root:
+Prerequisites: Python 3.12, `uv`, Node 24.15.0, npm 11.12.1, and an OpenAI account/model with tool-calling access. Live calls incur provider usage. Work in the repository root; keep credentials out of recordings.
+
+If `.env` does not exist, copy `.env.example` to `.env` using your editor. If it exists, edit only the following fields in place. Supply your real key privately and the exact model identifier available to your account; the angle-bracket values below are placeholders, not runnable credentials.
+
+```dotenv
+RECALLOPS_MODEL_MODE=openai
+OPENAI_API_KEY=<enter-your-key-privately>
+OPENAI_MODEL=<your-tool-calling-model-id>
+RECALLOPS_SOURCE_MODE=snapshot
+RECALLOPS_UI_MODE=durable
+LIVE_MODEL_ADAPTER=
+```
+
+`.env` is Git-ignored. Never paste its contents into a report, screenshot or terminal recording. Process environment values take precedence, so clear any stale overrides before launch. `OPENAI_EMBEDDING_MODEL` is not needed for the local LSA retrieval lane.
+
+Run:
 
 ```bash
 uv sync --locked --all-groups
 uv run recallops data-validate
 uv run recallops demo --recall-number H-1230-2026
 uv run recallops eval-scorecard --scorecard data/evals/scorecard.json
-uv run streamlit run src/recallops/ui/app.py
+make ui-openai
 ```
 
 For the recorded run, launch Streamlit against a fresh explicit runtime directory so an earlier rehearsal cannot supply stale case state:
 
 ```bash
 RECALLOPS_DEMO_DIR="$(mktemp -d /tmp/recallops-demo.XXXXXX)"
-RECALLOPS_RUNTIME_DIR="$RECALLOPS_DEMO_DIR" uv run streamlit run src/recallops/ui/app.py
+make ui-openai RUNTIME_DIR="$RECALLOPS_DEMO_DIR"
 ```
 
 For the MCP protocol version of the UI, replace the last command with:
 
 ```bash
-RECALLOPS_MCP_TRANSPORT=stdio uv run streamlit run src/recallops/ui/app.py
+RECALLOPS_MCP_TRANSPORT=stdio make ui-openai
 ```
 
 Use durable mode, not the UI fixture mode. Confirm the browser opens on **Command Center** with no existing case. Keep the terminal available for the short CLI proof, but record the UI as the primary walkthrough.
+
+Before opening the case, confirm **Reasoning mode: OpenAI · <model>** and status **ready**. Readiness proves configuration only; it does not prove a provider request succeeded. After investigation, require **completed**, all four specialists and accepted verification before describing a successful live run. **running**, **failed**, and explicit deterministic fallback are different outcomes.
+
+![Live architecture](images/02_system_architecture.png)
+
+## Model proof checklist
+
+1. In **Investigation**, run `H-1230-2026` and show **Agentic RAG retrieval trace**: official/synthetic citation origins, sparse+dense fusion, rerank, bounded policy critique/rewrite, and the stop reason. The retrieval critic is policy-based, not an LLM.
+2. Show **Reasoning run → Live plan**. It is the safe role projection of the observed LLM `write_todos` call, not stored plan prose or hidden reasoning.
+3. Show four sequential LLM roles: `recall-intelligence` → `product-lot-matching` → `traceability-reconciliation` → `containment-communications`. A downstream role receives case/scope/RAG context and validated prerequisite claims only after the previous typed result succeeds. Containment has no MCP read tools; it consumes those claims.
+4. Show **Live model and tool-call trail**: read-only MCP calls such as `get_recall`, `match_lots`, `trace_forward` and `reconcile_units`; there is no Operations tool. The sanitized summary and token usage appear only when returned by the provider. Unavailable usage is not zero.
+5. Explain safe typed claims: exact source identifiers/quantities, bounded digests, read receipts and no-execution declarations. The independent source verifier re-reads source records and compares complete evidence before the durable case can gain actionable scope. Display wording/action IDs are application-owned. Private raw prompts, raw model messages and chain-of-thought are never persisted or shown.
+6. Only accepted verification reaches **Human Review**. Then demonstrate both HITL gates, simulated receipts and blocked closure below.
+
+Live metrics remain unavailable until the real-provider smoke and measured evaluation are recorded. This runbook describes expected observations; it is not a claim that such a run already passed.
 
 ## Failure-recovery rehearsal
 
@@ -49,10 +79,12 @@ The decision vocabulary is exactly `approve`, `edit`, `reject`, and `escalate`; 
 
 ## Timed script
 
+The evaluation quotation is the pinned historical offline report narration from `demo_contract.json`; “credentials were missing” describes that committed report only. It says nothing about the current live UI run. Introduce it as the offline baseline and show the additional live lane separately below.
+
 | Time | Click/show | Say |
 |---|---|---|
-| 00:00 | In **Command Center**, keep `H-1230-2026` in **Recall number** and click **Open case**. Point to the official and synthetic badges. | “This is a real openFDA enforcement record and a separate fictional Northstar digital twin. The public notice does not prove retailer involvement. There is no You.com or general web search; the default path is frozen and checksummed.” |
-| 00:35 | Open **Investigation**, click **Run investigation**, then show the retrieval trace, plan-driven sequential specialist rows, critic, match classifications, and synthetic lineage. | “LangGraph owns the durable state. Agentic RAG plans a source route, combines BM25 sparse and local LSA dense retrieval with RRF and reranking, critiques coverage, and stops within two hops/four queries/eight reads. The validated task order drives a conditional dispatcher one specialist at a time; each completion advances the durable cursor, and the independent verifier runs only after all four outputs exist. This default path is sequential, not parallel fan-out.” |
+| 00:00 | Confirm **Reasoning mode** is OpenAI and **ready**. In **Command Center**, keep `H-1230-2026` in **Recall number** and click **Open case**. Point to the official and synthetic badges. | “This is a real openFDA enforcement record and a separate fictional Northstar digital twin. The public notice does not prove retailer involvement. There is no You.com or general web search; the default path is frozen and checksummed.” |
+| 00:35 | Open **Investigation**, click **Run investigation**, then show the retrieval trace, **Live plan**, four sequential LLM specialists, **Live model and tool-call trail**, accepted verifier, match classifications, and synthetic lineage. | “Bounded retrieval provides context. OpenAI writes the plan and the Deep Agents supervisor delegates to four LLM specialists in order. Each receives validated prior claims and sealed read capabilities. Safe typed claims cross into the durable graph; an independent source verifier re-reads the evidence before review. This completed run shows actual model and tool activity.” |
 | 01:20 | Open **Reconciliation**. Point to the exact equation, `LOT-EXACT-170` gap, ambiguous lot, and evidence links. | “The model cannot explain away a missing unit. Structured trace and reconciliation stay authoritative: received equals on-hand, quarantined, sold, returned, disposed, plus unaccounted. Fifty exact-lot units and ambiguity remain visible closure blockers.” |
 | 02:00 | Open **Human Review**. Show **Review required**, action `create_case`, case version 0, digest, sources, gaps, and remaining actions. Confirm **Decision**, **Actor**, and **Justification** have the copy/paste values. | “The first interrupt is one exact proposal at one exact version. Approval is not execution. Edit returns through verification; Reject writes nothing; Escalate stops safely.” |
 | 02:35 | Click **Approve**. Explicitly show that no receipt appeared and that a separate execution confirmation is pending. Then click **Simulate approved actions** and show **Simulated action recorded**, action `create_case`, and the v0→v1 receipt. | “Approve recorded zero writes. This second confirmation lets only the approved graph node call Operations MCP once. The receipt binds actor, justification, action digest, idempotency key, and version.” |
@@ -82,9 +114,52 @@ Do not replace the blocked flagship with a happy path. If a reviewer asks whethe
 |---|---|
 | Why not use You.com/web search? | General search adds nondeterministic/untrusted critical-path data. RecallOps uses an allowlisted openFDA lookup plus a frozen snapshot and committed FDA/GS1 references. |
 | Is LSA really dense retrieval? | Yes: TF-IDF vectors are projected into a local 64-dimensional latent semantic space. It is deliberately called local LSA, not neural embeddings. |
-| Is Deep Agents actually present? | The repository builds a real fixed-subagent Deep Agents graph, but the committed live comparison status is `not_run_missing_credentials` and excluded from offline gates. The default durable workflow uses the deterministic plan; agents never receive Operations tools. |
+| Is Deep Agents actually present? | In OpenAI mode the durable workflow invokes the real `write_todos` supervisor and four sequential LLM specialists. Inspect the current run’s plan, trail, provider status and verifier. The committed evaluation report is separately `not_run_missing_credentials`; agents never receive Operations tools. |
 | Did multi-agent orchestration outperform the baseline? | Not in this deterministic 24-case corpus: evidence coverage, task success, duplicate work, and total tool-call deltas are zero. The profiles make delegation observable; the report does not claim unsupported uplift. |
 | Why two approvals? | The first approves the evidence-bound action. The second confirms execution with the persisted execution ID/key. This prevents “approve” from silently becoming a write. |
 | What if the process restarts? | Reopen the same checkpoint and Operations database paths. The same thread/checkpoint/interrupt resumes; completed reasoning is not rerun. |
 | Are Northstar holds real? | No. Every operational record/receipt is **SYNTHETIC — ACADEMIC DEMO** and status `simulated`. |
 | Is internal close FDA termination? | No. FDA termination is an external regulatory decision; RecallOps only simulates closing a fictional retailer case. |
+
+## Two evaluation lanes
+
+Run the reproducible lane before recording:
+
+```bash
+make eval
+make eval-summary
+```
+
+Run the additional measured live lane separately, with the same local OpenAI setup:
+
+```bash
+make eval-model
+```
+
+This uses the built-in shared provider and source verifier; no custom adapter is required. Show provider, model/prompt digests, duration, task/delegation/tool metrics, verifier outcome and tokens only when present in the verified report. Never narrate deterministic fixture results as model success or invent cost/latency. The UI’s current investigation trace and the benchmark report are separate artifacts. The live benchmark is excluded from deterministic pass/fail gates; inspect its own status even if the offline gate passes. The command regenerates the orchestration report and combined scorecard, so retain their exact resulting digests when reporting a measured run.
+
+## Semantic stop and Provider fallback
+
+![Separate resilience behavior](images/11_live_resilience.png)
+
+**Semantic stop:** malformed, missing, false, incomplete, contradictory or unsupported claims stop before review. No fallback and zero writes. Show the sanitized violation codes and inspect source evidence; do not bypass the verifier for a presentation.
+
+**Provider fallback:** an authentication, timeout, rate-limit, transport or execution-budget failure may discard partial claims and enter explicitly labelled deterministic fallback. Show the failure category and fallback label; never say the LLM completed. Both HITL gates remain required. Rehearse failure fixtures separately; they demonstrate controls, not a real provider outage.
+
+## Reset
+
+Stop Streamlit. Preserve the prior runtime directory with its paired checkpoint/Operations databases for audit. Create a fresh directory using the preflight `mktemp` command and relaunch `make ui-openai RUNTIME_DIR="$RECALLOPS_DEMO_DIR"`. This resets the rehearsal without deleting data. To resume a pending human review, reopen the original directory instead. A cancelled live run left at its durable started marker is not automatically retried; use a fresh runtime for a fresh investigation.
+
+## Troubleshooting
+
+| Observation | Next step |
+|---|---|
+| Startup rejects key/model/mode | Privately correct the ignored `.env`; check stale process overrides; never print secrets |
+| Ready, then authentication/rate-limit/timeout failure | Ready is configuration-only; inspect the sanitized category, fix provider access, then rehearse in a fresh runtime |
+| Semantic verification failure | Preserve evidence and violation codes; do not request an approval or silently take fallback |
+| No live plan/tool trail | Check OpenAI mode and actual completed status; a deterministic fixture or fallback is not live proof |
+| Missing tokens or live benchmark metrics | State unavailable; run `make eval-model` separately when authorized and inspect its own status |
+| Review is stale / wrong version | Reload the current packet and give fresh review; do not reuse an old digest or key |
+| Lost write response | Use **Recover recorded outcome (same key)**; show the single logical receipt |
+| Port already in use | Launch with `make ui-openai PORT=8765` |
+| Closure remains blocked | Expected for flagship ambiguity and the quantity gap; show blockers and keep open |

@@ -1,0 +1,19 @@
+flowchart TB
+  classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
+  classDef human fill:#ffedd5,stroke:#c2410c,color:#111827
+  RUN["OpenAI live investigation<br/>isolated model execution • bounded read-only work"]:::control
+  KIND{"Observed outcome"}:::control
+  VERIFIED["Complete safe claims + source verification<br/>normal live route to human review"]:::safe
+  SEMANTIC["Semantic stop<br/>malformed / false / incomplete / unsupported<br/>source or binding mismatch"]:::human
+  STOP["Escalated • zero writes<br/>no review • no fallback"]:::human
+  PROVIDER["Provider fallback<br/>authentication / timeout / rate limit<br/>transport / execution-budget failure"]:::human
+  DISCARD["discard partial claims<br/>explicitly labelled deterministic fallback<br/>never report live success"]:::human
+  CONTROL["Deterministic verification + HITL controls<br/>review → execution confirmation<br/>one simulated write / version"]:::control
+  CANCEL["Interrupted durable started marker<br/>no automatic retry<br/>preserve stores; fresh runtime for rehearsal"]:::human
+  RUN --> KIND
+  KIND --> VERIFIED
+  KIND --> SEMANTIC --> STOP
+  KIND --> PROVIDER --> DISCARD --> CONTROL
+  KIND --> CANCEL

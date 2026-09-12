@@ -200,6 +200,21 @@ def test_notebooks_have_executable_code_and_no_empty_placeholder_cells() -> None
         assert all(cell.source.strip() for cell in code_cells), name
 
 
+def test_notebooks_explain_the_live_authority_boundary_without_claiming_model_execution() -> None:
+    for name in EXPECTED:
+        source = _sources(nbformat.read(str(NOTEBOOKS / name), as_version=4))
+        for term in (
+            "OpenAI",
+            "write_todos",
+            "safe typed claims",
+            "independent source verifier",
+            "make ui-openai",
+            "make eval-model",
+            "No live model was called",
+        ):
+            assert term in source, (name, term)
+
+
 def test_all_notebooks_execute_offline_and_emit_markers() -> None:
     for name in EXPECTED:
         notebook = nbformat.read(str(NOTEBOOKS / name), as_version=4)

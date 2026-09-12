@@ -30,12 +30,14 @@ No You.com or general web search is used. A public recall does not establish tha
 
 - **Control:** LangGraph `StateGraph`, immutable public results, JSON-only typed state, conditional routes, `interrupt()`, `Command(resume=...)`, SQLite checkpointing.
 - **Retrieval:** BM25 sparse + local TF-IDF/SVD LSA dense → reciprocal-rank fusion → deterministic rerank → evidence critic; source routing and 2-hop/4-query/8-read bounds.
-- **Agents:** deterministic planner plus conditional task dispatcher; a plan-driven sequential pipeline of Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, and Containment; independent verifier after exact completion; optional real Deep Agents supervisor with `write_todos` and no Operations tools.
+- **Agents:** OpenAI `write_todos` planning and the Deep Agents supervisor; four sequential context-bound LLM specialists for Regulatory Intake, Product & Lot Matching, Traceability/Reconciliation, and Containment. Safe typed claims and sealed read receipts pass an independent source verifier before action generation; agents have no Operations tools.
 - **MCP:** Recall Registry, Traceability, and Recall Operations FastMCP servers; direct and stdio parity.
 - **Middleware:** context, structured output, retry, circuit breaker, budgets, provenance, masking, approval, version, idempotency, receipt validation, progress watchdog, telemetry, checkpoint-owner/head/request fencing.
-- **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, ten source-controlled diagrams.
+- **Product:** five Streamlit views, CLI, failure injection, 21-scenario safety evaluator, 96-case retrieval ablation, 24-case orchestration comparison, seven notebooks, eleven source-controlled technical diagrams.
 
 There is no A2A. LangGraph coordinates all agents; MCP is the vertical data/action interface.
+
+For the live flagship, follow the private `.env` setup and `make ui-openai` proof checklist in [the demo runbook](DEMO_WALKTHROUGH.md). The historical offline narration below does not assert a current provider result.
 
 ## Human and action contract
 
@@ -59,7 +61,7 @@ The [evaluation architecture](images/10_evaluation_architecture.svg) keeps three
 
 The 96-case retrieval suite compares six configurations: `sparse_bm25`, `dense_lsa`, `naive_hybrid`, `rrf_fusion`, `rrf_plus_rerank`, and `agentic_rag`. The measured fusion Recall@5 delta is `+0.005681818181818121`; the rerank nDCG@5 delta is `+0.005266955662502459`; rewrite records zero wins, zero losses, and eight unchanged cases. These are in-sample synthetic/offline observations, not causal or production uplift.
 
-The 24-case orchestration suite compares `bounded_single_agent` with `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero; the benchmark therefore makes no unsupported multi-agent uplift claim. Optional live Deep Agents remains `not_run_missing_credentials`, model judging is `not_used`, and both are excluded from deterministic offline gates. The digest is a consistency check, not authentication or a digital signature. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
+The 24-case orchestration suite compares `bounded_single_agent` with `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are all zero; the benchmark therefore makes no unsupported multi-agent uplift claim. The committed live benchmark remains `not_run_missing_credentials`, and model judging is `not_used`; these historical statuses are separate from the current UI run. `make eval-model` uses the shared built-in OpenAI service and independent source verifier. Live metrics remain unavailable until actually measured and are excluded from deterministic offline gates. The digest is a consistency check, not authentication or a digital signature. Artifact hashes and execution provenance live in [Verification](VERIFICATION.md).
 
 ## Vibe-coding prompts and briefs
 

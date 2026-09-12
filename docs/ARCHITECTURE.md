@@ -26,7 +26,8 @@ No agent, retrieved document, UI callback, or MCP transport can skip those layer
 |---|---|---|
 | Data | Frozen openFDA snapshot, five policy references, seeded Northstar twin, manifests/checksums | Defines evidence and provenance; never authorizes a write |
 | Retrieval | BM25, TF-IDF/SVD LSA, RRF, deterministic rerank, source routing, evidence critic, bounded rewrite | Advisory cited context only |
-| Reasoning | Task-driven sequential dispatcher, four specialists, optional Deep Agents factory, independent verifier | Produces typed facts, assessments, and proposals |
+| Reasoning | OpenAI LLM, `write_todos`, Deep Agents supervisor, four sequential context-bound specialists | Produces unverified safe typed claims; no Operations access |
+| Verification | Independent source resolver, strict claim and receipt comparison | Releases source-owned actionable state only after acceptance |
 | Control | LangGraph `StateGraph`, conditional edges, JSON-only state, `interrupt()`, `Command(resume=...)` | Owns lifecycle, side-effect order, and human pauses |
 | Tool | Three FastMCP servers; direct and stdio gateways | Exposes narrow typed reads and simulated writes |
 | Durable state | LangGraph checkpoint SQLite plus Operations SQLite | Persists graph state, case versions, approvals, holds, dispositions, tasks, acknowledgements, receipts, grants, and fences |
@@ -41,25 +42,35 @@ The local corpus has 1,175 documents and a pinned corpus digest. Each query runs
 2. Local TF-IDF plus 64-dimensional truncated-SVD LSA provides dense semantic similarity without an embedding API.
 3. Reciprocal-rank fusion combines sparse and dense ranks.
 4. A deterministic reranker rewards identifier/term/source/intent matches and retains component explanations.
-5. A source-aware critic checks whether the returned official/synthetic evidence covers identifiers and domain concepts and whether advisory claims contradict supplied authoritative facts.
+5. A policy-based source-aware critic checks whether the returned official/synthetic evidence covers identifiers and domain concepts and whether advisory claims contradict supplied authoritative facts.
 6. If needed, the retriever performs one bounded rewrite and stops after at most two hops, four queries, or eight reads. Its JSON state can be serialized at a read boundary.
 
 The agentic retrieval graph has two sealed capabilities: regulatory search routes to official evidence on Recall Registry MCP, and operational search routes to synthetic evidence on Traceability MCP. It has no Operations capability. The main workflow exposes RAG citations and gaps in the review packet but keeps structured predicate matching, trace/reconciliation, and Operations closure gates authoritative.
 
 ## Planning and agents
 
-The credential-free runtime calls a deterministic bounded planner, validates its four-role task graph, and stores a cursor, completed-task ledger, and specialist execution order in the checkpoint. A LangGraph conditional dispatcher selects the next role from the ordered plan; after that role completes, control returns to the dispatcher. This is a **plan-driven sequential specialist pipeline**, not parallel fan-out. Dependency-valid reordering changes execution order; missing, duplicate, unknown, disallowed, cyclic, dependency-invalid, and over-budget plans escalate before specialist work.
+Bounded sparse+dense fusion, reranking, and policy-based retrieval critique/rewrite provide context → OpenAI LLM `write_todos` planning → Deep Agents supervisor → four sequential context-bound LLM specialists → safe typed claims → independent source verifier → HITL control plane.
 
-The default task order is:
+The live route is required evidence-producing work when `RECALLOPS_MODEL_MODE=openai`. The OpenAI factory builds the same ChatOpenAI-backed service used by the UI and `make eval-model`. The model writes the four-role plan using `write_todos` before the first delegation. Middleware requires exactly one successful typed task result before the next role, enforces order and budgets, and replaces model-authored delegation descriptions with application-owned case, scope, bounded RAG citations, and validated prerequisite claims.
 
-1. Regulatory Intake extracts the recall predicate and citations.
-2. Product & Lot Matching classifies exact, probable, ambiguous, and rejected candidates.
-3. Traceability/Reconciliation follows forward/backward lineage, inventory, and unit evidence.
-4. Containment drafts a scoped proposal without executing it.
+| Order | LLM role | Sealed read capabilities |
+|---|---|---|
+| 1 | `recall-intelligence` — Regulatory Intake | `search_recalls`, `get_recall`, `get_product_metadata` |
+| 2 | `product-lot-matching` | `find_candidate_products`, `match_lots` |
+| 3 | `traceability-reconciliation` | `trace_forward`, `trace_backward`, `get_inventory`, `get_sales`, `reconcile_units` |
+| 4 | `containment-communications` | No MCP tools; validated prerequisite context only |
 
-Product & Lot Matching and Regulatory Intake are independently schedulable because the matching specialist can acquire the same read-only official predicate context; Traceability/Reconciliation depends on matching, and Containment depends on traceability. The independent verifier sits outside the specialist context and rechecks the accepted plan, exact completion prefix/order, all four typed outputs, scope overlap, facility coverage, and authoritative-control ownership. A failed verifier routes directly to an escalated terminal state, and action preparation/execution independently require `verification.passed == true`. The repository also builds a real Deep Agents graph with `write_todos`, fixed subagent registry, context quarantine, and read-only tools. It is an optional live reasoning component and is not invoked by the default durable workflow; it cannot see Operations tools.
+The supervisor performs structured synthesis. Original JSON is checked before SDK coercion; duplicate keys, unknown fields, missing fields and false claims stop closed. Safe typed claims preserve exact facts, quantities and source IDs; unknown IDs and text equality fields become digests. Arbitrary rationales, plan prose, communication bodies and model-written action IDs are discarded. Action IDs and display wording are application-owned.
 
-![Orchestration and action loop](images/03_orchestration.svg)
+The independent source verifier re-reads pinned records and recomputes read receipts, candidate coverage, classifications, lineage, inventory, reconciliation, targets, and no-execution claims. Schema-valid but unsupported, false, incomplete or contradictory results escalate with no action review. A successful live run does not run deterministic specialists as substitutes.
+
+![Live architecture and authority](images/02_system_architecture.png)
+
+![Orchestration and action loop](images/03_orchestration.png)
+
+## Live isolation and privacy
+
+Durable retrieval runs first. The inner supervisor runs in a fresh asynchronous context with no inherited callbacks, cache, store or checkpointer. It has no Operations MCP tools. Only safe claims, sealed read receipts and a sanitized execution summary cross the checkpoint boundary. Raw messages, raw prompts, provider exceptions and chain-of-thought are never stored or displayed. The outer LangGraph owns checkpoint/version binding, interrupts, execution grants, receipts and closure. Its independent verifier gates all action generation.
 
 ## Read-only evaluation plane
 
@@ -68,7 +79,7 @@ The [evaluation architecture](images/10_evaluation_architecture.svg) follows one
 - **Safety:** R01–R21 deterministically probe approval, idempotency, recovery, versioning, closure, transport, and failure controls; 21/21 currently pass with all unsafe counters at zero.
 - **Retrieval:** the same 96 labelled cases run through BM25, LSA, naive hybrid, RRF, RRF plus rerank, and agentic RAG. Measured fusion Recall@5 delta is `+0.005681818181818121`; measured rerank nDCG@5 delta is `+0.005266955662502459`; rewrite is unchanged on all eight eligible cases.
 - **Orchestration:** the same 24 investigations run through `bounded_single_agent` and `fixed_specialists`. Evidence coverage, task success, duplicate-work ratio, and total tool-call deltas are zero, so the architecture makes no unsupported uplift claim.
-- **Optional advice:** live Deep Agents is `not_run_missing_credentials` and model judging is `not_used`; both are non-authoritative and excluded from deterministic gates.
+- **Additional live lane:** `make eval-model` uses the same OpenAI service and source verifier as the product. The committed report remains `not_run_missing_credentials`; no real-provider result is asserted here. Live task/tool/usage measurements and optional presentation judging are excluded from deterministic scorecard gates. This evaluation boundary does not make the product’s verified live evidence advisory.
 
 These evaluation records are authored, labelled, digest-bound offline audit data—not official recall evidence. Their SHA-256 digests detect inconsistency against pinned artifacts; they are not authentication or digital signatures.
 
@@ -76,7 +87,7 @@ These evaluation records are authored, labelled, digest-bound offline audit data
 
 The investigation sequence is:
 
-`START → intake → retrieve_context → plan → dispatch_specialist → selected specialist → record completion/advance cursor → dispatch_specialist … → verify → prepare_action_review → action_review`
+`START → intake → retrieve_context → started marker → isolated live investigation → safe claim projection → independent source verification → prepare_action_review → action_review`
 
 After that, the graph repeats a versioned action loop:
 
@@ -103,7 +114,7 @@ Recall Registry and Traceability are read-only. Recall Operations is simulated w
 
 ## Network boundary
 
-The default graph, retrieval corpus, evaluator, notebooks, and demo work offline. No You.com or general web search is used. The only optional live public-data call is the hard-coded openFDA Food Enforcement endpoint on `api.fda.gov`; it has a bounded timeout and labelled frozen fallback. Optional Deep Agents model invocation is separate from public-data search and is not required for the product walkthrough.
+The OpenAI flagship sends bounded case context to the configured hosted reasoning model. Retrieval evidence stays pinned and local; it uses no You.com or general web search. The optional public-data lookup is limited to the hard-coded openFDA Food Enforcement endpoint on `api.fda.gov` and is separate from model access. The credential-free CLI, notebooks and deterministic evaluation lane work offline. See [Operations](OPERATIONS.md#live-resilience) for the separately labelled resilience behavior.
 
 ## Trust boundaries and non-goals
 

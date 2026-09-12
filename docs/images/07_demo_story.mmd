@@ -7,7 +7,7 @@ flowchart TB
   classDef block fill:#f3f4f6,stroke:#6b7280,color:#111827
 
   A["00:00 Command Center<br/>Open case • Recall number • H-1230-2026<br/>official + SYNTHETIC — ACADEMIC DEMO"]:::step
-  B["00:35 Investigation<br/>Run investigation<br/>Agentic RAG + todo-driven sequential specialists<br/>one role at a time → independent critic"]:::agent
+  B["00:35 Investigation<br/>Run investigation<br/>OpenAI write_todos + Deep Agents supervisor<br/>four context-bound LLM specialists<br/>safe typed claims → independent source verifier"]:::agent
   C["01:20 Reconciliation<br/>received = dispositions + unaccounted<br/>gaps stay visible"]:::step
   D["02:00 Human Review<br/>Review required • create_case at v0<br/>Decision • Actor • Justification<br/>Food-safety manager<br/>Approve • Edit • Reject • Escalate"]:::human
   E["02:35 Approve writes zero<br/>execution confirm → Simulate approved actions<br/>create_case v0→v1 • Simulated action recorded"]:::action
@@ -15,7 +15,7 @@ flowchart TB
   G["03:40 Approve + execution confirm<br/>Simulate approved actions<br/>apply_inventory_hold v1→v2 • Simulated action recorded"]:::action
   H["04:00 Audit & Evaluation<br/>Safety evaluation • 21 scenarios / R01–R21<br/>same-key recovery"]:::safe
   J["Retrieval ablation<br/>96 cases • six configurations<br/>fusion Δ Recall@5 +0.00568 • rerank Δ nDCG@5 +0.00527<br/>rewrite 0 win • 0 loss • 8 unchanged"]:::agent
-  K["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists<br/>quality + tool-call Δ = 0 • no assumed uplift<br/>optional live: not_run_missing_credentials • advisory"]:::safe
+  K["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists<br/>quality + tool-call Δ = 0 • no assumed uplift<br/>committed live: not_run_missing_credentials<br/>make eval-model • additional measured lane"]:::safe
   I["04:45 Request closure<br/>finish by 04:55<br/>Open — closure blocked"]:::human
 
   A --> B --> C --> D --> E --> F --> G --> H --> J --> K --> I

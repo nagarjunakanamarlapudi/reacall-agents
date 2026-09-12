@@ -1,47 +1,27 @@
 flowchart TB
-  classDef statefill fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef agent fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef action fill:#ffedd5,stroke:#ea580c,color:#111827
-
-  START["START"]:::statefill --> I["Intake"]:::statefill --> RAG["Agentic RAG<br/>plan → source route → BM25 + LSA<br/>RRF → rerank → critic → bounded rewrite"]:::agent --> P["Plan"]:::statefill --> SG["StateGraph<br/>routes and typed updates"]:::statefill
-
-  SG --> DS["Deterministic default planner<br/>credential-free validated four-role todo plan"]:::statefill
-  SG --> DA["Optional live Deep Agent supervisor<br/>write_todos + bounded delegation"]:::agent
-  DS --> CURSOR{"Conditional todo dispatcher<br/>next role from plan.todos<br/>one role at a time"}:::statefill
-  CURSOR --> RI["Regulatory Intake"]:::agent
-  CURSOR --> PM["Product & Lot Matching"]:::agent
-  CURSOR --> TR["Traceability / Reconciliation"]:::agent
-  CURSOR --> CO["Containment draft"]:::agent
-  RI --> ADV["Validate output • complete todo<br/>advance durable cursor"]:::statefill
-  PM --> ADV
-  TR --> ADV
-  CO --> ADV
-  ADV --> CURSOR
-  CURSOR -->|all four complete| VC["Independent Verification / Critic<br/>exact plan completion + outputs<br/>outside specialist context"]:::verify
-  DA -. separate optional live path .-> RI
-  DA -. separate optional live path .-> PM
-  DA -. separate optional live path .-> TR
-  DA -. separate optional live path .-> CO
-  BAD["Missing • duplicate • unknown • disallowed<br/>cyclic • dependency-invalid • over-budget"]:::human --> STOP["Fail closed / escalated<br/>zero Operations writes"]:::human
-  DS -. invalid plan .-> BAD
-  VC -. read-only typed events .-> TC["Typed trajectory capture<br/>routes • tools • citations<br/>no chain-of-thought"]:::statefill
-  DA -. optional live status<br/>advisory only .-> TC
-  TC --> OE["Orchestration comparison<br/>24 cases • bounded single agent vs fixed specialists"]:::verify
-  OE --> ER["Read-only evaluation report<br/>excluded from action authority"]:::verify
-  VC --> AR["Action review interrupt<br/>approve writes zero records"]:::human
-  AR --> EC["Execution confirmation interrupt"]:::human
-  EC --> W["Approved graph node<br/>exactly one Operations call"]:::action
-  W --> RCPT["Receipt + version increment<br/>approval invalidated"]:::verify
-  RCPT --> NEXT{"Next authoritative action?"}:::statefill
-  NEXT -->|first| C1["create_case v0→v1"]:::action
-  NEXT -->|second| C2["apply_inventory_hold v1→v2"]:::action
-  NEXT -->|then if eligible| LATER["record_disposition → create_facility_tasks<br/>→ repeated record_acknowledgment → close_case"]:::action
-  C1 --> AR
-  C2 --> AR
-  LATER --> AR
-  NEXT -->|ambiguity / unresolved gap| BLOCK["Open — closure blocked"]:::human
-  AR -->|edit| REVERIFY["Re-verify rationale-only edit"]:::verify --> AR
-  AR -->|reject| OPEN["Open"]:::human
-  AR -->|escalate| ESC["Escalated"]:::human
+  classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
+  classDef human fill:#ffedd5,stroke:#c2410c,color:#111827
+  RAG["Durable Agentic RAG<br/>bounded sparse+dense fusion / rerank<br/>policy-based critique / rewrite"]:::control
+  P["OpenAI LLM planning<br/>observed write_todos"]:::llm
+  DA["Deep Agent supervisor<br/>OpenAI • sequential task delegation"]:::llm
+  RI["1 • LLM Regulatory Intake<br/>recall-intelligence • sealed Registry reads"]:::llm
+  PM["2 • LLM Product / Lot Matching<br/>case / RAG / validated prior claims"]:::llm
+  TR["3 • LLM Traceability / Reconciliation<br/>sealed Traceability reads + prior claims"]:::llm
+  CO["4 • LLM Containment / Communications<br/>validated prior claims • no MCP tools"]:::llm
+  CLAIMS["Structured synthesis → safe typed claims<br/>all four complete • unverified projection"]:::control
+  VC["Independent Verification / Critic<br/>independent source verifier re-reads records<br/>accept exact evidence or stop before review"]:::safe
+  AR["Action review interrupt<br/>StateGraph control • approve writes zero"]:::human
+  EC["Execution confirmation interrupt<br/>exact action / version / digest"]:::human
+  W["Approved graph node → Operations MCP<br/>one simulated write / version"]:::control
+  RCPT["Receipt + version increment<br/>create_case v0→v1<br/>apply_inventory_hold v1→v2"]:::safe
+  NEXT["Fresh action review or closure gate<br/>Open — closure blocked for flagship"]:::control
+  RAG --> P --> DA --> RI --> PM --> TR --> CO --> CLAIMS --> VC --> AR --> EC --> W --> RCPT --> NEXT
+  NEXT -->|next eligible action| AR
+  VC -->|unsupported / incomplete| STOP["Semantic stop • zero writes"]:::human
+  TC["Typed trajectory capture<br/>detached safe events • no raw prompts"]:::control
+  OE["Orchestration comparison<br/>offline baseline + additional measured live lane"]:::control
+  ER["Read-only evaluation report<br/>excluded from action authority"]:::safe
+  TC --> OE --> ER
+  VC -. read-only typed events .-> TC

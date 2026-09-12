@@ -1,75 +1,29 @@
 flowchart TB
-  classDef official fill:#dbeafe,stroke:#2563eb,color:#111827
-  classDef synthetic fill:#ffedd5,stroke:#ea580c,color:#111827
-  classDef reason fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef verify fill:#dcfce7,stroke:#16a34a,color:#111827
-  classDef action fill:#ffedd5,stroke:#ea580c,color:#111827
-  classDef human fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef state fill:#f3f4f6,stroke:#6b7280,color:#111827
-
-  subgraph INPUTS["PROVENANCE-AWARE INPUTS"]
-    direction LR
-    O["official openFDA H-1230-2026<br/>snapshot or allowlisted api.fda.gov"]:::official
-    P["Five FDA / GS1 references<br/>paraphrased + checksummed"]:::official
-    S["Northstar Grocers<br/>SYNTHETIC — ACADEMIC DEMO"]:::synthetic
-  end
-
-  subgraph READS["READ-ONLY MCP + AGENTIC RETRIEVAL"]
-    direction LR
-    RR["Recall Registry MCP<br/>official evidence"]:::official
-    RAG["Agentic RAG<br/>BM25 + LSA → RRF → rerank<br/>critic • rewrite • hard budgets"]:::reason
-    TM["Traceability MCP<br/>synthetic evidence"]:::synthetic
-    RR --> RAG
-    TM --> RAG
-  end
-
-  subgraph CONTROL["LANGGRAPH CONTROL + REASONING"]
-    direction LR
-    G["LangGraph StateGraph<br/>JSON state • routes • interrupt/resume"]:::official
-    DP["Deterministic bounded planner<br/>validated four-role todo graph"]:::official
-    DA["Optional Deep Agent supervisor<br/>fixed read-only specialists"]:::reason
-    SP["Plan-driven sequential dispatcher<br/>one specialist per todo • durable cursor<br/>Intake • Match • Trace • Containment"]:::reason
-    VC["Independent Verification / Critic<br/>only after all four outputs<br/>structured controls authoritative"]:::verify
-    G --> DP --> SP --> VC
-    G -. optional live reasoning .-> DA --> SP
-  end
-
-  subgraph EVALUATION["READ-ONLY EVALUATION PLANE"]
-    direction LR
-    EV["Read-only evaluation plane<br/>typed traces + verified reports"]:::verify
-    SUITES["Safety • retrieval ablation<br/>orchestration comparison"]:::reason
-    SCORE["digest-bound scorecard<br/>verified before display"]:::state
+  classDef control fill:#dbeafe,stroke:#2563eb,color:#111827
+  classDef llm fill:#ede9fe,stroke:#7c3aed,color:#111827
+  classDef safe fill:#dcfce7,stroke:#15803d,color:#111827
+  classDef human fill:#ffedd5,stroke:#c2410c,color:#111827
+  O["Official openFDA + synthetic Northstar evidence<br/>H-1230-2026 • separate provenance"]:::control
+  RAG["Agentic RAG • BM25 + LSA<br/>sparse+dense fusion / rerank<br/>bounded policy critique / rewrite"]:::control
+  P["OpenAI LLM planning<br/>write_todos • fixed four-role plan"]:::llm
+  DA["Deep Agents supervisor<br/>OpenAI • one delegation at a time<br/>no inner checkpointer / raw-message persistence"]:::llm
+  SP["Four sequential context-bound LLM specialists<br/>Regulatory Intake → Product / Lot Matching<br/>→ Traceability / Reconciliation → Containment<br/>validated prerequisite claims • sealed read-only MCP"]:::llm
+  CLAIMS["Structured synthesis → safe typed claims<br/>unverified • bound to case / context / source<br/>no raw prose or model-owned action IDs"]:::control
+  VC["Independent source verifier<br/>re-read source records / recompute receipts<br/>complete claims + scope + targets + no execution"]:::safe
+  HR["Human action review<br/>LangGraph HITL control plane<br/>exact action + version + digest • approve writes zero"]:::human
+  EC["Execution confirmation<br/>one-use grant • approved graph node"]:::human
+  OM["Recall Operations MCP<br/>one simulated write / version<br/>receipt → fresh review or closure blocked"]:::control
+  O --> RAG --> P --> DA --> SP --> CLAIMS --> VC --> HR --> EC --> OM
+  VC -->|unsupported claims| STOP["Semantic stop • zero writes"]:::human
+  SAFE["No A2A • No direct agent writes<br/>LangGraph owns state / routes / approval / closure"]:::control
+  subgraph EVALUATION["SEPARATE READ-ONLY EVALUATION"]
+    EV["Read-only evaluation plane"]:::control
+    SUITES["Deterministic safety / retrieval / orchestration<br/>additional measured OpenAI lane"]:::control
+    SCORE["digest-bound scorecard<br/>live measurements excluded from offline gates"]:::safe
     EVALSAFE["No Operations MCP credentials<br/>No SQLite writes • no action authority"]:::human
     EV --> SUITES --> SCORE
     EVALSAFE --- EV
   end
-
-  subgraph CONSENT["DUAL HUMAN CONSENT + ONE WRITE"]
-    direction LR
-    HR["Human action review<br/>exact action + digest + version"]:::human
-    EC["Execution confirmation<br/>persisted execution ID + key"]:::human
-    GN["Approved graph node<br/>one write / version"]:::official
-    OM["Recall Operations MCP<br/>simulated writes only"]:::action
-    HR --> EC --> GN --> OM
-  end
-
-  subgraph DURABLE["DURABLE STATE + OUTCOME"]
-    direction LR
-    CP["Checkpoint SQLite<br/>owner UUID • checkpoint ID • request/head marker"]:::state
-    OP["Operations SQLite<br/>case/version • tasks • acks • receipts"]:::state
-    OUT["Fresh reviewed action<br/>or Close / Open — blocked / Escalate"]:::verify
-    CP -. exact head/request fence .- OP --> OUT
-  end
-
-  O --> RR
-  P --> RR
-  S --> TM
-  RAG --> G
-  RAG -. read-only retrieval report .-> EV
+  G["LangGraph control / detached traces"]:::control
   G -. read-only traces .-> EV
-  VC -. read-only verified trajectory .-> EV
-  VC --> HR
-  OM --> OP
-  G --> CP
-  SP -. "BLOCKED direct-write attempt" .-> X["X"]:::human
-  SAFE["No A2A • No direct agent writes<br/>No raw agent database access"]:::human --- G
+  RAG -. read-only retrieval report .-> EV
