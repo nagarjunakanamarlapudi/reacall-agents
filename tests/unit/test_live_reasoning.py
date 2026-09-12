@@ -313,3 +313,149 @@ async def test_unstructured_specialist_response_cannot_count_as_completion(monke
     assert summary.error_category == "invalid_response"
     assert summary.response_summary is None
     assert PRIVATE not in summary.model_dump_json()
+
+
+@pytest.mark.parametrize("debug, verbose", [(True, False), (False, True), (True, True)])
+async def test_global_console_settings_cannot_log_private_content(
+    monkeypatch, capsys, debug, verbose
+):
+    """Catches global debug/verbose console handlers leaking graph inputs or tool payloads."""
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+
+    live = live_module()
+    original = get_debug(), get_verbose()
+    set_debug(debug)
+    set_verbose(verbose)
+    try:
+        summary = await service(live, monkeypatch, script()).run(PRIVATE, transport="direct")
+        captured = capsys.readouterr()
+        assert summary.status == "completed"
+        assert PRIVATE not in captured.out + captured.err
+        assert (get_debug(), get_verbose()) == (debug, verbose)
+    finally:
+        set_debug(original[0])
+        set_verbose(original[1])
+
+
+async def test_overlapping_live_runs_keep_console_disabled_until_last_exit(monkeypatch, capsys):
+    """Catches an earlier run restoring global console logging during a second live run."""
+    import asyncio
+
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+
+    live = live_module()
+    second_started = asyncio.Event()
+    first_finished = asyncio.Event()
+
+    class OverlappingModel(ScriptedModel):
+        second: bool = False
+
+        async def _agenerate(self, *args, **kwargs):
+            if self.second:
+                second_started.set()
+                await first_finished.wait()
+            else:
+                await second_started.wait()
+            return await super()._agenerate(*args, **kwargs)
+
+    models = iter(
+        [
+            OverlappingModel(messages=iter(script())),
+            OverlappingModel(messages=iter(script()), second=True),
+        ]
+    )
+    monkeypatch.setattr(live, "build_chat_model", lambda settings: next(models))
+    runner = live.LiveReasoningService(LLMSettings(mode="openai", model="test-model"))
+    original = get_debug(), get_verbose()
+    set_debug(True)
+    set_verbose(True)
+    first = asyncio.create_task(runner.run(PRIVATE, transport="direct"))
+    second = asyncio.create_task(runner.run(PRIVATE, transport="direct"))
+    try:
+        first_summary = await asyncio.wait_for(first, timeout=10)
+        assert first_summary.status == "completed"
+        assert (get_debug(), get_verbose()) == (False, False)
+        first_finished.set()
+        second_summary = await asyncio.wait_for(second, timeout=10)
+        assert second_summary.status == "completed"
+        assert (
+            first_summary.read_tool_sequence
+            == second_summary.read_tool_sequence
+            == ["search_recalls"]
+        )
+        assert (get_debug(), get_verbose()) == (True, True)
+        captured = capsys.readouterr()
+        assert PRIVATE not in captured.out + captured.err
+    finally:
+        first_finished.set()
+        for task in (first, second):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        set_debug(original[0])
+        set_verbose(original[1])
+
+
+async def test_console_settings_restore_after_live_failure(monkeypatch, capsys):
+    """Catches leaving host logging disabled after provider construction fails."""
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+
+    live = live_module()
+
+    def fail(settings):
+        raise RuntimeError(PRIVATE)
+
+    monkeypatch.setattr(live, "build_chat_model", fail)
+    original = get_debug(), get_verbose()
+    set_debug(True)
+    set_verbose(True)
+    try:
+        runner = live.LiveReasoningService(LLMSettings(mode="openai", model="test-model"))
+        summary = await runner.run(PRIVATE, transport="direct")
+        assert summary.status == "failed"
+        assert (get_debug(), get_verbose()) == (True, True)
+        captured = capsys.readouterr()
+        assert PRIVATE not in captured.out + captured.err
+    finally:
+        set_debug(original[0])
+        set_verbose(original[1])
+
+
+async def test_console_settings_restore_after_live_cancellation(monkeypatch, capsys):
+    """Catches a cancelled graph leaving console suppression active or leaking its error trace."""
+    import asyncio
+
+    from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
+
+    live = live_module()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class WaitingModel(ScriptedModel):
+        async def _agenerate(self, *args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super()._agenerate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        live, "build_chat_model", lambda settings: WaitingModel(messages=iter(script()))
+    )
+    original = get_debug(), get_verbose()
+    set_debug(True)
+    set_verbose(True)
+    runner = live.LiveReasoningService(LLMSettings(mode="openai", model="test-model"))
+    task = asyncio.create_task(runner.run(PRIVATE, transport="direct"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert (get_debug(), get_verbose()) == (False, False)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert (get_debug(), get_verbose()) == (True, True)
+        captured = capsys.readouterr()
+        assert PRIVATE not in captured.out + captured.err
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        set_debug(original[0])
+        set_verbose(original[1])

@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from threading import Lock
 from time import perf_counter
 from typing import Any, Literal
 from uuid import UUID
 
 from langchain.agents.structured_output import StructuredOutputError
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.globals import get_debug, get_verbose, set_debug, set_verbose
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import LLMResult
 from langgraph.errors import GraphRecursionError
@@ -38,6 +42,35 @@ _SPECIALIST_RESPONSES = {
     "traceability-reconciliation": TraceabilityAssessment,
     "containment-communications": ContainmentProposal,
 }
+
+_CONSOLE_LOCK = Lock()
+_CONSOLE_USERS = 0
+_CONSOLE_SETTINGS = (False, False)
+
+
+@contextmanager
+def _suppress_console_tracing() -> Iterator[None]:
+    """Keep process-global console tracing off until all overlapping live calls exit.
+
+    The lock protects only entry/exit bookkeeping, never an await. This works across
+    event loops and threads without serializing model calls. Other LangChain work
+    temporarily shares the suppressed console settings because the SDK flags are global.
+    """
+    global _CONSOLE_USERS, _CONSOLE_SETTINGS
+    with _CONSOLE_LOCK:
+        if _CONSOLE_USERS == 0:
+            _CONSOLE_SETTINGS = get_debug(), get_verbose()
+        set_debug(False)
+        set_verbose(False)
+        _CONSOLE_USERS += 1
+    try:
+        yield
+    finally:
+        with _CONSOLE_LOCK:
+            _CONSOLE_USERS -= 1
+            if _CONSOLE_USERS == 0:
+                set_debug(_CONSOLE_SETTINGS[0])
+                set_verbose(_CONSOLE_SETTINGS[1])
 
 
 class LiveExecutionEvent(BaseModel):
@@ -206,8 +239,8 @@ class LiveReasoningService:
                 or transport not in {"direct", "stdio"}
             ):
                 raise ValueError("Invalid live investigation request")
-            # Disable environment-enabled remote tracing and global prompt/response caches.
-            with tracing_context(enabled=False):
+            # Cover construction too: compiled graphs capture the global debug setting.
+            with _suppress_console_tracing(), tracing_context(enabled=False):
                 model = build_chat_model(self.settings).model_copy(
                     update={
                         "cache": False,
