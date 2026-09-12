@@ -1,10 +1,12 @@
 """Configuration and provider-boundary tests for the optional live model lane."""
 
+from dataclasses import FrozenInstanceError
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from recallops.llm.config import get_llm_settings, load_project_env
+from recallops.llm.config import LLMSettings, get_llm_settings, load_project_env
 from recallops.llm.openai_provider import build_chat_model, sanitize_llm_error
 
 
@@ -16,6 +18,7 @@ def _clear_llm_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENAI_EMBEDDING_MODEL",
         "OPENAI_TIMEOUT_SECONDS",
         "OPENAI_MAX_RETRIES",
+        "OPENAI_REASONING_EFFORT",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -34,6 +37,7 @@ def test_settings_default_to_credential_free_deterministic_mode(
     assert settings.embedding_model == "text-embedding-3-small"
     assert settings.timeout_seconds == 120.0
     assert settings.max_retries == 0
+    assert settings.reasoning_effort == "medium"
 
 
 @pytest.mark.parametrize(
@@ -69,11 +73,13 @@ def test_process_environment_wins_over_repository_env_file(
         "RECALLOPS_MODEL_MODE=openai\n"
         "OPENAI_API_KEY=file-credential-marker\n"
         "OPENAI_MODEL=file-model\n"
-        "OPENAI_EMBEDDING_MODEL=file-embedding\n",
+        "OPENAI_EMBEDDING_MODEL=file-embedding\n"
+        "OPENAI_REASONING_EFFORT=low\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENAI_API_KEY", "process-credential-marker")
     monkeypatch.setenv("OPENAI_MODEL", "process-model")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
 
     load_project_env(env_file)
     settings = get_llm_settings()
@@ -81,6 +87,7 @@ def test_process_environment_wins_over_repository_env_file(
     assert settings.mode == "openai"
     assert settings.model == "process-model"
     assert settings.embedding_model == "file-embedding"
+    assert settings.reasoning_effort == "high"
 
 
 def test_openai_model_construction_keeps_credential_out_of_representation(
@@ -97,6 +104,7 @@ def test_openai_model_construction_keeps_credential_out_of_representation(
     assert model.model_name == "gpt-4.1-mini"
     assert model.request_timeout == 120.0
     assert model.max_retries == 0
+    assert model.reasoning_effort == "medium"
     assert "credential-marker" not in repr(model)
 
 
@@ -110,6 +118,53 @@ def test_explicit_timeout_and_retry_environment_reaches_actual_client(monkeypatc
     model = build_chat_model(get_llm_settings())
     assert model.request_timeout == 90.5
     assert model.max_retries == 1
+
+
+@pytest.mark.parametrize("effort", ["none", "low", "medium", "high", "xhigh"])
+def test_reasoning_effort_reaches_actual_chat_completions_client(monkeypatch, effort):
+    _clear_llm_environment(monkeypatch)
+    monkeypatch.setenv("RECALLOPS_MODEL_MODE", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "credential-marker")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", effort)
+    settings = get_llm_settings()
+    with pytest.raises(FrozenInstanceError):
+        settings.reasoning_effort = "low"
+    # The explicit immutable settings, not later process changes, own construction.
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "invalid-later-value")
+    model = build_chat_model(settings)
+    assert settings.reasoning_effort == effort
+    assert model.reasoning_effort == effort
+    assert model._default_params["reasoning_effort"] == effort
+    assert model.use_responses_api is False
+    assert model.model_name == "gpt-5.4-mini"
+
+
+@pytest.mark.parametrize("value", ["", "minimal", "HIGH", "0", "credential-marker"])
+def test_invalid_reasoning_environment_fails_before_provider_construction(monkeypatch, value):
+    _clear_llm_environment(monkeypatch)
+    monkeypatch.setenv("RECALLOPS_MODEL_MODE", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "credential-marker")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", value)
+    with patch("recallops.llm.openai_provider._StrictChatOpenAI") as constructor:
+        with pytest.raises(ValueError, match="OPENAI_REASONING_EFFORT") as error:
+            build_chat_model(get_llm_settings())
+        constructor.assert_not_called()
+    assert "credential-marker" not in str(error.value)
+
+
+@pytest.mark.parametrize("value", [None, 1, True, [], "minimal", "credential-marker"])
+def test_direct_and_tampered_reasoning_settings_fail_before_provider_construction(value):
+    with pytest.raises(ValueError, match="OPENAI_REASONING_EFFORT"):
+        LLMSettings(mode="openai", model="gpt-5.4-mini", reasoning_effort=value)
+    settings = LLMSettings(mode="openai", model="gpt-5.4-mini")
+    object.__setattr__(settings, "reasoning_effort", value)
+    with patch("recallops.llm.openai_provider._StrictChatOpenAI") as constructor:
+        with pytest.raises(ValueError, match="OPENAI_REASONING_EFFORT") as error:
+            build_chat_model(settings)
+        constructor.assert_not_called()
+    assert "credential-marker" not in str(error.value)
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 """OpenAI model construction and sanitized provider-facing failures."""
 
 import os
+from dataclasses import replace
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -48,6 +49,7 @@ class _StrictChatOpenAI(ChatOpenAI):
 
 def build_chat_model(settings: LLMSettings) -> BaseChatModel:
     """Construct the live chat model only for a validated OpenAI configuration."""
+    settings = replace(settings)
     if settings.mode != "openai":
         raise ValueError("OpenAI chat model is unavailable in deterministic mode")
 
@@ -60,6 +62,7 @@ def build_chat_model(settings: LLMSettings) -> BaseChatModel:
         api_key=SecretStr(api_key),
         timeout=settings.timeout_seconds,
         max_retries=settings.max_retries,
+        reasoning_effort=settings.reasoning_effort,
         use_responses_api=False,
         disable_streaming=True,
         streaming=False,

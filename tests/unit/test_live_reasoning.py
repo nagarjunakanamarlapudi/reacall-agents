@@ -26,6 +26,34 @@ def test_service_rejects_unsafe_settings_before_any_checkpoint_or_model(settings
     assert "private-canary" not in str(error.value)
 
 
+async def test_service_detaches_and_forwards_explicit_reasoning_effort(
+    monkeypatch, live_case, live_request
+):
+    settings = LLMSettings(mode="openai", model="test-model", reasoning_effort="high")
+    service = live.LiveReasoningService(settings)
+    object.__setattr__(settings, "reasoning_effort", "low")
+    observed = []
+
+    def construct(bound_settings):
+        observed.append(bound_settings.reasoning_effort)
+        return live_case.script()
+
+    monkeypatch.setattr(live, "build_chat_model", construct)
+    result = await service.run(live_request, transport="direct")
+    assert result.status == "success"
+    assert service.settings is not settings
+    assert observed == ["high"]
+
+
+@pytest.mark.parametrize("value", [None, [], "invalid-private-canary"])
+def test_service_rejects_tampered_reasoning_effort(value):
+    settings = LLMSettings(mode="openai", model="test-model")
+    object.__setattr__(settings, "reasoning_effort", value)
+    with pytest.raises((TypeError, ValueError)) as error:
+        live.LiveReasoningService(settings)
+    assert "private-canary" not in str(error.value)
+
+
 async def test_real_graph_projects_ordered_plan_reads_and_usage(
     monkeypatch, live_case, live_request
 ):

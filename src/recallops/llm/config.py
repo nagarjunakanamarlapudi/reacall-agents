@@ -14,6 +14,8 @@ from recallops.paths import PROJECT_ROOT
 _DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 _DEFAULT_MAX_RETRIES = 0
+_DEFAULT_REASONING_EFFORT = "medium"
+_REASONING_EFFORTS = frozenset({"none", "low", "medium", "high", "xhigh"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +28,7 @@ class LLMSettings:
     embedding_model: str = _DEFAULT_EMBEDDING_MODEL
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     max_retries: int = _DEFAULT_MAX_RETRIES
+    reasoning_effort: Literal["none", "low", "medium", "high", "xhigh"] = _DEFAULT_REASONING_EFFORT
 
     def __post_init__(self) -> None:
         if self.mode not in {"deterministic", "openai"}:
@@ -40,6 +43,11 @@ class LLMSettings:
             raise ValueError("timeout_seconds must be a positive finite number")
         if type(self.max_retries) is not int or self.max_retries < 0:
             raise ValueError("max_retries must be a non-negative integer")
+        if (
+            type(self.reasoning_effort) is not str
+            or self.reasoning_effort not in _REASONING_EFFORTS
+        ):
+            raise ValueError("OPENAI_REASONING_EFFORT must be none, low, medium, high, or xhigh")
 
 
 def load_project_env(path: Path = PROJECT_ROOT / ".env") -> None:
@@ -66,6 +74,9 @@ def get_llm_settings() -> LLMSettings:
         embedding_model=embedding_model,
         timeout_seconds=_timeout_environment(),
         max_retries=_retry_environment(),
+        reasoning_effort=os.environ.get(
+            "OPENAI_REASONING_EFFORT", _DEFAULT_REASONING_EFFORT
+        ).strip(),
     )
 
 

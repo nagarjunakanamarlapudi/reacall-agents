@@ -206,7 +206,7 @@ class LiveReasoningService:
     def __init__(self, settings: LLMSettings) -> None:
         if type(settings) is not LLMSettings or any(
             type(getattr(settings, key)) is not str
-            for key in ("mode", "provider", "model", "embedding_model")
+            for key in ("mode", "provider", "model", "embedding_model", "reasoning_effort")
         ):
             raise TypeError("live service requires exact non-secret LLM settings")
         if settings.mode != "openai":
