@@ -471,6 +471,90 @@ def test_compilation_rejects_replaced_child_completion_identity(
         deep.build_deep_supervisor(model=live_case.script(), request=live_request)
 
 
+@pytest.mark.parametrize("hook", ["before_agent", "after_model"])
+@pytest.mark.parametrize(
+    "executable,async_replacement", [("func", False), ("afunc", False), ("afunc", True)]
+)
+def test_compilation_rejects_same_instance_child_method_substitution(
+    monkeypatch, live_request, live_case, hook, executable, async_replacement
+):
+    from recallops.agents import deep_supervisor as deep
+
+    original = deep.create_deep_agent
+
+    def substituted(*args, **kwargs):
+        graph = original(*args, **kwargs)
+        child = deep._compiled_subagent_graphs(graph)["recall-intelligence"]
+        runnable = child.nodes[f"ChildCompletionMiddleware.{hook}"].bound
+        instance = runnable.func.__self__
+        other_hook = "after_model" if hook == "before_agent" else "before_agent"
+        if async_replacement:
+            other_hook = "a" + other_hook
+        setattr(runnable, executable, getattr(instance, other_hook))
+        return graph
+
+    monkeypatch.setattr(deep, "create_deep_agent", substituted)
+    with pytest.raises(ValueError, match="child completion middleware identity"):
+        deep.build_deep_supervisor(model=live_case.script(), request=live_request)
+
+
+@pytest.mark.parametrize(
+    "node_name",
+    [
+        "DelegationGuardMiddleware.after_model",
+        "ToolCallLimitMiddleware[task].after_model",
+        "TodoListMiddleware.after_model",
+    ],
+)
+@pytest.mark.parametrize(
+    "executable,replacement",
+    [("func", "before_agent"), ("afunc", "before_agent"), ("afunc", "abefore_agent")],
+)
+def test_compilation_rejects_same_instance_parent_method_substitution(
+    monkeypatch, live_request, live_case, node_name, executable, replacement
+):
+    from recallops.agents import deep_supervisor as deep
+
+    original = deep.create_deep_agent
+
+    def substituted(*args, **kwargs):
+        graph = original(*args, **kwargs)
+        runnable = graph.nodes[node_name].bound
+        setattr(runnable, executable, getattr(runnable.func.__self__, replacement))
+        return graph
+
+    monkeypatch.setattr(deep, "create_deep_agent", substituted)
+    with pytest.raises(ValueError, match="compiled middleware identity"):
+        deep.build_deep_supervisor(model=live_case.script(), request=live_request)
+
+
+async def test_missing_recall_read_with_substituted_completion_stops_before_model(
+    monkeypatch, live_request, live_case
+):
+    from recallops.agents import deep_supervisor as deep
+
+    original = deep.create_deep_agent
+
+    def substituted(*args, **kwargs):
+        graph = original(*args, **kwargs)
+        child = deep._compiled_subagent_graphs(graph)["recall-intelligence"]
+        runnable = child.nodes["ChildCompletionMiddleware.after_model"].bound
+        runnable.func = runnable.func.__self__.before_agent
+        return graph
+
+    monkeypatch.setattr(deep, "create_deep_agent", substituted)
+    messages = [
+        message
+        for message in live_case.script().messages
+        if message.tool_calls[0]["name"] != "get_recall"
+    ]
+    result, seen = await run_script(monkeypatch, live_case, live_request, messages)
+    assert result.status != "success"
+    assert result.claims is None
+    assert result.receipts == ()
+    assert seen == []
+
+
 def test_child_private_state_is_not_an_input_output_or_model_tool_argument(live_case, live_request):
     from recallops.agents import deep_supervisor as deep
 

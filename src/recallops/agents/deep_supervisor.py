@@ -805,6 +805,24 @@ def live_prompt_fingerprint() -> str:
     return canonical_digest(live_prompt_contract())
 
 
+def _compiled_middleware_matches(
+    node: Any, instance: AgentMiddleware, sync_method: Any, async_method: Any = None
+) -> bool:
+    """Pin both executable paths, including the absence of an async override."""
+    for attribute, expected in (("func", sync_method), ("afunc", async_method)):
+        bound = getattr(node.bound, attribute, None)
+        if expected is None:
+            if bound is not None:
+                return False
+        elif (
+            not inspect.ismethod(bound)
+            or bound.__self__ is not instance
+            or bound.__func__ is not expected
+        ):
+            return False
+    return True
+
+
 def _compiled_tools(graph: Any) -> dict[str, BaseTool]:
     tool_node = graph.nodes.get("tools")
     if tool_node is None or not hasattr(tool_node.bound, "_tools_by_name"):
@@ -1907,13 +1925,24 @@ def build_deep_supervisor(
     if set(graph.nodes) != _PARENT_GRAPH_NODES:
         raise ValueError(f"compiled middleware surface is unsafe: {sorted(graph.nodes)}")
     middleware_identities = {
-        "DelegationGuardMiddleware.after_model": delegation_guard,
-        "ToolCallLimitMiddleware[task].after_model": task_limiter,
-        "TodoListMiddleware.after_model": todo_middleware,
+        "DelegationGuardMiddleware.after_model": (
+            delegation_guard,
+            DelegationGuardMiddleware.after_model,
+            None,
+        ),
+        "ToolCallLimitMiddleware[task].after_model": (
+            task_limiter,
+            ToolCallLimitMiddleware.after_model,
+            ToolCallLimitMiddleware.aafter_model,
+        ),
+        "TodoListMiddleware.after_model": (
+            todo_middleware,
+            TodoListMiddleware.after_model,
+            TodoListMiddleware.aafter_model,
+        ),
     }
-    for node_name, middleware_instance in middleware_identities.items():
-        bound = getattr(graph.nodes[node_name].bound, "func", None)
-        if getattr(bound, "__self__", None) is not middleware_instance:
+    for node_name, identities in middleware_identities.items():
+        if not _compiled_middleware_matches(graph.nodes[node_name], *identities):
             raise ValueError(f"compiled middleware identity is unsafe: {node_name}")
     parent_tools = _compiled_tools(graph)
     parent_tool_names = sorted(parent_tools)
@@ -1936,8 +1965,9 @@ def build_deep_supervisor(
             )
         for hook in ("before_agent", "after_model"):
             node = subgraph.nodes[f"ChildCompletionMiddleware.{hook}"]
-            bound = getattr(node.bound, "func", None)
-            if getattr(bound, "__self__", None) is not child_completions[definition.name]:
+            if not _compiled_middleware_matches(
+                node, child_completions[definition.name], getattr(ChildCompletionMiddleware, hook)
+            ):
                 raise ValueError("compiled child completion middleware identity is unsafe")
         actual_tools = _compiled_tools(subgraph)
         subagent_tool_names[definition.name] = sorted(actual_tools)
