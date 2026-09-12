@@ -61,11 +61,12 @@ async def test_live_reasoning_runs_once_and_survives_reload_without_authority_ch
         llm_settings=LLMSettings(mode="openai", model="test-model"),
     )
     opened = await adapter.open_case("H-1230-2026")
-    opened["scope_lot_ids"] = live_case.scope
+    assert opened["scope_lot_ids"] == live_case.scope
     assert opened["reasoning_mode"] == "openai"
     assert opened["llm_status"] == "ready"
     assert opened["llm_run"] is None
     reviewed = await adapter.run_investigation(opened)
+    assert reviewed["scope_lot_ids"] == live_case.scope
     assert calls == ["test-model"]
     assert reviewed["llm_status"] == (
         "verification_failed" if outcome == "semantic_failure" else outcome
@@ -548,7 +549,7 @@ async def test_durable_adapter_projects_runtime_and_survives_reopen(tmp_path: Pa
         "traceability-reconciliation",
         "containment-communications",
     ]
-    assert len(build_match_rows(reduce_case_snapshot(reviewed))) == 144
+    assert len(build_match_rows(reduce_case_snapshot(reviewed))) == 4
     retrieval = build_retrieval_rows(reduce_case_snapshot(reviewed))
     assert retrieval and retrieval[0].query
     assert "BM25" in retrieval[0].sparse

@@ -11,6 +11,11 @@ from typing import Any
 
 import streamlit as st
 
+from recallops.demo_contract import (
+    MAX_INVESTIGATION_LOTS,
+    investigation_lot_options,
+    validate_investigation_scope,
+)
 from recallops.llm import get_llm_settings, load_project_env
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.ui.adapter import DeterministicDemoAdapter, DurableRuntimeAdapter
@@ -109,6 +114,7 @@ def _apply_snapshot(raw: dict[str, Any], *, investigation_state: str | None = No
         updates["ui_investigation_state"] = investigation_state
     for key, value in updates.items():
         st.session_state[key] = value
+    st.session_state.ui_investigation_lot_scope = list(case.raw.get("scope_lot_ids") or [])
     if case.status == "escalated":
         st.session_state.ui_investigation_state = "error"
         st.session_state.ui_last_error = (
@@ -143,8 +149,33 @@ def _run_investigation() -> None:
     if case is None:
         st.session_state.ui_last_error = "Run investigation after opening a case."
         return
+    current = case.raw
+    if not _scope_locked(case):
+        try:
+            scope = validate_investigation_scope(st.session_state.ui_investigation_lot_scope)
+        except ValueError as error:
+            st.session_state.ui_last_error = str(error)
+            return
+        current = {**current, "scope_lot_ids": scope}
     st.session_state.ui_investigation_state = "running"
-    _safe_action("Run investigation", _ADAPTER.run_investigation(case.raw), state="interrupted")
+    _safe_action("Run investigation", _ADAPTER.run_investigation(current), state="interrupted")
+
+
+def _scope_locked(case) -> bool:
+    return (
+        isinstance(_ADAPTER, DeterministicDemoAdapter)
+        or bool(case.raw.get("checkpoint_id"))
+        or st.session_state.ui_investigation_state != "not_started"
+    )
+
+
+def _select_investigation_scope() -> None:
+    case = _case()
+    if case is not None and not _scope_locked(case):
+        st.session_state.ui_case = {
+            **case.raw,
+            "scope_lot_ids": list(st.session_state.ui_investigation_lot_scope),
+        }
 
 
 def _resume_review(decision: str) -> None:
@@ -313,11 +344,38 @@ def _render_command_center() -> None:
 
 def _render_investigation() -> None:
     case = _case()
+    selection_valid = True
+    if case is not None:
+        locked = _scope_locked(case)
+        key = "ui_investigation_lot_scope"
+        # Widget state can be discarded when navigating away; the case owns the selection.
+        st.session_state[key] = list(case.raw.get("scope_lot_ids") or [])
+        st.multiselect(
+            "Investigation lot scope",
+            investigation_lot_options(),
+            key=key,
+            max_selections=MAX_INVESTIGATION_LOTS,
+            disabled=locked,
+            on_change=_select_investigation_scope,
+            placeholder="Search and choose lots",
+        )
+        st.caption(
+            "The full synthetic dataset remains 144 lots. This active investigation is bounded "
+            "to the selected lots (1–64); the scope cannot change after the run starts."
+        )
+        if isinstance(_ADAPTER, DeterministicDemoAdapter):
+            st.caption("The demonstration fixture keeps its fixed four-lot walkthrough.")
+        if not locked:
+            try:
+                validate_investigation_scope(st.session_state[key])
+            except ValueError as error:
+                selection_valid = False
+                st.info(str(error))
     st.button(
         "Run investigation",
         key="run_investigation_button",
         type="primary",
-        disabled=case is None,
+        disabled=case is None or not selection_valid,
         on_click=_run_investigation,
     )
     if case is None:

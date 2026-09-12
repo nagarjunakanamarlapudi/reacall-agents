@@ -21,6 +21,11 @@ from recallops.agents.planner import plan_investigation
 from recallops.agents.runtime import RecallOpsRuntime
 from recallops.agents.specialists import investigate_recall
 from recallops.data.loaders import load_demo_dataset, load_recall_snapshot
+from recallops.demo_contract import (
+    FLAGSHIP_RECALL_NUMBER,
+    FLAGSHIP_SCOPE_LOT_IDS,
+    validate_investigation_scope,
+)
 from recallops.llm import LLMSettings
 from recallops.paths import PROJECT_ROOT, RepositoryPaths
 from recallops.services.recall_registry import RecallRegistryService
@@ -214,7 +219,9 @@ class DurableRuntimeAdapter:
                 f"Identify affected lots and facilities for {recall_number}, reconcile quantities, "
                 "and prepare safe simulated containment."
             ),
-            "scope_lot_ids": [],
+            "scope_lot_ids": list(FLAGSHIP_SCOPE_LOT_IDS)
+            if recall_number == FLAGSHIP_RECALL_NUMBER
+            else [],
             "current_node": "intake_ready",
             "recall": {
                 "summary": _recall_summary(record.model_dump(mode="json")),
@@ -274,6 +281,7 @@ class DurableRuntimeAdapter:
             or any(not isinstance(item, str) or not item.strip() for item in scope)
         ):
             raise ValueError("scope_lot_ids must be a list of nonblank strings")
+        scope = validate_investigation_scope(scope)
         async with RecallOpsRuntime.open(
             checkpoint_path=self.checkpoint_path,
             operations_path=self.operations_path,
@@ -294,7 +302,7 @@ class DurableRuntimeAdapter:
                 question=question,
                 case_id=current["case_id"],
                 thread_id=current["thread_id"],
-                scope_lot_ids=scope or None,
+                scope_lot_ids=scope,
             )
             history = await runtime.get_case_history(thread_id=current["thread_id"])
         return self._project_failure(
@@ -657,6 +665,7 @@ class DeterministicDemoAdapter:
             "model_mode": "deterministic",
             "runtime_mode": self.runtime_label,
             "transport_mode": self.transport_label,
+            "scope_lot_ids": list(FLAGSHIP_SCOPE_LOT_IDS),
             "current_node": "intake",
             "recall": {
                 "summary": {
@@ -728,12 +737,7 @@ class DeterministicDemoAdapter:
         dataset = load_demo_dataset()
         products = {item["product_id"]: item for item in dataset["products"]}
         matched = {item["lot_id"]: item for item in traceability.match_lots(intelligence.predicate)}
-        anchor_ids = (
-            "LOT-EXACT-170",
-            "LOT-PROBABLE-160",
-            "LOT-AMBIG-175",
-            "LOT-REJECT-190",
-        )
+        anchor_ids = FLAGSHIP_SCOPE_LOT_IDS
         rationale = {
             "exact": "UPC, plant code and Julian date match the official predicate.",
             "probable": "Near UPC plus exact plant and Julian date require bounded review.",

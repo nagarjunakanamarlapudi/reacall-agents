@@ -87,11 +87,12 @@ def test_openai_product_readiness_live_cards_and_visible_fallback(
         == "OpenAI · test-model"
     )
     app.button(key="open_case_button").click().run()
-    app.session_state["ui_case"]["scope_lot_ids"] = live_case.scope
+    assert app.session_state["ui_case"]["scope_lot_ids"] == live_case.scope
     app.radio(key="ui_active_view").set_value("Investigation").run()
     assert any("ready" in item.value.lower() for item in app.caption)
     app.button(key="run_investigation_button").click().run()
     assert not app.exception
+    assert list(calls[-1].scope_lot_ids) == live_case.scope
     text = "\n".join(item.value for item in (*app.markdown, *app.caption))
     assert all(role in text for role in roles)
     case = app.session_state["ui_case"]
