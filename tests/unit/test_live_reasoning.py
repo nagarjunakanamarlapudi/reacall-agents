@@ -346,14 +346,16 @@ async def test_concurrent_runs_keep_read_observations_isolated(
     one, two = await asyncio.gather(
         service.run(live_request, transport="direct"), service.run(live_request, transport="direct")
     )
-    assert len(one.receipts) == 15 and len(two.receipts) == 14
-    assert one.summary.total_tokens == 125 and two.summary.total_tokens == 120
+    assert len(one.receipts) == 15 and two.receipts == ()
+    assert one.summary.total_tokens == 125 and two.summary.total_tokens == 20
+    assert two.status == "semantic_failure" and two.claims is None
+    assert two.summary.read_tool_sequence == ()
     assert live.READ_TOOL_OBSERVATIONS.get() is None
-    assert not verify_live_investigation(
+    assert verify_live_investigation(
         live_request,
-        two.claims,
+        one.claims,
         await resolve_trusted_evidence(live_request),
-        receipts=two.receipts,
+        receipts=one.receipts,
     ).result.passed
 
 

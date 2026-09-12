@@ -124,7 +124,7 @@ def test_prompt_fingerprint_covers_all_runtime_contracts(monkeypatch):
 
     baseline = canonical_digest(deep.live_prompt_contract())
     assert deep.live_prompt_fingerprint() == baseline
-    assert deep.live_prompt_contract()["contract_version"] == 2
+    assert deep.live_prompt_contract()["contract_version"] == 3
     for name in (
         "SUPERVISOR_PROMPT",
         "RECALL_INTELLIGENCE_PROMPT",
@@ -134,6 +134,7 @@ def test_prompt_fingerprint_covers_all_runtime_contracts(monkeypatch):
         "DELEGATION_CONTEXT_PROMPT",
         "SUPERVISOR_RUNTIME_PROMPT",
         "INVESTIGATION_REQUEST_PROMPT",
+        "CHILD_COMPLETION_CORRECTION_PROMPT",
     ):
         with monkeypatch.context() as patch:
             patch.setattr(deep, name, getattr(deep, name) + " contract revision")

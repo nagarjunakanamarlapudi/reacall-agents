@@ -35,7 +35,7 @@ async def raw_openai_script(monkeypatch, live_case):
 
     clients = []
 
-    def install(*, duplicate=None, raw=None, response_schemas=None):
+    def install(*, duplicate=None, raw=None, response_schemas=None, malformed_arguments=None):
         messages = iter(live_case.script(raw).messages)
         responses = []
 
@@ -76,6 +76,8 @@ async def raw_openai_script(monkeypatch, live_case):
                     if duplicate and call["name"] == duplicate[0]
                     else json.dumps(call["args"])
                 )
+                if malformed_arguments and call["name"] == malformed_arguments[0]:
+                    arguments = malformed_arguments[1]
                 calls.append(
                     {
                         "id": call["id"],

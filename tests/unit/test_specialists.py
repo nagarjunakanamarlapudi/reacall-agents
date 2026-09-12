@@ -2500,11 +2500,10 @@ def test_delegation_guard_requires_one_runtime_delegation_per_fixed_specialist()
         "containment-communications",
     ],
 )
-def test_fake_model_delegation_returns_each_typed_specialist_response(
+def test_unbound_delegation_cannot_return_even_a_valid_typed_specialist_response(
     subagent_name: str,
 ) -> None:
-    """Catches declarative subagents lacking structured-output parity with offline models."""
-    import json
+    """Typed output alone cannot bypass the request-bound sealed-read completion contract."""
 
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage
@@ -2565,33 +2564,29 @@ def test_fake_model_delegation_returns_each_typed_specialist_response(
         )
     )
     supervisor = build_deep_supervisor(model=model)
-    result = supervisor.graph.nodes["tools"].bound.func(
-        {
-            "messages": [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "task",
-                            "args": {
-                                "description": "Return the typed empty containment proposal.",
-                                "subagent_type": subagent_name,
-                            },
-                            "id": "delegate-call",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            ]
-        },
-        {},
-        Runtime(),
-    )
-    returned = result[0].update["messages"][0].content
-
-    assert (
-        response.__class__.model_validate(json.loads(returned)).model_dump(mode="json") == payload
-    )
+    with pytest.raises(ValueError, match="typed investigation binding"):
+        supervisor.graph.nodes["tools"].bound.func(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Return the typed empty containment proposal.",
+                                    "subagent_type": subagent_name,
+                                },
+                                "id": "delegate-call",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            },
+            {},
+            Runtime(),
+        )
 
 
 def test_registry_traceability_only_stdio_compiles_without_any_operations_tools() -> None:

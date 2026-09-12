@@ -45,11 +45,20 @@ async def compiled_messages(monkeypatch, live_case, live_request):
                 "get_inventory",
                 "reconcile_units",
                 "each confirmed and ambiguous lot",
+                "source-order",
+                "facility_evidence",
+                "component_evidence",
             ),
         ),
         (
             "containment-communications",
-            ("validated prerequisites", "No evidence-read tool call is required or available"),
+            (
+                "validated prerequisites",
+                "No evidence-read tool call is required or available",
+                "evidence_by_target",
+                "union",
+                "SYNTHETIC — ACADEMIC DEMO",
+            ),
         ),
     ],
 )

@@ -39,6 +39,7 @@ from langchain_core.tools.base import _format_output
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from recallops.agents.prompts import (
+    CHILD_COMPLETION_CORRECTION_PROMPT,
     CONTAINMENT_COMMUNICATIONS_PROMPT,
     DELEGATION_CONTEXT_PROMPT,
     INVESTIGATION_REQUEST_PROMPT,
@@ -95,7 +96,14 @@ _PARENT_GRAPH_NODES = frozenset(
     }
 )
 _SUBAGENT_GRAPH_NODES = frozenset(
-    {"__start__", "model", "tools", "PatchToolCallsMiddleware.before_agent"}
+    {
+        "__start__",
+        "model",
+        "tools",
+        "PatchToolCallsMiddleware.before_agent",
+        "ChildCompletionMiddleware.before_agent",
+        "ChildCompletionMiddleware.after_model",
+    }
 )
 _STDIO_SERVERS = (
     ("registry", "recallops.mcp.recall_registry_server"),
@@ -223,6 +231,25 @@ class DelegationGuardMiddleware(AgentMiddleware):
     """Enforce the fixed four-role plan at the live-model runtime boundary."""
 
     state_schema = DelegationState
+
+    def _child_binding(self, tool_request):
+        from recallops.agents.child_completion import _bind_child_completion
+
+        role = tool_request.tool_call["args"].get("subagent_type")
+        prerequisites = self.completed_artifacts(tool_request.state.get("messages", []))
+        return _bind_child_completion(role, self.request, prerequisites)
+
+    def wrap_tool_call(self, request, handler):
+        if request.tool_call["name"] != "task":
+            return handler(request)
+        with self._child_binding(request):
+            return handler(request)
+
+    async def awrap_tool_call(self, request, handler):
+        if request.tool_call["name"] != "task":
+            return await handler(request)
+        with self._child_binding(request):
+            return await handler(request)
 
     def __init__(self, request=None):
         from recallops.llm.artifacts import LiveInvestigationRequest
@@ -740,7 +767,11 @@ def _profile_key(model: str | BaseChatModel) -> str:
 def live_prompt_contract() -> dict[str, Any]:
     """Exact application-owned instructions; bound evidence has its own request digest."""
     return {
-        "contract_version": 2,
+        "contract_version": 3,
+        "child_completion": {
+            "max_corrections": 1,
+            "instruction": CHILD_COMPLETION_CORRECTION_PROMPT,
+        },
         "supervisor": SUPERVISOR_PROMPT + SUPERVISOR_RUNTIME_PROMPT,
         "request": INVESTIGATION_REQUEST_PROMPT,
         "delegation": DELEGATION_CONTEXT_PROMPT,
@@ -1791,6 +1822,8 @@ def build_deep_supervisor(
     reasoning graph receives read tools only; no Operations MCP write can be
     delegated or called from the supervisor.
     """
+    from recallops.agents.child_completion import ChildCompletionMiddleware
+
     catalog = specialist_catalog()
     delegation_guard = DelegationGuardMiddleware(request)
     scope = delegation_guard.request.scope_lot_ids if delegation_guard.request is not None else ()
@@ -1812,10 +1845,19 @@ def build_deep_supervisor(
     )
     read_only_filesystem = FilesystemMiddleware(tools=["read_file", "ls"])
     subagent_filesystems: dict[str, FilesystemMiddleware] = {}
+    child_completions = {}
     subagents: list[dict[str, Any]] = []
     for definition in catalog:
         specialist_filesystem = FilesystemMiddleware(tools=["read_file", "ls"])
         subagent_filesystems[definition.name] = specialist_filesystem
+        child_completion = ChildCompletionMiddleware(
+            definition.name,
+            delegation_guard.request.request_digest
+            if delegation_guard.request is not None
+            else None,
+            tuple(definition.allowed_tool_names),
+        )
+        child_completions[definition.name] = child_completion
         subagents.append(
             {
                 "name": definition.name,
@@ -1828,7 +1870,7 @@ def build_deep_supervisor(
                     if name in tools_by_name
                 ],
                 # Declarative subagents do not inherit the parent's filesystem restriction.
-                "middleware": [specialist_filesystem],
+                "middleware": [specialist_filesystem, child_completion],
                 # Preserve original JSON fields until the delegation ledger's
                 # strict validation. SDK Pydantic parsing would otherwise coerce
                 # values, fill omitted defaults, and discard unknown fields.
@@ -1892,6 +1934,11 @@ def build_deep_supervisor(
             raise ValueError(
                 f"compiled middleware surface is unsafe: {definition.name} {sorted(subgraph.nodes)}"
             )
+        for hook in ("before_agent", "after_model"):
+            node = subgraph.nodes[f"ChildCompletionMiddleware.{hook}"]
+            bound = getattr(node.bound, "func", None)
+            if getattr(bound, "__self__", None) is not child_completions[definition.name]:
+                raise ValueError("compiled child completion middleware identity is unsafe")
         actual_tools = _compiled_tools(subgraph)
         subagent_tool_names[definition.name] = sorted(actual_tools)
         expected = {
