@@ -1,13 +1,13 @@
 # RecallOps narrated demo
 
-This is the voice script for `RecallOps-LLM-Only-Demo.mp4`. The recording uses the mature male Indian-English `Rishi` synthesized voice at a presentation pace. It shows the real OpenAI `gpt-5-mini` provider path and never substitutes a control fixture for that run.
+This is the voice script for `RecallOps-LLM-Only-Demo.mp4`. The recording uses ElevenLabs' `Neel - Professional Indian` synthesized voice at a clear presentation pace. It shows the real OpenAI `gpt-5-mini` provider path and never substitutes a control fixture for that run. The polished cut also incorporates cropped business-domain and LLM-architecture footage from the supplied product walkthrough; its original audio and dead time are removed.
 
 ## Storyboard
 
 | Scene | Screen | Demonstrates |
 |---|---|---|
-| 1 | Command Center | Product, business problem, and real OpenAI mode |
-| 2 | High-level architecture | LLM planning, Deep Agents, specialists, verifier, HITL, MCP, LangGraph |
+| 1 | Command Center + business-domain visual | Product, honest data boundary, and real OpenAI mode |
+| 2 | High-level architecture, interleaved with walkthrough footage | LLM planning, Deep Agents, specialists, verifier, HITL, MCP, LangGraph |
 | 3 | Four-lot scope | Official/synthetic provenance and four of 144 selected lots |
 | 4 | Live run | Observed plan, MCP reads, middleware, and tool isolation |
 | 5 | Actual outcome | Provider telemetry and strict fail-closed behavior |
