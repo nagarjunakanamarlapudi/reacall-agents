@@ -108,6 +108,11 @@ def test_openai_product_readiness_live_cards_and_visible_fallback(
         assert any("deterministic fallback" in item.value.lower() for item in app.warning)
     else:
         assert not any("deterministic fallback" in item.value.lower() for item in app.warning)
+    if status == "semantic_failure":
+        app.radio(key="ui_active_view").set_value("Human Review").run()
+        assert not app.exception
+        assert any("No review packet is pending" in item.value for item in app.info)
+        app.radio(key="ui_active_view").set_value("Investigation").run()
     app.run()
     app.button(key="run_investigation_button").click().run()
     assert len(calls) == 1

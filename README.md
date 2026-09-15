@@ -41,7 +41,7 @@ make demo
 make ui-openai
 ```
 
-For live setup, create a repository-local ignored `.env` using [the exact demo preflight](docs/DEMO_WALKTHROUGH.md#preflight): set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, `OPENAI_REASONING_EFFORT=medium`, and your private `OPENAI_API_KEY`. Do not overwrite an existing `.env`. The header must show `Reasoning mode: OpenAI · <model>` and `ready`; readiness validates configuration, not provider access or model/effort compatibility.
+For live setup, create a repository-local ignored `.env` using [the exact demo preflight](docs/DEMO_WALKTHROUGH.md#preflight): set `RECALLOPS_MODEL_MODE=openai`, a nonblank `OPENAI_MODEL`, a supported `OPENAI_REASONING_EFFORT`, and your private `OPENAI_API_KEY`. Do not overwrite an existing `.env`. The header must show `Reasoning mode: OpenAI · <model>` and `ready`; readiness validates configuration, not provider access or model/effort compatibility.
 
 In **Investigation**, the searchable **Investigation lot scope** offers all 144 synthetic lots. The flagship defaults to `LOT-EXACT-170`, `LOT-PROBABLE-160`, `LOT-AMBIG-175`, and `LOT-REJECT-190`, shared with the official smoke. Choose 1–64 unique known lots before the first run; the selection locks after start/checkpoint. The full dataset remains 144 lots; selecting a bounded active scope does not delete or investigate the remaining lots.
 
@@ -105,7 +105,7 @@ The graph never batches those writes and never reuses approval after a version c
 - [Evaluation](docs/EVALUATION.md) — safety, six-configuration retrieval ablation, two-profile orchestration comparison, and digest-bound scorecard.
 - [Human presentation rubric](docs/EVALUATION_RUBRIC.md) — anchored review scores and authority limits.
 - [Week 3 coverage](docs/CURRICULUM_COVERAGE.md) — topic-to-code/demo map.
-- [Demo walkthrough](docs/DEMO_WALKTHROUGH.md) — a 4:55 presenter script with exact clicks, evaluation narration, and copy/paste inputs.
+- [Demo walkthrough](docs/DEMO_WALKTHROUGH.md) — the 6:32 LLM-only presenter route, real provider evidence, evaluation narration, and narrated video.
 - [Submission document](docs/SUBMISSION_DOCUMENT.md) — reviewer-ready handout.
 - [Verification](docs/VERIFICATION.md) — executed evidence only.
 

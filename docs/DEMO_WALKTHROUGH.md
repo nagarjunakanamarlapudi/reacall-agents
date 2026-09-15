@@ -1,3 +1,13 @@
+# RecallOps LLM-only narrated submission
+
+The primary submission walkthrough is [RecallOps-LLM-Only-Demo.mp4](demo/RecallOps-LLM-Only-Demo.mp4), with its complete synthesized-voice script and evidence statement in [DEMO_NARRATION.md](demo/DEMO_NARRATION.md).
+
+This recording uses the actual OpenAI `gpt-5-mini` execution only. The model observed all four planned roles and completed recall intelligence; product/lot matching then failed its strict typed contract after one bounded correction. The graph failed closed before HITL, minted no review packet, and performed zero writes. The video shows that real outcome, the human-review block, high-level LLM architecture, agentic RAG, MCP, middleware, and the complete safety/retrieval/orchestration evaluation story. It never substitutes the control demonstration described in the archived rehearsal material below.
+
+Business orientation: [business-domain guide](BUSINESS_DOMAIN.md), [business recall lifecycle](images/08_business_recall_lifecycle.png), and [domain evidence model](images/09_domain_evidence_model.png).
+
+> The remainder is retained as a rubric-aligned rehearsal and control reference. For the current LLM-only submission, use the narrated video and its script above.
+
 # RecallOps 4:55 Demo Walkthrough
 
 ![RecallOps flagship walkthrough from investigation to blocked closure](images/recallops-five-minute-demo.png)

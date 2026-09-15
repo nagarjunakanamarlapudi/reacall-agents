@@ -274,7 +274,8 @@ def _render_header() -> None:
     if (
         st.session_state.ui_active_view == "Human Review"
         and case is not None
-        and case.raw.get("pending_interrupt", {}).get("kind") in {"action_review", "closure_review"}
+        and (case.raw.get("pending_interrupt") or {}).get("kind")
+        in {"action_review", "closure_review"}
     ):
         st.warning("Review required")
     columns = st.columns(5)
@@ -587,7 +588,7 @@ def _render_human_review() -> None:
     st.markdown("### Approved action")
     allowed, reason = can_simulate(case)
     recovery_pending = bool(
-        case and case.raw.get("pending_interrupt", {}).get("kind") == "write_outcome_recovery"
+        case and (case.raw.get("pending_interrupt") or {}).get("kind") == "write_outcome_recovery"
     )
     st.write("Simulated operation only")
     st.caption(reason)

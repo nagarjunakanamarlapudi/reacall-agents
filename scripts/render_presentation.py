@@ -208,7 +208,7 @@ def architecture(output: Path) -> None:
     )
     draw.text(
         (64, 1030),
-        "Expected verified route. Latest live timed out; fallback review is not live proof. Zero write receipts.",
+        "Observed OpenAI run: four-role plan; strict matching contract stopped before HITL. Zero writes.",
         font=font(21),
         fill=MUTED,
     )
