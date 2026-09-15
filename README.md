@@ -105,7 +105,7 @@ The graph never batches those writes and never reuses approval after a version c
 - [Evaluation](docs/EVALUATION.md) — safety, six-configuration retrieval ablation, two-profile orchestration comparison, and digest-bound scorecard.
 - [Human presentation rubric](docs/EVALUATION_RUBRIC.md) — anchored review scores and authority limits.
 - [Week 3 coverage](docs/CURRICULUM_COVERAGE.md) — topic-to-code/demo map.
-- [Demo walkthrough](docs/DEMO_WALKTHROUGH.md) — the 6:32 LLM-only presenter route, real provider evidence, evaluation narration, and narrated video.
+- [Demo walkthrough](docs/DEMO_WALKTHROUGH.md) — the 7:11 LLM-only presenter route, real provider evidence, evaluation narration, and mature Indian male voice-over.
 - [Submission document](docs/SUBMISSION_DOCUMENT.md) — reviewer-ready handout.
 - [Verification](docs/VERIFICATION.md) — executed evidence only.
 
